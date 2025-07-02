@@ -1,9 +1,23 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import { resolve } from 'path'
+import { writeFileSync } from 'fs'
 
 export default defineConfig({
-  plugins: [vue()],
+  plugins: [
+    vue(),
+    // 自动创建.nojekyll文件用于GitHub Pages部署
+    {
+      name: 'generate-nojekyll',
+      writeBundle() {
+        if (process.env.NODE_ENV === 'production') {
+          writeFileSync('dist/.nojekyll', '')
+        }
+      }
+    }
+  ],
+  // GitHub Pages部署配置
+  base: process.env.NODE_ENV === 'production' ? '/frameMark/' : '/',
   resolve: {
     alias: {
       '@': resolve(__dirname, 'src')
@@ -16,6 +30,7 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     sourcemap: false,
-    minify: 'terser'
+    minify: 'terser',
+    assetsDir: 'assets'
   }
 }) 

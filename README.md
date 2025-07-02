@@ -9,9 +9,10 @@
 
 ## 🚀 快速开始
 
-访问在线版本立即体验所有功能。
+### 📱 在线体验
+访问 **[Markr 在线版](https://timestarry.github.io/frameMark/)** 立即体验所有功能！
 
-### 本地运行
+### 💻 本地运行
 ```bash
 # 克隆项目
 git clone https://github.com/timeStarry/frameMark.git
@@ -25,6 +26,11 @@ npm install
 # 启动开发服务器
 npm run dev
 ```
+
+### 🚀 自动部署
+项目已配置GitHub Actions自动部署：
+- 推送到`main`分支自动触发构建和部署
+- 部署到GitHub Pages，访问地址：`https://timestarry.github.io/frameMark/`
 
 
 ## 🌟 功能特性
@@ -56,6 +62,7 @@ npm run dev
 - **EXIF解析**：exifr
 - **字体系统**：Google Fonts CDN
 - **文件操作**：File API + Blob
+- **部署方案**：GitHub Actions + GitHub Pages
 
 ## 📦 安装和运行
 
