@@ -4,7 +4,7 @@
       <!-- 主标题区域 -->
       <div class="hero-section">
         <h1 class="main-title">Markr</h1>
-        <p class="subtitle">专业的图片处理工具箱</p>
+        <p class="subtitle">便捷的图片处理工具箱</p>
         <p class="description">简洁优雅，快速便捷，本地处理</p>
       </div>
 
@@ -63,6 +63,7 @@
 <style scoped>
 .home {
   padding: 80px 0;
+  min-height: calc(100vh - 240px);
 }
 
 .hero-section {
@@ -209,6 +210,7 @@
 @media (max-width: 768px) {
   .home {
     padding: 60px 0;
+    min-height: auto;
   }
   
   .hero-section {

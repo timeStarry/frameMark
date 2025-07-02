@@ -506,7 +506,7 @@ watch([layoutSettings, selectedImages], () => {
   display: grid;
   grid-template-columns: 360px 1fr;
   gap: 30px;
-  height: calc(100vh - 140px);
+  min-height: calc(100vh - 240px);
   align-items: start;
 }
 
@@ -915,7 +915,7 @@ watch([layoutSettings, selectedImages], () => {
   .main-content {
     grid-template-columns: 1fr;
     gap: 20px;
-    height: auto;
+    min-height: auto;
   }
   
   .control-panel {
