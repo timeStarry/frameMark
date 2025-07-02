@@ -1,0 +1,366 @@
+// 重置样式
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(161, 136, 117, 0.3) transparent;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  min-height: 100vh;
+  line-height: 1.6;
+  color: white;
+}
+
+#app {
+  min-height: 100vh;
+}
+
+// 通用按钮样式
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px 20px;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  text-decoration: none;
+  gap: 8px;
+  min-height: 44px;
+  text-align: center;
+  
+  &:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+    transform: none !important;
+  }
+  
+  &:not(:disabled):hover {
+    transform: translateY(-1px);
+  }
+  
+  &:not(:disabled):active {
+    transform: translateY(0);
+  }
+}
+
+.btn-primary {
+  background: #a18875;
+  color: white;
+  
+  &:hover:not(:disabled) {
+    background: #8f765f;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(161, 136, 117, 0.3);
+  }
+}
+
+.btn-secondary {
+  background: rgba(255, 255, 255, 0.2);
+  color: white;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  
+  &:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.3);
+    transform: translateY(-1px);
+  }
+}
+
+.btn-outline {
+  background: transparent;
+  color: white;
+  border: 2px solid rgba(255, 255, 255, 0.4);
+  
+  &:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.1);
+    border-color: rgba(255, 255, 255, 0.6);
+    color: white;
+    transform: translateY(-1px);
+  }
+}
+
+.btn-danger {
+  background: linear-gradient(135deg, #c4a59a 0%, #b8938b 100%);
+  color: white;
+  box-shadow: 0 4px 15px rgba(196, 165, 154, 0.4);
+  
+  &:hover:not(:disabled) {
+    background: linear-gradient(135deg, #b8938b 0%, #a88179 100%);
+    box-shadow: 0 8px 25px rgba(196, 165, 154, 0.6);
+  }
+}
+
+// 卡片样式
+.card {
+  background: rgba(250, 248, 246, 0.95);
+  backdrop-filter: blur(10px);
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(61, 57, 54, 0.1);
+  transition: all 0.3s ease;
+  overflow: hidden;
+  border: 1px solid rgba(161, 136, 117, 0.2);
+}
+
+// 表单样式
+.form-group {
+  margin-bottom: 20px;
+  
+  label {
+    display: block;
+    margin-bottom: 8px;
+    font-weight: 500;
+    color: #555;
+  }
+  
+  input, select, textarea {
+    width: 100%;
+    padding: 12px 16px;
+    border: 2px solid #e1e5e9;
+    border-radius: 8px;
+    font-size: 14px;
+    transition: border-color 0.3s ease;
+    font-family: inherit;
+    
+    &:focus {
+      outline: none;
+      border-color: #a18875;
+      box-shadow: 0 0 0 3px rgba(161, 136, 117, 0.1);
+    }
+  }
+  
+  input[type="range"] {
+    -webkit-appearance: none;
+    height: 6px;
+    background: #e1e5e9;
+    border-radius: 3px;
+    
+    &::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 20px;
+      height: 20px;
+      background: #a18875;
+      border-radius: 50%;
+      cursor: pointer;
+    }
+  }
+}
+
+// 工具提示
+.tooltip {
+  position: relative;
+  
+  &:hover::after {
+    content: attr(data-tooltip);
+    position: absolute;
+    bottom: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(0, 0, 0, 0.8);
+    color: white;
+    padding: 8px 12px;
+    border-radius: 4px;
+    font-size: 12px;
+    white-space: nowrap;
+    z-index: 1000;
+  }
+}
+
+// 容器样式
+.container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 20px;
+}
+
+// 页面标题通用样式
+.page-title {
+  text-align: center;
+  font-size: 32px;
+  font-weight: 700;
+  color: white;
+  margin-bottom: 40px;
+  text-shadow: 0 2px 4px rgba(0,0,0,0.3);
+}
+
+// 网格布局
+.grid {
+  display: grid;
+  gap: 24px;
+  
+  &.grid-2 {
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  }
+  
+  &.grid-3 {
+    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  }
+}
+
+// 响应式
+@media (max-width: 768px) {
+  .container {
+    padding: 0 16px;
+  }
+  
+  .card {
+    padding: 16px;
+  }
+  
+  .btn {
+    padding: 10px 20px;
+    font-size: 13px;
+    min-height: 40px;
+  }
+}
+
+// 全局滚动条样式
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+  border-radius: 4px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: rgba(161, 136, 117, 0.3);
+  border-radius: 4px;
+  border: 1px solid transparent;
+  background-clip: content-box;
+  
+  &:hover {
+    background: rgba(161, 136, 117, 0.5);
+    background-clip: content-box;
+  }
+}
+
+// 文本选择样式
+::selection {
+  background: rgba(255, 255, 255, 0.3);
+  color: white;
+}
+
+::-moz-selection {
+  background: rgba(255, 255, 255, 0.3);
+  color: white;
+}
+
+// 选择框样式优化
+select {
+  background-image: url("data:image/svg+xml;charset=utf-8,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%23796b5e' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e");
+  background-position: right 12px center;
+  background-repeat: no-repeat;
+  background-size: 16px;
+  padding-right: 40px;
+  appearance: none;
+}
+
+// 复选框样式优化
+input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: #a18875;
+  border-radius: 3px;
+}
+
+// 范围滑块样式优化
+input[type="range"] {
+  background: transparent;
+  
+  &::-webkit-slider-track {
+    background: rgba(161, 136, 117, 0.2);
+    height: 6px;
+    border-radius: 3px;
+  }
+  
+  &::-moz-range-track {
+    background: rgba(161, 136, 117, 0.2);
+    height: 6px;
+    border-radius: 3px;
+    border: none;
+  }
+  
+  &::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 20px;
+    height: 20px;
+    background: #a18875;
+    border-radius: 50%;
+    cursor: pointer;
+    box-shadow: 0 2px 6px rgba(161, 136, 117, 0.3);
+    transition: all 0.3s ease;
+    
+    &:hover {
+      transform: scale(1.1);
+      box-shadow: 0 4px 12px rgba(161, 136, 117, 0.4);
+    }
+  }
+  
+  &::-moz-range-thumb {
+    width: 20px;
+    height: 20px;
+    background: #a18875;
+    border-radius: 50%;
+    cursor: pointer;
+    border: none;
+    box-shadow: 0 2px 6px rgba(161, 136, 117, 0.3);
+    transition: all 0.3s ease;
+    
+    &:hover {
+      transform: scale(1.1);
+      box-shadow: 0 4px 12px rgba(161, 136, 117, 0.4);
+    }
+  }
+}
+
+// 文件输入框样式
+input[type="file"] {
+  &::file-selector-button {
+    background: #a18875;
+    color: white;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 6px;
+    margin-right: 12px;
+    cursor: pointer;
+    font-size: 14px;
+    transition: all 0.3s ease;
+    
+    &:hover {
+      background: #8b7968;
+    }
+  }
+}
+
+// 加载动画
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.loading {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border: 2px solid transparent;
+  border-top: 2px solid currentColor;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+// 过渡动画
+.fade-enter-active, .fade-leave-active {
+  transition: opacity 0.3s ease;
+}
+
+.fade-enter-from, .fade-leave-to {
+  opacity: 0;
+} 
