@@ -30,7 +30,7 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     sourcemap: false,
-    minify: 'terser',
+    minify: 'esbuild', // 使用esbuild替代terser，构建更快
     assetsDir: 'assets'
   }
 }) 
