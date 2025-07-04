@@ -23,7 +23,7 @@ export default defineConfig({
   },
   // GitHub Pages部署配置
   //base: process.env.NODE_ENV === 'production' ? '/frameMark/' : '/',
-  base: '/'
+  base: '/',
   resolve: {
     alias: {
       '@': resolve(__dirname, 'src')
