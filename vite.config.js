@@ -2,6 +2,7 @@ import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import { resolve } from 'path'
 import { writeFileSync } from 'fs'
+import packageJson from './package.json'
 
 export default defineConfig({
   plugins: [
@@ -16,6 +17,10 @@ export default defineConfig({
       }
     }
   ],
+  // 定义全局变量
+  define: {
+    __APP_VERSION__: JSON.stringify(packageJson.version)
+  },
   // GitHub Pages部署配置
   base: process.env.NODE_ENV === 'production' ? '/frameMark/' : '/',
   resolve: {
