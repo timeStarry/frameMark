@@ -5,7 +5,7 @@
         <!-- 版本和版权信息 -->
         <div class="footer-info">
           <div class="version-info">
-            <span class="version-badge">Beta 0.0.1</span>
+            <span class="version-badge">Beta {{ appVersion }}</span>
           </div>
           <div class="copyright">
             <p>&copy; 2025 timeStarry. Built with ❤️ using Cursor.</p>
@@ -55,7 +55,8 @@
 </template>
 
 <script setup>
-// 无需额外逻辑
+// 获取应用版本号（使用Vite定义的全局变量）
+const appVersion = __APP_VERSION__
 </script>
 
 <style scoped>
