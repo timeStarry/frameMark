@@ -3,7 +3,7 @@
 一个优雅的纯前端图片处理方案，提供便捷的边框水印和图片拼图功能。
 
 
-![Version](https://img.shields.io/badge/version-Beta%200.0.1-a18875?style=flat-square)
+![Version](https://img.shields.io/badge/version-Beta%200.0.2-a18875?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-a18875?style=flat-square)
 ![Vue](https://img.shields.io/badge/Vue-3.0-a18875?style=flat-square)
 
