@@ -22,7 +22,8 @@ export default defineConfig({
     __APP_VERSION__: JSON.stringify(packageJson.version)
   },
   // GitHub Pages部署配置
-  base: process.env.NODE_ENV === 'production' ? '/frameMark/' : '/',
+  //base: process.env.NODE_ENV === 'production' ? '/frameMark/' : '/',
+  base: '/'
   resolve: {
     alias: {
       '@': resolve(__dirname, 'src')
