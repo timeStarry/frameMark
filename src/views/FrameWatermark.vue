@@ -150,13 +150,16 @@
                   </div>
 
                   <div class="form-group">
-                    <label>边框宽度: {{ frameSettings.widthPercent }}%</label>
+                    <label v-if="frameSettings.type !== 'bottom-bar'">边框宽度: {{ frameSettings.widthPercent }}%</label>
+                    <label v-else>三边边框: {{ frameSettings.widthPercent }}%
+                      <span class="corner-tip">除底边外的上、左、右边框</span>
+                    </label>
                     <input 
                       type="range" 
                       v-model="frameSettings.widthPercent" 
-                      min="3" 
-                      max="15" 
-                      step="0.5"
+                      :min="frameSettings.type === 'bottom-bar' ? '0' : '3'" 
+                      :max="frameSettings.type === 'bottom-bar' ? '5' : '15'" 
+                      :step="frameSettings.type === 'bottom-bar' ? '0.2' : '0.5'"
                     >
                   </div>
 
@@ -299,21 +302,51 @@
                     <label>文字字体 
                       <span v-if="!fontsLoaded" class="font-loading">检测中...</span>
                       <span v-else class="font-count">({{ Object.values(availableFonts).reduce((sum, cat) => sum + cat.fonts.length, 0) }} 个可用)</span>
+                      <span class="help-icon">ⓘ
+                        <div class="help-tooltip">
+                          <div class="tooltip-content">
+                            <div class="tooltip-text">
+                              <strong>字体来源和检测</strong><br>
+                              • 系统兜底字体（不在数量统计中）<br>
+                              • 30种精选 <a href="https://fonts.google.com" target="_blank" class="google-fonts-link">Google Fonts</a> <br>
+                              • 仅显示检测可用的字体<br>
+                              <span class="tip">💡 如字体数量较少，请尝试刷新页面</span>
+                            </div>
+                          </div>
+                        </div>
+                      </span>
                     </label>
-                    <select v-model="watermarkSettings.fontFamily" :disabled="!fontsLoaded">
-                      <template v-for="(category, key) in availableFonts" :key="key">
-                        <optgroup :label="category.name" v-if="category.fonts.length > 0">
-                          <option v-for="font in category.fonts" :key="font" :value="font">
-                            {{ font }}
-                          </option>
-                        </optgroup>
-                      </template>
-                      <!-- 备用选项，防止没有检测到字体时选择框为空 -->
-                      <optgroup label="系统默认" v-if="Object.keys(availableFonts).length === 0">
-                        <option value="Arial">Arial</option>
-                        <option value="sans-serif">Sans Serif</option>
-                      </optgroup>
-                    </select>
+                    <div class="font-selector" :class="{ disabled: !fontsLoaded }">
+                      <div class="font-selector-current" :class="{ open: showFontDropdown.watermark }" @click="toggleFontDropdown('watermark')" :disabled="!fontsLoaded">
+                        <span class="font-display" :style="{ fontFamily: watermarkSettings.fontFamily }">
+                          {{ getFontDisplayName(watermarkSettings.fontFamily) }}
+                        </span>
+                        <span class="dropdown-arrow">▼</span>
+                      </div>
+                      <div v-if="showFontDropdown.watermark" class="font-dropdown">
+                        <template v-for="(category, key) in availableFonts" :key="key">
+                          <div v-if="category.fonts.length > 0" class="font-category">
+                            <div class="font-category-header">{{ category.name }}</div>
+                            <div 
+                              v-for="font in category.fonts" 
+                              :key="font"
+                              class="font-option"
+                              :class="{ active: watermarkSettings.fontFamily === font }"
+                              @click="selectFont('watermark', font)"
+                              :style="{ fontFamily: font }"
+                            >
+                              {{ getFontDisplayName(font) }}
+                            </div>
+                          </div>
+                        </template>
+                        <!-- 备用选项 -->
+                        <div v-if="Object.keys(availableFonts).length === 0" class="font-category">
+                          <div class="font-category-header">系统默认</div>
+                          <div class="font-option" @click="selectFont('watermark', 'Arial')" style="font-family: Arial;">Arial</div>
+                          <div class="font-option" @click="selectFont('watermark', 'sans-serif')" style="font-family: sans-serif;">Sans Serif</div>
+                        </div>
+                      </div>
+                    </div>
                   </div>
 
                   <div class="form-group">
@@ -375,21 +408,63 @@
 
                 <div v-show="sectionsOpen.exif" class="section-content">
                   <div class="form-group">
-                    <label>EXIF 数据字体</label>
-                    <select v-model="exifSettings.fontFamily" :disabled="!fontsLoaded">
-                      <template v-for="(category, key) in availableFonts" :key="key">
-                        <optgroup :label="category.name" v-if="category.fonts.length > 0">
-                          <option v-for="font in category.fonts" :key="font" :value="font">
-                            {{ font }}
-                          </option>
-                        </optgroup>
-                      </template>
-                      <!-- 备用选项 -->
-                      <optgroup label="系统默认" v-if="Object.keys(availableFonts).length === 0">
-                        <option value="Arial">Arial</option>
-                        <option value="sans-serif">Sans Serif</option>
-                      </optgroup>
-                    </select>
+                    <label>EXIF 数据字体 
+                      <span v-if="!fontsLoaded" class="font-loading">检测中...</span>
+                      <span v-else class="font-count">(4 个可用)</span>
+                    </label>
+                    <div class="font-selector" :class="{ disabled: !fontsLoaded }">
+                      <div class="font-selector-current" :class="{ open: showFontDropdown.exif }" @click="toggleFontDropdown('exif')" :disabled="!fontsLoaded">
+                        <span class="font-display" :style="{ fontFamily: exifSettings.fontFamily === 'follow-text' ? watermarkSettings.fontFamily : exifSettings.fontFamily }">
+                          {{ exifSettings.fontFamily === 'follow-text' ? '跟随文本字体' : getFontDisplayName(exifSettings.fontFamily) }}
+                        </span>
+                        <span class="dropdown-arrow">▼</span>
+                      </div>
+                      <div v-if="showFontDropdown.exif" class="font-dropdown">
+                        <div class="font-category">
+                          <div class="font-category-header">EXIF 字体选择</div>
+                          <div 
+                            class="font-option"
+                            :class="{ active: exifSettings.fontFamily === 'follow-text' }"
+                            @click="selectFont('exif', 'follow-text')"
+                            :style="{ fontFamily: watermarkSettings.fontFamily }"
+                          >
+                            跟随文本字体
+                          </div>
+                          <div 
+                            class="font-option"
+                            :class="{ active: exifSettings.fontFamily === 'Comfortaa' }"
+                            @click="selectFont('exif', 'Comfortaa')"
+                            style="font-family: Comfortaa;"
+                          >
+                            Comfortaa
+                          </div>
+                          <div 
+                            class="font-option"
+                            :class="{ active: exifSettings.fontFamily === 'Times New Roman' }"
+                            @click="selectFont('exif', 'Times New Roman')"
+                            style="font-family: 'Times New Roman';"
+                          >
+                            Times New Roman
+                          </div>
+                          <div 
+                            class="font-option"
+                            :class="{ active: exifSettings.fontFamily === 'Inter' }"
+                            @click="selectFont('exif', 'Inter')"
+                            style="font-family: Inter;"
+                          >
+                            Inter
+                         </div>
+                          <div 
+                            class="font-option"
+                            :class="{ active: exifSettings.fontFamily === 'Cormorant Garamond' }"
+                            @click="selectFont('exif', 'Cormorant Garamond')"
+                            style="font-family: 'Cormorant Garamond';"
+                          >
+                            Cormorant Garamond
+                         </div>
+                        </div>
+                      </div>
+                    </div>
                   </div>
 
                   <div class="form-group">
@@ -453,9 +528,9 @@
                 </div>
                 
                 <div class="actions">
-                  <button @click="generateAndDownload" class="btn btn-primary" :disabled="isProcessing">
+                  <button @click="generateAndExport" class="btn btn-primary" :disabled="isProcessing">
                     <span v-if="isProcessing">生成中...</span>
-                    <span v-else>生成并下载</span>
+                    <span v-else>生成导出</span>
                   </button>
                   <button @click="resetAll" class="btn btn-outline">
                     重置页面
@@ -470,9 +545,15 @@
             <div class="preview-header">
               <div>
                 <h3>预览效果</h3>
-                <p class="preview-tip">预览框效果存在偏差，实际导出为高清原图</p>
+                <p class="preview-tip">
+                  <strong>预览说明：</strong>为保证实时渲染性能，预览框采用缩放显示（最大800×600），存在分辨率压缩和模糊度偏差。<br>
+                  <strong>实际导出：</strong>使用原图完整分辨率，字体清晰锐利，模糊效果准确还原。
+                </p>
               </div>
               <div class="preview-controls" v-if="selectedImage">
+                <button @click="refreshPreview" class="zoom-btn" title="刷新预览">
+                  🔄
+                </button>
                 <button @click="resetZoom" class="zoom-btn" title="重置缩放">
                   🔍
                 </button>
@@ -506,10 +587,40 @@
       </div>
     </div>
   </div>
+
+  <!-- 导出对话框 -->
+  <div v-if="showExportDialog" class="export-dialog-overlay" @click="closeExportDialog">
+    <div class="export-dialog" @click.stop>
+      <div class="dialog-header">
+        <h3>导出完成</h3>
+      </div>
+      
+      <div class="dialog-content">
+        <div class="export-preview">
+          <img :src="exportedImage?.url" alt="导出图片" class="exported-image">
+        </div>
+        
+        <div class="export-info">
+          <p class="export-filename">{{ exportedImage?.filename }}</p>
+          <p class="export-size">{{ exportedImage?.size }}</p>
+          <p class="export-resolution">{{ exportedImage?.resolution }}</p>
+        </div>
+      </div>
+      
+      <div class="dialog-actions">
+        <button @click="downloadExportedImage" class="download-btn">
+          <div class="download-icon">💾</div>
+          <span>下载图片</span>
+        </button>
+        
+        <p class="close-hint">点击框外任意位置关闭对话框</p>
+      </div>
+    </div>
+  </div>
 </template>
 
 <script setup>
-import { ref, reactive, watch, nextTick, onMounted } from 'vue'
+import { ref, reactive, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { extractExifData } from '@/utils/exifUtils'
 import { downloadBlob } from '@/utils/fileUtils'
 
@@ -521,6 +632,10 @@ const processedImage = ref(null)
 const exifData = ref(null)
 const selectedExifFields = ref([])
 const isProcessing = ref(false)
+
+// 导出对话框相关
+const showExportDialog = ref(false)
+const exportedImage = ref(null)
 
 // 预览控制
 const zoomLevel = ref(1)
@@ -588,7 +703,7 @@ const watermarkSettings = reactive({
 
 // EXIF字体设置
 const exifSettings = reactive({
-  fontFamily: 'Inter', // 现代简约风格
+  fontFamily: 'follow-text', // 默认跟随文本字体
   fontSizePercent: 2.0, // EXIF字体大小，稍小于主文字
   position: 'bottom-center', // 九格位置，默认底部居中
   bottomBarPosition: 'right' // 底边条幅中的位置 - EXIF在右侧
@@ -679,7 +794,7 @@ const presets = [
         position: 'bottom-center'
       },
       exif: {
-        fontFamily: 'Inter',
+        fontFamily: 'Comfortaa',
         fontSizePercent: 2.2,
         position: 'bottom-center',
         fields: ['FNumber', 'ExposureTime', 'FocalLength', 'ISO']
@@ -708,7 +823,7 @@ const presets = [
         position: 'top-center'
       },
       exif: {
-        fontFamily: 'Inter',
+        fontFamily: 'Cormorant Garamond',
         fontSizePercent: 3.4,
         position: 'bottom-center',
         fields: ['FNumber', 'ExposureTime', 'FocalLength', 'ISO']
@@ -720,10 +835,11 @@ const presets = [
     name: '底部条幅',
     description: '简洁条幅，时间标记',
     icon: '📏',
-    config: {
-      frame: {
-        type: 'bottom-bar'
-      },
+          config: {
+        frame: {
+          type: 'bottom-bar',
+          widthPercent: 0
+        },
       watermark: {
         text: 'Photographer',
         fontFamily: 'Dancing Script',
@@ -746,12 +862,36 @@ const presets = [
 const fontsLoaded = ref(false)
 const availableFonts = ref({})
 
+// 字体选择器下拉状态
+const showFontDropdown = reactive({
+  watermark: false,
+  exif: false
+})
+
+// 字体显示名称映射
+const fontDisplayNames = {
+  'ZCOOL XiaoWei': '站酷小薇',
+  'Ma Shan Zheng': '马善政毛笔楷书',
+  'Liu Jian Mao Cao': '钟齐流江毛笔草'
+}
+
+// 获取字体显示名称
+const getFontDisplayName = (fontName) => {
+  return fontDisplayNames[fontName] || fontName
+}
+
 // 完整字体库定义
 const fontLibrary = {
   signature: {
     name: '签名艺术体',
     fonts: [
       'Dancing Script', 'Pacifico', 'Kaushan Script', 'Great Vibes', 'Allura'
+    ]
+  },
+  chinese: {
+    name: '中文书法体',
+    fonts: [
+      'ZCOOL XiaoWei', 'Ma Shan Zheng', 'Liu Jian Mao Cao'
     ]
   },
   modern: {
@@ -766,10 +906,16 @@ const fontLibrary = {
       'Playfair Display', 'Cormorant Garamond', 'Crimson Text', 'Lora', 'Merriweather'
     ]
   },
-  chinese: {
-    name: '中文书法体',
+  sansSerif: {
+    name: '现代简约体',
     fonts: [
-      'ZCOOL XiaoWei', 'Ma Shan Zheng'
+      'Inter', 'Source Sans Pro', 'Open Sans'
+    ]
+  },
+  monospace: {
+    name: '专业等宽体',
+    fonts: [
+      'JetBrains Mono', 'Source Code Pro', 'Roboto Mono'
     ]
   },
   system: {
@@ -777,29 +923,25 @@ const fontLibrary = {
     fonts: [
       '微软雅黑', 'Arial', 'Times New Roman', 'Helvetica', 'Georgia', 'Verdana'
     ]
-  },
-  sansSerif: {
-    name: '现代简约风格',
-    fonts: [
-      'Inter', 'IBM Plex Sans', 'Source Sans Pro', 'Roboto', 'Open Sans'
-    ]
-  },
-  monospace: {
-    name: '专业等宽体',
-    fonts: [
-      'JetBrains Mono', 'Fira Code', 'Source Code Pro', 'Roboto Mono', 'IBM Plex Mono'
-    ]
-  },
-  minimal: {
-    name: '简洁无衬线体',
-    fonts: [
-      'Lato', 'Nunito Sans', 'Work Sans', 'Noto Sans'
-    ]
   }
 }
 
 // 检测单个字体是否可用
 const isFontAvailable = (fontFamily) => {
+  // 方法1：使用document.fonts.check API（现代浏览器）
+  if (document.fonts && document.fonts.check) {
+    try {
+      // 先检查字体是否已加载
+      const isLoaded = document.fonts.check(`16px "${fontFamily}"`)
+      if (isLoaded) {
+        return true
+      }
+    } catch (e) {
+      // 如果API调用失败，使用备用方法
+    }
+  }
+  
+  // 方法2：Canvas测量法（备用方法）
   const testText = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
   const testSize = '16px'
   const fallbackFont = 'monospace'
@@ -816,7 +958,29 @@ const isFontAvailable = (fontFamily) => {
   const targetWidth = ctx.measureText(testText).width
   
   // 如果宽度不同，说明目标字体可用
-  return Math.abs(targetWidth - fallbackWidth) > 1
+  const isAvailable = Math.abs(targetWidth - fallbackWidth) > 1
+  
+  // 额外检查：使用系统字体作为对照
+  ctx.font = `${testSize} "${fontFamily}", Arial`
+  const arialWidth = ctx.measureText(testText).width
+  
+  // 如果与Arial宽度也不同，更确认字体可用
+  return isAvailable || Math.abs(arialWidth - fallbackWidth) > 1
+}
+
+// 加载Google Fonts
+const loadGoogleFonts = async () => {
+  // 由于index.html已经预加载了Google Fonts，这里主要确保字体完全加载
+  console.log('确保Google Fonts已加载...')
+  
+  // 等待字体加载完成
+  await document.fonts.ready
+  
+  // 额外等待确保字体完全可用
+  await new Promise(resolve => setTimeout(resolve, 1000))
+  
+  console.log('Google Fonts加载完成')
+  return true
 }
 
 // 检测所有字体可用性
@@ -824,8 +988,14 @@ const detectAvailableFonts = async () => {
   console.log('正在检测可用字体...')
   
   try {
+    // 先加载Google Fonts
+    await loadGoogleFonts()
+    
     // 等待字体加载完成
     await document.fonts.ready
+    
+    // 额外等待确保字体完全可用
+    await new Promise(resolve => setTimeout(resolve, 1500))
     
     const detected = {}
     
@@ -863,13 +1033,9 @@ const detectAvailableFonts = async () => {
       }
     }
     
-    if (!allAvailableFonts.includes(exifSettings.fontFamily)) {
-      // 优先选择现代简约风格，其次选择第一个可用字体
-      if (detected.sansSerif?.fonts.length > 0) {
-        exifSettings.fontFamily = detected.sansSerif.fonts[0]
-      } else if (allAvailableFonts.length > 0) {
-        exifSettings.fontFamily = allAvailableFonts[0]
-      }
+    // EXIF字体检查，如果不是follow-text且不可用，则重置为follow-text
+    if (exifSettings.fontFamily !== 'follow-text' && !allAvailableFonts.includes(exifSettings.fontFamily)) {
+      exifSettings.fontFamily = 'follow-text'
     }
     
     fontsLoaded.value = true
@@ -938,6 +1104,43 @@ const selectGradientCombo = (colors) => {
 // 切换更多颜色选项显示
 const toggleMoreColors = () => {
   frameSettings.showMoreColors = !frameSettings.showMoreColors
+}
+
+// 切换字体选择器下拉菜单
+const toggleFontDropdown = (type) => {
+  if (!fontsLoaded.value) return
+  
+  // 关闭其他下拉菜单
+  Object.keys(showFontDropdown).forEach(key => {
+    if (key !== type) {
+      showFontDropdown[key] = false
+    }
+  })
+  
+  // 切换当前下拉菜单
+  showFontDropdown[type] = !showFontDropdown[type]
+}
+
+// 获取实际的EXIF字体
+const getActualExifFont = () => {
+  return exifSettings.fontFamily === 'follow-text' 
+    ? watermarkSettings.fontFamily 
+    : exifSettings.fontFamily
+}
+
+// 选择字体
+const selectFont = (type, fontName) => {
+  if (type === 'watermark') {
+    watermarkSettings.fontFamily = fontName
+  } else if (type === 'exif') {
+    exifSettings.fontFamily = fontName
+  }
+  
+  // 关闭下拉菜单
+  showFontDropdown[type] = false
+  
+  // 重新生成预览
+  generatePreviewSafely()
 }
 
 // 格式化文件大小
@@ -1059,6 +1262,42 @@ const resetZoom = () => {
   panY.value = 0
 }
 
+const refreshPreview = async () => {
+  if (!selectedImage.value) return
+  
+  console.log('开始刷新预览...')
+  
+  // 强制重新加载Google Fonts
+  await loadGoogleFonts()
+  
+  // 等待字体渲染完成
+  await document.fonts.ready
+  
+  // 特别处理中文字体，确保完全加载
+  const chineseFonts = ['ZCOOL XiaoWei', 'Ma Shan Zheng', 'Liu Jian Mao Cao']
+  for (const font of chineseFonts) {
+    try {
+      await document.fonts.load(`16px "${font}"`)
+    } catch (error) {
+      console.warn(`字体加载失败: ${font}`, error)
+    }
+  }
+  
+  // 清除画布，强制重新绘制
+  if (previewCanvas.value) {
+    const ctx = previewCanvas.value.getContext('2d')
+    ctx.clearRect(0, 0, previewCanvas.value.width, previewCanvas.value.height)
+  }
+  
+  // 延迟一小段时间确保字体完全可用
+  await new Promise(resolve => setTimeout(resolve, 300))
+  
+  // 重新生成预览
+  generatePreview()
+  
+  console.log('预览刷新完成')
+}
+
 const resetAll = () => {
   if (confirm('确定要重置所有设置吗？')) {
     removeImage()
@@ -1081,7 +1320,7 @@ const resetAll = () => {
     watermarkSettings.position = 'bottom-center'
     watermarkSettings.bottomBarPosition = 'left'
     
-    exifSettings.fontFamily = 'Inter'
+    exifSettings.fontFamily = 'follow-text'
     exifSettings.fontSizePercent = 2.0
     exifSettings.position = 'bottom-center'
     exifSettings.bottomBarPosition = 'right'
@@ -1227,32 +1466,48 @@ const drawFrame = (ctx, canvasWidth, canvasHeight, img, originalWidth, originalH
   if (frameSettings.type === 'bottom-bar') {
     // 计算条幅高度（原图高度的12%）
     const barHeight = originalHeight * 0.12
+    // 计算三边边框宽度
+    const threeSideBorderWidth = Math.min(originalWidth, originalHeight) * (frameSettings.widthPercent / 100)
     
-    // 计算缩放比例 - 基于图片+条幅的总尺寸
-    const scale = Math.min(canvasWidth / originalWidth, 
-                          canvasHeight / (originalHeight + barHeight))
+    // 计算缩放比例 - 基于图片+条幅+三边边框的总尺寸
+    const totalWidth = originalWidth + threeSideBorderWidth * 2
+    const totalHeight = originalHeight + barHeight + threeSideBorderWidth
+    const scale = Math.min(canvasWidth / totalWidth, canvasHeight / totalHeight)
     
     const scaledImageWidth = originalWidth * scale
     const scaledImageHeight = originalHeight * scale
     const scaledBarHeight = barHeight * scale
+    const scaledBorderWidth = threeSideBorderWidth * scale
     
     // 计算居中位置
-    const totalHeight = scaledImageHeight + scaledBarHeight
-    const offsetX = (canvasWidth - scaledImageWidth) / 2
-    const offsetY = (canvasHeight - totalHeight) / 2
+    const scaledTotalWidth = scaledImageWidth + scaledBorderWidth * 2
+    const scaledTotalHeight = scaledImageHeight + scaledBarHeight + scaledBorderWidth
+    const offsetX = (canvasWidth - scaledTotalWidth) / 2
+    const offsetY = (canvasHeight - scaledTotalHeight) / 2
 
     ctx.save()
     ctx.translate(offsetX, offsetY)
     
-    // 绘制原图
-    ctx.drawImage(img, 0, 0, scaledImageWidth, scaledImageHeight)
+    // 如果有三边边框，先绘制三边边框背景
+    if (frameSettings.widthPercent > 0) {
+      ctx.fillStyle = '#ffffff' // 三边边框使用白色
+      // 左边框
+      ctx.fillRect(0, 0, scaledBorderWidth, scaledImageHeight + scaledBorderWidth)
+      // 右边框
+      ctx.fillRect(scaledBorderWidth + scaledImageWidth, 0, scaledBorderWidth, scaledImageHeight + scaledBorderWidth)
+      // 顶边框
+      ctx.fillRect(scaledBorderWidth, 0, scaledImageWidth, scaledBorderWidth)
+    }
     
-    // 绘制底部白色条幅
+    // 绘制原图（考虑三边边框的偏移）
+    ctx.drawImage(img, scaledBorderWidth, scaledBorderWidth, scaledImageWidth, scaledImageHeight)
+    
+    // 绘制底部白色条幅（全宽度）
     ctx.fillStyle = '#ffffff'
-    ctx.fillRect(0, scaledImageHeight, scaledImageWidth, scaledBarHeight)
+    ctx.fillRect(0, scaledImageHeight + scaledBorderWidth, scaledTotalWidth, scaledBarHeight)
     
     // 绘制条幅中的水印和EXIF信息
-    drawBottomBarContent(ctx, scaledImageWidth, scaledImageHeight, scaledBarHeight, originalWidth, originalHeight, scale)
+    drawBottomBarContent(ctx, scaledTotalWidth, scaledImageHeight + scaledBorderWidth, scaledBarHeight, originalWidth, originalHeight, scale)
     
     ctx.restore()
     return
@@ -1414,7 +1669,8 @@ const drawBottomBarContent = (ctx, barWidth, imageHeight, barHeight, originalWid
   // 准备水印文本信息
   let watermarkInfo = null
   if (watermarkSettings.text) {
-    const fontSize = Math.min(barHeight * 0.25, originalHeight * (watermarkSettings.fontSizePercent / 100) * scale)
+    // 允许更大的字体大小，最大为条幅高度的60%或用户设置值，取较小者
+    const fontSize = Math.min(barHeight * 0.6, originalHeight * (watermarkSettings.fontSizePercent / 100) * scale)
     watermarkInfo = {
       text: watermarkSettings.text,
       font: `${fontSize}px ${watermarkSettings.fontFamily}`,
@@ -1430,10 +1686,11 @@ const drawBottomBarContent = (ctx, barWidth, imageHeight, barHeight, originalWid
     .filter(Boolean)
   
   if (exifValues.length > 0) {
-    const fontSize = Math.min(barHeight * 0.2, originalHeight * (exifSettings.fontSizePercent / 100) * scale)
+    // 允许更大的字体大小，最大为条幅高度的50%或用户设置值，取较小者
+    const fontSize = Math.min(barHeight * 0.5, originalHeight * (exifSettings.fontSizePercent / 100) * scale)
     exifInfo = {
       text: exifValues.join('  '),
-      font: `${fontSize}px ${exifSettings.fontFamily}`,
+      font: `${fontSize}px ${getActualExifFont()}`,
       color: '#666666', // 底边条幅EXIF使用稍浅的深色文字
       fontSize: fontSize
     }
@@ -1593,7 +1850,7 @@ const drawWatermark = (ctx, totalWidth, totalHeight, frameWidth, originalWidth, 
       }
     }
     
-    ctx.font = `${exifFontSize}px ${exifSettings.fontFamily}`
+    ctx.font = `${exifFontSize}px ${getActualExifFont()}`
     ctx.fillStyle = watermarkSettings.color
     ctx.textAlign = coords.align
     ctx.textBaseline = coords.baseline
@@ -1604,7 +1861,7 @@ const drawWatermark = (ctx, totalWidth, totalHeight, frameWidth, originalWidth, 
   ctx.globalAlpha = 1
 }
 
-const generateAndDownload = async () => {
+const generateAndExport = async () => {
   if (!selectedImage.value || isProcessing.value) return
 
   isProcessing.value = true
@@ -1621,10 +1878,11 @@ const generateAndDownload = async () => {
         try {
           // 计算画布尺寸
           if (frameSettings.type === 'bottom-bar') {
-            // 底边条幅：原图尺寸加上条幅高度
+            // 底边条幅：原图尺寸加上条幅高度和三边边框
             const barHeight = img.height * 0.12
-            canvas.width = img.width
-            canvas.height = img.height + barHeight
+            const threeSideBorderWidth = Math.min(img.width, img.height) * (frameSettings.widthPercent / 100)
+            canvas.width = img.width + threeSideBorderWidth * 2
+            canvas.height = img.height + barHeight + threeSideBorderWidth
           } else {
             // 其他边框类型：使用原始图片尺寸加上边框
             const frameWidth = Math.min(img.width, img.height) * (frameSettings.widthPercent / 100)
@@ -1635,10 +1893,23 @@ const generateAndDownload = async () => {
           // 绘制高质量图片 - 使用与预览相同的逻辑
           drawFrame(ctx, canvas.width, canvas.height, img, img.width, img.height)
 
-          // 转换为blob并下载
+          // 转换为blob并存储，不直接下载
           canvas.toBlob((blob) => {
             const fileName = `${customFileName.value || getDefaultFileName()}.png`
-            downloadBlob(blob, fileName)
+            const fileSize = formatFileSize(blob.size)
+            const resolution = `${canvas.width} × ${canvas.height} 像素`
+            
+            // 存储导出图片信息
+            exportedImage.value = {
+              blob,
+              url: URL.createObjectURL(blob),
+              filename: fileName,
+              size: fileSize,
+              resolution: resolution
+            }
+            
+            // 显示导出对话框
+            showExportDialog.value = true
             resolve()
           }, 'image/png', 1.0)
         } catch (error) {
@@ -1656,6 +1927,24 @@ const generateAndDownload = async () => {
   }
 }
 
+// 关闭导出对话框
+const closeExportDialog = () => {
+  showExportDialog.value = false
+  // 清理blob URL
+  if (exportedImage.value?.url) {
+    URL.revokeObjectURL(exportedImage.value.url)
+  }
+  exportedImage.value = null
+}
+
+// 下载导出的图片
+const downloadExportedImage = () => {
+  if (!exportedImage.value) return
+  
+  downloadBlob(exportedImage.value.blob, exportedImage.value.filename)
+  closeExportDialog()
+}
+
 // 监听设置变化，自动更新预览
 watch([frameSettings, watermarkSettings, exifSettings, selectedExifFields], async () => {
   if (selectedImage.value) {
@@ -1663,10 +1952,52 @@ watch([frameSettings, watermarkSettings, exifSettings, selectedExifFields], asyn
   }
 }, { deep: true })
 
+// 监听边框类型变化，调整边框宽度默认值
+watch(() => frameSettings.type, (newType, oldType) => {
+  if (newType === 'bottom-bar') {
+    // 切换到底边条幅时，设置边框宽度为0%
+    frameSettings.widthPercent = 0
+  } else if (oldType === 'bottom-bar') {
+    // 从底边条幅切换到其他类型时，设置一个合理的默认值
+    frameSettings.widthPercent = 8
+  }
+})
+
+// 点击外部区域关闭字体选择器
+const handleClickOutside = (event) => {
+  const fontSelectors = document.querySelectorAll('.font-selector')
+  let isClickInside = false
+  
+  fontSelectors.forEach(selector => {
+    if (selector.contains(event.target)) {
+      isClickInside = true
+    }
+  })
+  
+  if (!isClickInside) {
+    Object.keys(showFontDropdown).forEach(key => {
+      showFontDropdown[key] = false
+    })
+  }
+}
+
 // 组件挂载时检测可用字体
 onMounted(async () => {
   // 检测客户端支持的字体
   await detectAvailableFonts()
+  
+  // 添加点击外部区域的事件监听器
+  document.addEventListener('click', handleClickOutside)
+})
+
+// 组件卸载时移除事件监听器
+onUnmounted(() => {
+  document.removeEventListener('click', handleClickOutside)
+  
+  // 清理导出图片的blob URL
+  if (exportedImage.value?.url) {
+    URL.revokeObjectURL(exportedImage.value.url)
+  }
 })
 </script>
 
@@ -2074,6 +2405,7 @@ onMounted(async () => {
 
   .form-group {
     margin-bottom: 20px;
+    position: relative;
     
     label {
       display: block;
@@ -2095,6 +2427,35 @@ onMounted(async () => {
         font-weight: 400;
       }
       
+      .help-icon {
+        display: inline-block;
+        width: 14px;
+        height: 14px;
+        margin-left: 6px;
+        color: rgba(255, 255, 255, 0.5);
+        font-size: 10px;
+        cursor: help;
+        border-radius: 50%;
+        text-align: center;
+        line-height: 14px;
+        background: transparent;
+        transition: all 0.2s ease;
+        position: relative;
+        
+        &:hover {
+          color: #a18875;
+          background: rgba(161, 136, 117, 0.1);
+          transform: scale(1.2);
+        }
+        
+        &:hover .help-tooltip {
+          opacity: 1 !important;
+          visibility: visible !important;
+          transform: translateY(0) !important;
+          pointer-events: auto !important;
+        }
+      }
+      
       .corner-tip {
         color: rgba(255, 255, 255, 0.5);
         font-size: 11px;
@@ -2102,6 +2463,80 @@ onMounted(async () => {
         font-style: italic;
       }
     }
+    
+    .help-tooltip {
+      position: absolute;
+      bottom: 100%;
+      right: -100px;
+      transform: translateY(-5px);
+      z-index: 99999;
+      opacity: 0;
+      visibility: hidden;
+      transition: all 0.3s ease;
+      pointer-events: none;
+      
+      .tooltip-content {
+        background: rgba(26, 22, 18, 0.98);
+        border: 1px solid rgba(161, 136, 117, 0.6);
+        border-radius: 6px;
+        padding: 8px 10px;
+        margin-bottom: 5px;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+        backdrop-filter: blur(8px);
+        width: 220px;
+        white-space: normal;
+        
+        &::after {
+          content: '';
+          position: absolute;
+          top: 100%;
+          right: 107px;
+          width: 0;
+          height: 0;
+          border-left: 5px solid transparent;
+          border-right: 5px solid transparent;
+          border-top: 5px solid rgba(161, 136, 117, 0.6);
+        }
+        
+        .tooltip-text {
+          color: rgba(255, 255, 255, 0.9);
+          font-size: 11px;
+          line-height: 1.4;
+          
+          strong {
+            color: #a18875;
+            font-weight: 600;
+            font-size: 12px;
+          }
+          
+          .tip {
+            color: #a18875;
+            font-weight: 500;
+            font-size: 10px;
+            margin-top: 4px;
+            display: block;
+            padding-top: 4px;
+            border-top: 1px solid rgba(161, 136, 117, 0.3);
+          }
+          
+          .google-fonts-link {
+            color: #a18875;
+            text-decoration: none;
+            font-weight: 500;
+            border-bottom: 1px solid rgba(161, 136, 117, 0.5);
+            transition: all 0.2s ease;
+            
+            &:hover {
+              color: #c4a584;
+              border-bottom-color: #c4a584;
+              text-decoration: none;
+            }
+          }
+        }
+      }
+    }
+    
+
     
     .range-labels {
       display: flex;
@@ -2221,6 +2656,135 @@ onMounted(async () => {
         box-shadow: 0 2px 4px rgba(0,0,0,0.2);
       }
     }
+}
+
+/* 字体选择器样式 */
+.font-selector {
+  position: relative;
+  width: 100%;
+  
+  &.disabled {
+    opacity: 0.6;
+    pointer-events: none;
+  }
+}
+
+.font-selector-current {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.1);
+  color: white;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  
+  &:hover {
+    border-color: rgba(255, 255, 255, 0.5);
+    background: rgba(255, 255, 255, 0.15);
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  }
+  
+  .font-display {
+    flex: 1;
+    text-align: left;
+    font-size: 14px;
+    font-weight: 500;
+  }
+  
+  .dropdown-arrow {
+    color: rgba(255, 255, 255, 0.7);
+    font-size: 12px;
+    transition: transform 0.2s ease;
+    margin-left: 8px;
+  }
+  
+  &.open .dropdown-arrow {
+    transform: rotate(180deg);
+  }
+}
+
+.font-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 1000;
+  background: rgba(74, 63, 54, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+  backdrop-filter: blur(10px);
+  max-height: 300px;
+  overflow-y: auto;
+  margin-top: 4px;
+  
+  &::-webkit-scrollbar {
+    width: 6px;
+  }
+  
+  &::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  
+  &::-webkit-scrollbar-thumb {
+    background: rgba(161, 136, 117, 0.5);
+    border-radius: 3px;
+    
+    &:hover {
+      background: rgba(161, 136, 117, 0.7);
+    }
+  }
+}
+
+.font-category {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  
+  &:last-child {
+    border-bottom: none;
+  }
+}
+
+.font-category-header {
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.8);
+  background: rgba(255, 255, 255, 0.05);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.font-option {
+  padding: 10px 12px;
+  color: white;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  
+  &:last-child {
+    border-bottom: none;
+  }
+  
+  &:hover {
+    background: rgba(255, 255, 255, 0.1);
+    color: #a18875;
+  }
+  
+  &.active {
+    background: rgba(161, 136, 117, 0.3);
+    color: #a18875;
+    font-weight: 600;
+  }
 }
 
 .exif-grid {
@@ -2516,6 +3080,64 @@ onMounted(async () => {
   .feature-highlight {
     padding: 24px 20px;
   }
+  
+  /* 移动端导出对话框样式 */
+  .export-dialog {
+    width: 95%;
+    max-width: none;
+    margin: 20px;
+    max-height: 80vh;
+  }
+  
+  .dialog-header {
+    padding: 16px 20px;
+    
+    h3 {
+      font-size: 16px;
+    }
+  }
+  
+  .dialog-content {
+    padding: 20px;
+  }
+  
+  .export-preview {
+    aspect-ratio: 4/3;
+    padding: 12px;
+  }
+  
+  .export-info {
+    .export-filename {
+      font-size: 14px;
+    }
+    
+    .export-size {
+      font-size: 12px;
+    }
+    
+    .export-resolution {
+      font-size: 12px;
+    }
+  }
+  
+  .dialog-actions {
+    padding: 0 20px 20px;
+    gap: 12px;
+  }
+  
+  .download-btn {
+    min-width: 140px;
+    padding: 14px 24px;
+    font-size: 14px;
+    
+    .download-icon {
+      font-size: 18px;
+    }
+  }
+  
+  .close-hint {
+    font-size: 11px;
+  }
 }
 
 @keyframes pulse {
@@ -2525,6 +3147,169 @@ onMounted(async () => {
   50% {
     opacity: 0.5;
   }
+}
+
+/* 导出对话框样式 */
+.export-dialog-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(10px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.export-dialog {
+  background: #a18875;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 20px;
+  padding: 0;
+  width: 90%;
+  max-width: 600px;
+  max-height: 90vh;
+  overflow: hidden;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3);
+  position: relative;
+}
+
+.dialog-header {
+  background: rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(20px);
+  padding: 20px 24px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+  text-align: center;
+  
+  h3 {
+    color: white;
+    font-size: 18px;
+    font-weight: 600;
+    margin: 0;
+  }
+}
+
+
+
+.dialog-content {
+  padding: 24px;
+  text-align: center;
+}
+
+.export-preview {
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 12px;
+  padding: 16px;
+  margin-bottom: 20px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  aspect-ratio: 4/3;
+  overflow: hidden;
+}
+
+.exported-image {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.export-info {
+  margin-bottom: 20px;
+  
+  .export-filename {
+    color: white;
+    font-size: 16px;
+    font-weight: 500;
+    margin: 0 0 8px 0;
+  }
+  
+  .export-size {
+    color: rgba(255, 255, 255, 0.7);
+    font-size: 14px;
+    margin: 0 0 4px 0;
+  }
+  
+  .export-resolution {
+    color: rgba(255, 255, 255, 0.7);
+    font-size: 14px;
+    margin: 0;
+  }
+}
+
+.dialog-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  padding: 0 24px 24px;
+}
+
+.download-btn {
+  background: rgba(255, 255, 255, 0.15);
+  backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 16px;
+  padding: 16px 32px;
+  cursor: pointer;
+  transition: all 0.4s ease;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  position: relative;
+  overflow: hidden;
+  color: white;
+  font-size: 16px;
+  font-weight: 600;
+  min-width: 160px;
+  justify-content: center;
+  
+  &::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: -100%;
+    width: 100%;
+    height: 100%;
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.1), transparent);
+    transition: left 0.6s ease;
+  }
+  
+  &:hover {
+    transform: translateY(-4px) scale(1.05);
+    background: rgba(255, 255, 255, 0.25);
+    border-color: rgba(255, 255, 255, 0.4);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+    
+    &::before {
+      left: 100%;
+    }
+    
+    .download-icon {
+      transform: scale(1.1);
+    }
+  }
+  
+  &:active {
+    transform: translateY(-2px) scale(1.02);
+  }
+}
+
+.download-icon {
+  font-size: 20px;
+  transition: transform 0.3s ease;
+}
+
+.close-hint {
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 12px;
+  margin: 0;
+  text-align: center;
+  font-style: italic;
 }
 
 /* 颜色选择器相关样式 */

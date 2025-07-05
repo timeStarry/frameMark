@@ -1,6 +1,6 @@
 {
   "name": "framemark",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "Markr - 图片工具箱",
   "scripts": {
     "dev": "vite",
