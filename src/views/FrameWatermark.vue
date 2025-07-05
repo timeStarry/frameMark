@@ -59,9 +59,9 @@
               </div>
               
               <div class="feature-highlight">
-                <div class="feature-icon">💾</div>
-                <h4>高质量输出</h4>
-                <p>保持原图分辨率，无损质量处理</p>
+               <div class="feature-icon">🔤</div>
+                <h4>Google fonts</h4>
+                <p>集成Google在线字体库，无版权风险</p>
               </div>
             </div>
           </div>
