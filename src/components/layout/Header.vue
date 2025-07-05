@@ -31,15 +31,13 @@
           >
             图片拼图
           </router-link>
+          
         </nav>
       </div>
     </div>
   </header>
 </template>
 
-<script setup>
-// 无需导入，使用Composition API
-</script>
 
 <style scoped>
 .header {
@@ -119,6 +117,47 @@
   }
 }
 
+.favorite-btn {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  color: rgba(255, 255, 255, 0.9);
+  font-weight: 500;
+  padding: 8px 16px;
+  border-radius: 8px;
+  transition: all 0.3s ease;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  font-size: 14px;
+  
+  &:hover {
+    color: white;
+    background: rgba(255, 255, 255, 0.1);
+    border-color: rgba(255, 255, 255, 0.5);
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+    
+    .favorite-icon {
+      transform: scale(1.1);
+    }
+  }
+  
+  &:active {
+    transform: translateY(0);
+  }
+}
+
+.favorite-icon {
+  font-size: 16px;
+  transition: transform 0.3s ease;
+}
+
+.favorite-text {
+  font-size: 14px;
+}
+
 @media (max-width: 768px) {
   .header-content {
     flex-direction: column;
@@ -132,7 +171,9 @@
   }
   
   .nav {
-    gap: 20px;
+    gap: 16px;
+    flex-wrap: wrap;
+    justify-content: center;
   }
   
   .logo-text {
@@ -141,6 +182,35 @@
   
   .logo-icon {
     font-size: 28px;
+  }
+  
+  .favorite-btn {
+    padding: 6px 12px;
+    font-size: 13px;
+    
+    .favorite-text {
+      font-size: 13px;
+    }
+    
+    .favorite-icon {
+      font-size: 14px;
+    }
+  }
+}
+
+@media (max-width: 480px) {
+  .nav {
+    gap: 12px;
+  }
+  
+  .favorite-btn {
+    .favorite-text {
+      display: none;
+    }
+    
+    padding: 8px;
+    min-width: 36px;
+    justify-content: center;
   }
 }
 </style> 
