@@ -1,3 +1,8 @@
+// 导入通用样式
+@import './common-layouts.scss';
+@import './common-components.scss';
+@import './common-selectors.scss';
+
 // 重置样式
 * {
   margin: 0;
