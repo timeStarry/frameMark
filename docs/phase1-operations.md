@@ -8,20 +8,20 @@
 | --- | --- |
 | 服务 | `systemctl --user status markr-phase1.service` |
 | 服务根目录 | `/home/timestarry/deploy/markr-phase1` |
-| 发布目录 | `releases/20261001-final-cc` |
+| 发布目录 | `releases/20261001-ui-reviewed` |
 | 当前版本 | `current` 软链接指向发布目录 |
 | 持久化目录 | `data`，权限 0700，数据库和媒体均在此 |
-| 监听 | `127.0.0.1:18140`，仅服务器回环 |
-| 健康 | `http://127.0.0.1:18140/api/health` |
-| Mac 验证地址 | `http://127.0.0.1:18141/`，经 SSH 转发 |
+| 监听 | `100.99.0.5:18140`，仅已有 Tailscale 私有接口 |
+| 健康 | `http://100.99.0.5:18140/api/health` |
+| server 地址 | `http://100.99.0.5:18140/`，需要已有 Tailscale 通路；Mac curl 成功，Edge 客户端拦截尚未解除 |
 
-Mac 转发命令：
+旧 Mac 转发仅作为历史记录，不能当作最终 server 访问入口。改用 Tailscale 接口后若需诊断转发，其目标需同步为该接口：
 
 ```sh
-ssh -N -L 18141:127.0.0.1:18140 timestarry@server
+ssh -N -L 18141:100.99.0.5:18140 timestarry@server
 ```
 
-转发会话终止后 Mac 地址失效；服务器服务仍由 systemd 管理。此实例没有公开访问域名，身份入口关闭，不可创建真实账户或上传作品。
+最终 server 地址不依赖 Mac 终端转发。需要设备接入用户现有 Tailscale 网络；没有修改防火墙、Tailscale ACL、公网代理或扩展权限。Mac Edge 实际访问被客户端拦截（ERR_BLOCKED_BY_CLIENT），尚不能声称浏览器入口已可用。原 `markr.tsio.top` 是旧 GitHub Pages 服务，未替换。身份入口关闭，不可创建真实账户或上传作品。
 
 ## 发布与回滚
 
@@ -31,7 +31,7 @@ ssh -N -L 18141:127.0.0.1:18140 timestarry@server
 
 ```sh
 systemctl --user restart markr-phase1.service
-curl -fsS http://127.0.0.1:18140/api/health
+curl -fsS http://100.99.0.5:18140/api/health
 ```
 
 回滚时把 `current` 指回上一目录并重启。已保留前一预览目录 `releases/20261001-preview`，可切回并重启。需要撤销整个独立实例时，可执行 `systemctl --user disable --now markr-phase1.service` 撤销实例，保留发布目录和数据。当前只创建新 SQLite 表，没有接触现有业务数据库或执行破坏性迁移。

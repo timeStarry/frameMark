@@ -199,9 +199,11 @@
 }
 
 @media (max-width: 480px) {
-  .nav {
-    gap: 12px;
-  }
+  .header-content { gap: 6px; padding: 10px 0; }
+  .logo-text { font-size: 22px; }
+  .logo-icon { font-size: 24px; }
+  .nav { gap: 4px; }
+  .nav-link { padding: 8px 10px; font-size: 13px; }
   
   .favorite-btn {
     .favorite-text {
