@@ -13,7 +13,7 @@
 | 持久化目录 | `data`，权限 0700，数据库和媒体均在此 |
 | 监听 | `100.99.0.5:18140`，仅已有 Tailscale 私有接口 |
 | 健康 | `http://100.99.0.5:18140/api/health` |
-| server 地址 | `http://100.99.0.5:18140/`，需要已有 Tailscale 通路；Mac curl 成功，Edge 客户端拦截尚未解除 |
+| server 地址 | `http://100.99.0.5:18140/`，需要已有 Tailscale 通路；Mac curl 成功，最新用户截图确认已能打开；真实自动化UI验收未完成 |
 
 旧 Mac 转发仅作为历史记录，不能当作最终 server 访问入口。改用 Tailscale 接口后若需诊断转发，其目标需同步为该接口：
 
@@ -21,7 +21,7 @@
 ssh -N -L 18141:100.99.0.5:18140 timestarry@server
 ```
 
-最终 server 地址不依赖 Mac 终端转发。需要设备接入用户现有 Tailscale 网络；没有修改防火墙、Tailscale ACL、公网代理或扩展权限。Mac Edge 实际访问被客户端拦截（ERR_BLOCKED_BY_CLIENT），尚不能声称浏览器入口已可用。原 `markr.tsio.top` 是旧 GitHub Pages 服务，未替换。身份入口关闭，不可创建真实账户或上传作品。
+最终 server 地址不依赖 Mac 终端转发。需要设备接入用户现有 Tailscale 网络；没有修改防火墙、Tailscale ACL、公网代理或扩展权限。早期 Mac Edge 曾被客户端拦截（ERR_BLOCKED_BY_CLIENT）；最新用户截图确认已能打开 server 工具页。当前没有浏览器控制工具，交互自动化验收仍未完成。原 `markr.tsio.top` 是旧 GitHub Pages 服务，未替换。身份入口关闭，不可创建真实账户或上传作品。
 
 ## 发布与回滚
 
