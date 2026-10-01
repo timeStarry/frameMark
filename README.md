@@ -1,3 +1,7 @@
+> 平台首期预览在 `feat/markr-platform-phase1` 分支推进，身份入口尚未启用，不能视作完整平台验收。
+> [设计与实现范围](docs/phase1-design.md)、[部署与回滚](docs/phase1-operations.md)、[验证记录与未测边界](docs/phase1-validation.md)。
+> 离线工具仍可使用；平台需要 Node 22.13+，运行 `npm ci && npm run build && npm start`。
+
 # Markr - 图片工具箱
 
 一个优雅的纯前端图片处理方案，提供便捷的边框水印和图片拼图功能。

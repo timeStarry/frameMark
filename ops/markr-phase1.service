@@ -1,0 +1,20 @@
+[Unit]
+Description=Markr phase 1 isolated preview
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/timestarry/deploy/markr-phase1/current
+ExecStart=/usr/bin/env node server/index.mjs
+Environment=HOST=127.0.0.1
+Environment=PORT=18140
+Environment=DATA_DIR=/home/timestarry/deploy/markr-phase1/data
+Environment=MAX_UPLOAD_MB=20
+Environment=MAX_ASSETS=100
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

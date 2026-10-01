@@ -9,13 +9,13 @@
           </router-link>
         </div>
         
-        <nav class="nav">
+        <nav class="nav"><router-link to="/studio" class="nav-link">工作台</router-link>
           <router-link 
             to="/" 
             class="nav-link" 
             :class="{ active: $route.name === 'Home' }"
           >
-            首页
+            广场
           </router-link>
           <router-link 
             to="/frame-watermark" 
@@ -41,7 +41,7 @@
 
 <style scoped>
 .header {
-  background: rgba(161, 136, 117, 0.25);
+  background: rgba(9, 10, 12, 0.9);
   backdrop-filter: blur(20px);
   border-bottom: 1px solid rgba(161, 136, 117, 0.4);
   box-shadow: 0 1px 0 rgba(161, 136, 117, 0.2), 0 2px 8px rgba(0, 0, 0, 0.1);

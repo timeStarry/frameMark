@@ -18,7 +18,7 @@ import Footer from '@/components/layout/Footer.vue'
   min-height: 100vh;
   display: flex;
   flex-direction: column;
-  background: linear-gradient(135deg, #a18875 0%, #8b7968 25%, #796b5e 50%, #6b5d52 75%, #5d5148 100%);
+  background: #090a0c;
 }
 
 .main-content {
