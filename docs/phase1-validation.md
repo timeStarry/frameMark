@@ -71,7 +71,7 @@
 
 两工具现已迁移，旧水印目录、旧ImageCollage.vue、未使用Home.vue、fileUtils/exifUtils、三份旧common工具样式、工具兼容覆盖和file-saver已删除；旧远程Google Fonts入口移除。全仓引用搜索无旧视图/专属模块/样式导入/依赖；未删除第三方许可证或署名文件。
 
-自动测试共34项（平台/会话6、工具核心7、真实水印Canvas5、拼图/方向/大图8、Vue DOM会话8）。采用Sharp解码适配+真实Skia绘图及happy-dom组件测试，覆盖：
+自动测试共35项（平台/会话6、工具核心7、真实水印Canvas5、拼图/方向/大图8、Vue DOM会话9）。采用Sharp解码适配+真实Skia绘图及happy-dom组件测试，覆盖：
 - 12张素材串行绘制，部分文件失败保留成功素材，第13张拒绝、重复文件导入、替换保留焦点、重排/切换模式/删除撤销恢复。
 - cover/contain、水平焦点两端真实像素、预览/导出同尺寸像素一致、720×480 PNG、800×616水印PNG、200×200 WebP真实MIME/尺寸、透明背景/JPEG不透明。
 - EXIF方向1–8合成JPEG，预检尺寸和象限像素匹配单次归一化，源文件字节未改；真实浏览器createImageBitmap和HTML回退兼容尚未测。
@@ -89,3 +89,5 @@
 原因：secure-context-only randomUUID在该HTTP地址不可用，旧素材创建直接调用。新增createAssetId只生成本地编辑引用，功能探测randomUUID→getRandomValues→时间/递增序号，绝不用于凭据、认证或安全token；服务端ID/身份逻辑未改变。导入全程try/finally、失败/取消终态和忙状态回收，保留成功素材；原input在change后清空，允许同文件替换重试。新增缺API/抛异常/失败后重试/同文件测试。
 
 所有range由共享NumberControl提供真实填充比例，CSS分别覆盖WebKit和Firefox轨道、thumb、focus、disabled；颜色控件独立swatch+HEX，避免通用文本框规则误伤。DOM检查填充/名称/上下限/fieldset禁用，但实际浏览器箭头键、计算样式与窄屏视觉仍未测。用户截图证明当时已能访问server页面，不再将此前代理502描述为当前必然状态；未修改Mac代理、扩展或安全权限。
+
+数值验收额外发现整数列数可接受小数，已按控件step校验并保留上次有效模型；新增回归覆盖，避免产生分数列的布局。

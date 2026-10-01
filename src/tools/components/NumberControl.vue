@@ -17,12 +17,13 @@ const props = defineProps<{
     ];
 }>(), draft = ref(String(props.modelValue)), error = ref('');
 watch(() => props.modelValue, value => { draft.value = String(value); });
-function numberInput(event: Event) { draft.value = (event.target as HTMLInputElement).value; const n = Number(draft.value); if (draft.value !== '' && Number.isFinite(n) && n >= props.min && n <= props.max) {
+function valid(n:number){const step=props.step||1;return Number.isFinite(n)&&n>=props.min&&n<=props.max&&Math.abs((n-props.min)/step-Math.round((n-props.min)/step))<1e-7}
+function numberInput(event: Event) { draft.value = (event.target as HTMLInputElement).value; const n = Number(draft.value); if (draft.value !== '' && valid(n)) {
     error.value = '';
     emit('update:modelValue', n);
 } }
-function finish() { const n = Number(draft.value); if (draft.value === '' || !Number.isFinite(n) || n < props.min || n > props.max) {
-    error.value = `请输入 ${props.min}–${props.max} 的数值`;
+function finish() { const n = Number(draft.value); if (draft.value === '' || !valid(n)) {
+    error.value = `请输入 ${props.min}–${props.max} 且步长为 ${props.step||1} 的数值`;
     draft.value = String(props.modelValue);
     return;
 } emit('commit'); }
