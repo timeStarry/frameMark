@@ -1,160 +1,29 @@
 <script setup lang="ts">
-import { ref, shallowRef, computed, watch, onMounted, onUnmounted } from 'vue';
+import { computed, ref } from 'vue';
+import ToolWorkspace from '../components/ToolWorkspace.vue';
+import AssetList from '../components/AssetList.vue';
+import CanvasViewport from '../components/CanvasViewport.vue';
+import ExportPanel from '../components/ExportPanel.vue';
 import NumberControl from '../components/NumberControl.vue';
-import { defaults, History, Jobs, applyPreset, dimensions, outputSize, type Document } from '../core/document';
-import { Assets, fields, type Asset } from '../engine/assets';
-import { render, encode, download, disposeDownloads } from '../engine/render';
-import '../workspace.css';
-const repository = new Assets(), history = new History(defaults()), previewJobs = new Jobs(), tasks = new Jobs();
-const doc = ref<Document>(defaults()), asset = shallowRef<Asset>(), canvas = ref<HTMLCanvasElement>(), fileInput = ref<HTMLInputElement>(), error = ref(''), status = ref(''), busy = ref(false), revision = ref(0), zoom = ref('fit'), mobilePanel = ref('properties'), exportOpen = ref(false), result = shallowRef<Blob>(), resultRevision = ref(-1), filename = ref('markr-watermark');
-let previewTimer = 0;
-const canUndo = computed(() => { revision.value; return history.past.length > 0; }), canRedo = computed(() => { revision.value; return history.future.length > 0; }), size = computed(() => asset.value ? outputSize(dimensions(doc.value, asset.value), doc.value.longEdge) : null);
-function snapshot() { return structuredClone({ ...doc.value, assetIds: [...doc.value.assetIds], fields: [...doc.value.fields], fieldValues: { ...doc.value.fieldValues } }); }
-function commit() { history.commit(snapshot()); revision.value++; prune(); }
-function prune() { const refs = new Set([...doc.value.assetIds, ...history.past.flatMap(d => d.assetIds), ...history.future.flatMap(d => d.assetIds)]); repository.prune(refs); }
-function restore(d: Document) { doc.value = structuredClone(d); asset.value = repository.items.get(d.assetIds[0] || ''); revision.value++; }
-function undo() { restore(history.undo()); }
-function redo() { restore(history.redo()); }
+import ColorControl from '../components/ColorControl.vue';
+import { defaults, applyPreset, dimensions, outputSize } from '../core/document';
+import { useEditor } from '../core/useEditor';
+import { renderDocument } from '../engine/pipeline';
+import { fields } from '../engine/assets';
+const { doc, assets, canvas, selected, error, status, busy, revision, exportOpen, result, resultRevision, filename, canUndo, canRedo, size, snapshot, commit, undo, redo, reset, remove, cancel, importFiles, exportImage, save } = useEditor(defaults, renderDocument, (d, map) => { const a = map.get(d.assetIds[0] || ''); return a ? outputSize(dimensions(d, a), d.longEdge) : null; }, 1);
+filename.value = 'markr-watermark';
+const asset = computed(() => assets.value[0]), assetList = ref<InstanceType<typeof AssetList>>();
 function preset(name: string) { doc.value = applyPreset(snapshot(), name); commit(); }
-function reset() { doc.value = { ...defaults(), assetIds: [...doc.value.assetIds] }; commit(); }
-function clear() { if (!confirm('清空当前照片？可通过撤销恢复。'))
-    return; doc.value.assetIds = []; asset.value = undefined; commit(); previewJobs.cancel(); }
-async function importFiles(files: File[]) { if (!files[0])
-    return; const id = tasks.start(); busy.value = true; error.value = ''; status.value = '正在导入'; let added: Asset | undefined; try {
-    added = await repository.add(files[0]);
-    tasks.check(id);
-    asset.value = added;
-    doc.value.assetIds = [added.id];
-    commit();
-    status.value = '照片已导入';
-}
-catch (e) {
-    if (id === tasks.version && (e as Error).name !== 'AbortError')
-        error.value = (e as Error).message;
-    if (added && asset.value !== added)
-        prune();
-}
-finally {
-    if (id === tasks.version)
-        busy.value = false;
-} }
-function choose(event: Event) { const input = event.target as HTMLInputElement; void importFiles(Array.from(input.files || [])); input.value = ''; }
-function drop(event: DragEvent) { void importFiles(Array.from(event.dataTransfer?.files || [])); }
-async function preview() { if (!asset.value || !canvas.value)
-    return; const id = previewJobs.start(), target = document.createElement('canvas'); try {
-    await render(snapshot(), asset.value, target, true, () => previewJobs.check(id), () => { });
-    previewJobs.check(id);
-    canvas.value.width = target.width;
-    canvas.value.height = target.height;
-    canvas.value.getContext('2d')?.drawImage(target, 0, 0);
-}
-catch (e) {
-    if (id === previewJobs.version && (e as Error).name !== 'AbortError')
-        error.value = (e as Error).message;
-}
-finally {
-    target.width = target.height = 0;
-} }
-watch(doc, () => { resultRevision.value = -1; window.clearTimeout(previewTimer); previewTimer = window.setTimeout(() => void preview(), 150); }, { deep: true });
-watch(asset, () => void preview(), { flush: 'post' });
-function cancel() { tasks.cancel(); busy.value = false; status.value = '已取消；文档已保留。'; }
-async function exportImage() { if (!asset.value || busy.value)
-    return; commit(); const id = tasks.start(), d = snapshot(), a = asset.value, rev = revision.value, target = document.createElement('canvas'); busy.value = true; error.value = ''; result.value = undefined; try {
-    await render(d, a, target, false, () => tasks.check(id), s => status.value = s);
-    tasks.check(id);
-    status.value = '正在编码（浏览器不提供百分比）';
-    const blob = await encode(target, d);
-    tasks.check(id);
-    result.value = blob;
-    resultRevision.value = rev;
-    status.value = `导出完成 · ${(blob.size / 1024 / 1024).toFixed(2)} MiB`;
-}
-catch (e) {
-    if ((e as Error).name !== 'AbortError')
-        error.value = (e as Error).message;
-}
-finally {
-    target.width = target.height = 0;
-    if (id === tasks.version)
-        busy.value = false;
-} }
-function save() { if (result.value && resultRevision.value === revision.value) {
-    const ext = doc.value.format.split('/')[1]!.replace('jpeg', 'jpg');
-    download(result.value, `${filename.value || 'markr'}.${ext}`);
-} }
-function keyboard(e: KeyboardEvent) { if (e.key === 'Escape') {
-    if (busy.value)
-        cancel();
-    else
-        exportOpen.value = false;
-} const el = e.target as HTMLElement; if (el.matches('input,textarea,[contenteditable]'))
-    return; if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') {
-    e.preventDefault();
-    e.shiftKey ? redo() : undo();
-} }
-onMounted(() => window.addEventListener('keydown', keyboard));
-onUnmounted(() => { window.removeEventListener('keydown', keyboard); window.clearTimeout(previewTimer); previewJobs.cancel(); tasks.cancel(); repository.dispose(); disposeDownloads(); if (canvas.value)
-    canvas.value.width = canvas.value.height = 0; });
 </script>
 <template>
-<section class="editor-workspace" @dragover.prevent @drop.prevent="drop">
-<header class="editor-toolbar">
-<div>
-<router-link to="/tools">工具箱 /</router-link>
-<h1>边框水印</h1>
-<small>本地处理 · 无需账号 · 不上传</small>
-</div>
-<div class="toolbar-actions">
-<button :disabled="!canUndo||busy" @click="undo">撤销</button>
-<button :disabled="!canRedo||busy" @click="redo">重做</button>
-<button :disabled="!asset||busy" @click="reset">重置设置</button>
-<button class="primary" :disabled="!asset" @click="exportOpen=!exportOpen">导出</button>
-</div>
-</header>
-<p v-if="error" role="alert" class="editor-error">{{error}} <button @click="error=''">关闭</button>
-</p>
-<div v-if="status" class="task-status" role="status">{{status}} <button v-if="busy" @click="cancel">取消</button>
-</div>
-<div class="mobile-tabs">
-<button :aria-pressed="mobilePanel==='assets'" @click="mobilePanel='assets'">素材</button>
-<button :aria-pressed="mobilePanel==='properties'" @click="mobilePanel='properties'">属性</button>
-</div>
-<div class="editor-grid">
-<aside class="asset-panel" :class="{'mobile-active':mobilePanel==='assets'}">
-<h2>素材</h2>
-<input ref="fileInput" type="file" accept="image/jpeg,image/png,image/webp" hidden @change="choose">
-<button :disabled="busy" @click="fileInput?.click()">{{asset?'替换照片':'导入照片'}}</button>
-<div v-if="asset" class="asset-item">
-<img :src="asset.url" alt="当前照片">
-<strong>{{asset.file.name}}</strong>
-<small>{{asset.width}} × {{asset.height}} px</small>
-<button :disabled="busy" @click="clear">移除</button>
-</div>
-<p>JPEG / PNG / WebP<br>20 MiB · 4000 万像素上限</p>
-</aside>
-<div class="canvas-panel">
-<div class="canvas-viewport" :class="{'fit':zoom==='fit'}">
-<canvas v-show="asset" ref="canvas" role="img" aria-label="照片边框与文字的本地预览" :style="zoom==='fit'?{}:{width:((canvas?.width||0)*Number(zoom))+'px',maxWidth:'none'}">
-</canvas>
-<div v-if="!asset" class="editor-empty">
-<h2>从一张照片开始</h2>
-<p>拖入照片，或选择本地文件。</p>
-<button @click="fileInput?.click()">选择照片</button>
-</div>
-</div>
-<div class="canvas-status">
-<span>预览 {{size?`${size.width} × ${size.height} px 导出`:''}}</span>
-<label>缩放 <select v-model="zoom">
-<option value="fit">适应</option>
-<option value="0.25">25%</option>
-<option value="0.5">50%</option>
-<option value="1">100%</option>
-<option value="2">200%</option>
-</select>
-</label>
-</div>
-</div>
-<aside class="inspector" :class="{'mobile-active':mobilePanel==='properties'}">
+<ToolWorkspace title="边框水印" :busy="busy" :can-undo="canUndo" :can-redo="canRedo" :has-assets="!!asset" :error="error" :status="status" @undo="undo" @redo="redo" @reset="reset" @export="exportOpen=!exportOpen" @cancel="cancel" @dismiss="error=''" @drop="files=>importFiles(files,asset?.id)">
+<template #assets>
+<AssetList ref="assetList" :assets="assets" :selected="selected" :busy="busy" @import="importFiles" @remove="remove" @select="selected=$event"/>
+</template>
+<template #canvas>
+<CanvasViewport :has-assets="!!asset" :size="size" description="边框与文字的本地预览" @ready="canvas=$event" @import="assetList?.pick()"/>
+</template>
+<template #properties>
 <fieldset :disabled="!asset||busy">
 <legend>预设</legend>
 <div class="preset-grid">
@@ -176,12 +45,10 @@ onUnmounted(() => { window.removeEventListener('keydown', keyboard); window.clea
 <NumberControl label="边距" v-model="doc.border" :min="0" :max="20" unit="% 短边" @commit="commit"/>
 <NumberControl v-if="doc.frame==='bottom-bar'" label="底条高度" v-model="doc.bottom" :min="0" :max="30" unit="%" @commit="commit"/>
 <NumberControl label="圆角" v-model="doc.radius" :min="0" :max="10" unit="%" @commit="commit"/>
-<label>背景颜色<input type="color" v-model="doc.color" @change="commit">
-</label>
+<ColorControl label="背景颜色" v-model="doc.color" @commit="commit"/>
 <label v-if="doc.format!=='image/jpeg'&&doc.frame==='solid'" class="check-row">
 <input type="checkbox" v-model="doc.transparent" @change="commit">透明边框</label>
-<label v-if="doc.frame==='gradient'">第二颜色<input type="color" v-model="doc.secondColor" @change="commit">
-</label>
+<ColorControl v-if="doc.frame==='gradient'" label="第二颜色" v-model="doc.secondColor" @commit="commit"/>
 <NumberControl v-if="doc.frame==='blur'" label="模糊" v-model="doc.blur" :min="0.5" :max="5" :step="0.5" unit="%" @commit="commit"/>
 </fieldset>
 <fieldset :disabled="!asset||busy">
@@ -197,8 +64,7 @@ onUnmounted(() => { window.removeEventListener('keydown', keyboard); window.clea
 </label>
 <NumberControl label="字号" v-model="doc.size" :min="0.5" :max="8" :step="0.5" unit="%" @commit="commit"/>
 <NumberControl label="透明度" v-model="doc.opacity" :min="0" :max="1" :step="0.05" @commit="commit"/>
-<label>文字颜色<input type="color" v-model="doc.textColor" @change="commit">
-</label>
+<ColorControl label="文字颜色" v-model="doc.textColor" @commit="commit"/>
 <label>位置<select v-model="doc.position" @change="commit">
 <option v-for="(name,i) in ['左上','上中','右上','左中','中心','右中','左下','下中','右下']" :key="i" :value="i">{{name}}</option>
 </select>
@@ -213,25 +79,9 @@ onUnmounted(() => { window.removeEventListener('keydown', keyboard); window.clea
 <label v-for="key in doc.fields" :key="'edit-'+key">{{fields[key]}}显示值<input :value="doc.fieldValues[key]||asset?.metadata[key]" maxlength="100" @change="doc.fieldValues[key]=($event.target as HTMLInputElement).value;commit()">
 </label>
 </fieldset>
-</aside>
-</div>
-<section v-if="exportOpen" class="export-panel" aria-label="导出设置">
-<h2>导出照片</h2>
-<div class="export-controls">
-<label>文件名<input v-model="filename" maxlength="100">
-</label>
-<label>格式<select v-model="doc.format" :disabled="busy" @change="commit">
-<option value="image/jpeg">JPEG（不透明背景）</option>
-<option value="image/png">PNG</option>
-<option value="image/webp">WebP</option>
-</select>
-</label>
-<NumberControl label="长边（0 = 原尺寸加框）" v-model="doc.longEdge" :min="0" :max="8192" @commit="commit"/>
-<NumberControl v-if="doc.format!=='image/png'" label="质量" v-model="doc.quality" :min="1" :max="100" @commit="commit"/>
-</div>
-<p>{{size?.width}} × {{size?.height}} px · 最多1600万像素。编码阶段无法显示百分比，取消会丢弃结果。</p>
-<button class="primary" :disabled="busy||!asset" @click="exportImage">生成文件</button> <button :disabled="!result||resultRevision!==revision||busy" @click="save">下载文件</button>
-<small v-if="result&&resultRevision!==revision">设置已变化，请重新生成。</small>
-</section>
-</section>
+</template>
+<template #export>
+<ExportPanel :open="exportOpen" :settings="doc" :size="size" :busy="busy" :has-assets="!!asset" :has-result="!!result" :stale="resultRevision!==revision" v-model:filename="filename" watermark @commit="commit" @generate="exportImage" @download="save" @close="exportOpen=false"/>
+</template>
+</ToolWorkspace>
 </template>

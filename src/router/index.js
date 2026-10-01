@@ -1,7 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import Home from '@/views/Platform.vue'
 import FrameWatermark from '@/tools/watermark/WatermarkTool.vue'
-import ImageCollage from '@/views/ImageCollage.vue'
+import ImageCollage from '@/tools/collage/CollageTool.vue'
 import Toolbox from '@/views/Toolbox.vue'
 import Login from '@/views/Login.vue'
 import { requireStudioSession } from '../auth/session.mjs'
