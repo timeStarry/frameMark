@@ -8,7 +8,7 @@
 | --- | --- |
 | 服务 | `systemctl --user status markr-phase1.service` |
 | 服务根目录 | `/home/timestarry/deploy/markr-phase1` |
-| 发布目录 | `releases/20261001-tools-fixed` |
+| 发布目录 | `releases/20261001-tools-final` |
 | 当前版本 | `current` 软链接指向发布目录 |
 | 持久化目录 | `data`，权限 0700，数据库和媒体均在此 |
 | 监听 | `100.99.0.5:18140`，仅已有 Tailscale 私有接口 |
@@ -49,10 +49,12 @@ journalctl --user -u markr-phase1.service -n 100 --no-pager
 
 部署前服务器磁盘剩余约 9.8 GB，不应沿用无限上传或长期备份假设。`MAX_UPLOAD_MB` 和 `MAX_ASSETS` 是临时可配置默认值；未来还需要全局容量与处理并发限制。
 
-## 工具检查点发布
+## 历史：水印检查点发布
 
 水印重构检查点发布目录为 `20261001-tools-watermark`；前版 `20261001-design-language` 保留，可回滚。拼图尚未迁移，浏览器验收未完成。SSH在授权环境下连接正常，普通沙箱内解析失败不能推断Mac断网。持久化目录和账号配置不变。
 
 ## 两工具完整新实现发布
 
-发布目录 `20261001-tools-fixed`，前版 `20261001-tools-watermark` 和 `20261001-design-language` 保留。运行服务、端口、持久化目录、身份关闭配置不变。Mac执行typecheck/check/test/build；CI新增vue-tsc。生产只装生产依赖，不装happy-dom、TypeScript或Skia测试运行时。服务器另执行平台/登录6项回归；工具像素和DOM测试在Mac/CI执行，不把server静态HTTP200称为交互验收。
+发布目录 `20261001-tools-final`，前版 `20261001-tools-watermark` 和 `20261001-design-language` 保留。运行服务、端口、持久化目录、身份关闭配置不变。Mac执行typecheck/check/test/build；CI新增vue-tsc。生产只装生产依赖，不装happy-dom、TypeScript或Skia测试运行时。服务器另执行平台/登录6项回归；工具像素和DOM测试在Mac/CI执行，不把server静态HTTP200称为交互验收。
+
+最终应用代码基线为ce32d78；本次仅统一文档当前摘要/历史标识，不改变应用产物。current切向新的tools-final发布目录，前版tools-fixed可回滚。生产资源哈希已与Mac构建一致，35项Mac/CI测试与6项服务器回归分别验证，不混称浏览器验收。
