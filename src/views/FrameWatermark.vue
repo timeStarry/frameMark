@@ -1,6 +1,7 @@
 <template>
-  <div class="frame-watermark page-container">
+  <div class="frame-watermark tool-workspace">
     <div class="container">
+      <nav class="tool-subnav" aria-label="工具导航"><router-link to="/tools">工具箱</router-link><span aria-hidden="true">/</span><span>边框水印</span></nav>
       <h1 class="page-title">边框水印工具</h1>
       
       <div class="main-content" :class="{ 'has-image': selectedImage }">

@@ -1,10 +1,10 @@
 <template>
   <div id="app">
     <Header />
-    <main class="main-content">
+    <main id="main-content" class="app-main" tabindex="-1">
       <router-view />
     </main>
-    <Footer />
+    <Footer v-if="!$route.path.startsWith('/work/')" />
   </div>
 </template>
 
@@ -21,7 +21,7 @@ import Footer from '@/components/layout/Footer.vue'
   background: #090a0c;
 }
 
-.main-content {
+.app-main {
   flex: 1;
 }
 </style> 

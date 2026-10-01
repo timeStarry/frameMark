@@ -1,6 +1,7 @@
 <template>
-  <div class="image-collage">
+  <div class="image-collage tool-workspace">
     <div class="container">
+      <nav class="tool-subnav" aria-label="工具导航"><router-link to="/tools">工具箱</router-link><span aria-hidden="true">/</span><span>图片拼图</span></nav>
       <h1 class="page-title">图片拼图工具</h1>
       
       <div class="main-content">

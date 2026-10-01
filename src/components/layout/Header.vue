@@ -1,218 +1,32 @@
 <template>
-  <header class="header">
-    <div class="container">
-      <div class="header-content">
-        <div class="logo">
-          <router-link to="/" class="logo-link">
-            <div class="logo-icon">📷</div>
-            <span class="logo-text">Markr</span>
-          </router-link>
-        </div>
-        
-        <nav class="nav"><router-link to="/studio" class="nav-link">工作台</router-link>
-          <router-link 
-            to="/" 
-            class="nav-link" 
-            :class="{ active: $route.name === 'Home' }"
-          >
-            广场
-          </router-link>
-          <router-link 
-            to="/frame-watermark" 
-            class="nav-link"
-            :class="{ active: $route.name === 'FrameWatermark' }"
-          >
-            边框水印
-          </router-link>
-          <router-link 
-            to="/image-collage" 
-            class="nav-link"
-            :class="{ active: $route.name === 'ImageCollage' }"
-          >
-            图片拼图
-          </router-link>
-          
-        </nav>
-      </div>
+  <header class="site-header">
+    <a class="skip-link" href="#main-content">跳到内容</a>
+    <div class="site-header-inner">
+      <router-link to="/" class="wordmark" aria-label="Markr 首页"><span class="brand-symbol" aria-hidden="true"></span>Markr<span class="brand-label">摄影 · 创作 · 分享</span></router-link>
+      <nav aria-label="主要导航" class="primary-nav">
+        <router-link to="/" class="nav-item" :class="{selected:$route.path==='/'}">广场</router-link>
+        <router-link to="/tools" class="nav-item" :class="{selected:toolRoute}">工具箱</router-link>
+      </nav>
+      <router-link to="/studio" class="studio-link" :class="{selected:$route.path==='/studio'||$route.path==='/login'}">我的工作台<span aria-hidden="true"> ↗</span></router-link>
     </div>
   </header>
 </template>
-
-
+<script setup>
+import { computed } from 'vue'
+import { useRoute } from 'vue-router'
+const route=useRoute()
+const toolRoute=computed(()=>['/tools','/frame-watermark','/image-collage'].includes(route.path))
+</script>
 <style scoped>
-.header {
-  background: rgba(9, 10, 12, 0.9);
-  backdrop-filter: blur(20px);
-  border-bottom: 1px solid rgba(161, 136, 117, 0.4);
-  box-shadow: 0 1px 0 rgba(161, 136, 117, 0.2), 0 2px 8px rgba(0, 0, 0, 0.1);
-  position: sticky;
-  top: 0;
-  z-index: 1000;
-  height: 80px;
-}
-
-.header-content {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  height: 80px;
-}
-
-.logo-link {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  text-decoration: none;
-  color: white;
-  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
-}
-
-.logo-icon {
-  font-size: 32px;
-}
-
-.logo-text {
-  font-size: 28px;
-  font-weight: 700;
-  color: white;
-  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
-}
-
-.nav {
-  display: flex;
-  gap: 32px;
-  align-items: center;
-}
-
-.nav-link {
-  text-decoration: none;
-  color: rgba(255, 255, 255, 0.9);
-  font-weight: 500;
-  padding: 8px 16px;
-  border-radius: 8px;
-  transition: all 0.3s ease;
-  position: relative;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
-  
-  &:hover {
-    color: white;
-    background: rgba(255, 255, 255, 0.1);
-  }
-  
-  &.active {
-    color: white;
-    background: rgba(255, 255, 255, 0.15);
-    
-    &::after {
-      content: '';
-      position: absolute;
-      bottom: -2px;
-      left: 50%;
-      transform: translateX(-50%);
-      width: 20px;
-      height: 3px;
-      background: linear-gradient(135deg, #a18875 0%, #8b7968 100%);
-      border-radius: 2px;
-    }
-  }
-}
-
-.favorite-btn {
-  background: transparent;
-  border: 1px solid rgba(255, 255, 255, 0.3);
-  color: rgba(255, 255, 255, 0.9);
-  font-weight: 500;
-  padding: 8px 16px;
-  border-radius: 8px;
-  transition: all 0.3s ease;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
-  font-size: 14px;
-  
-  &:hover {
-    color: white;
-    background: rgba(255, 255, 255, 0.1);
-    border-color: rgba(255, 255, 255, 0.5);
-    transform: translateY(-1px);
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
-    
-    .favorite-icon {
-      transform: scale(1.1);
-    }
-  }
-  
-  &:active {
-    transform: translateY(0);
-  }
-}
-
-.favorite-icon {
-  font-size: 16px;
-  transition: transform 0.3s ease;
-}
-
-.favorite-text {
-  font-size: 14px;
-}
-
-@media (max-width: 768px) {
-  .header-content {
-    flex-direction: column;
-    gap: 16px;
-    height: auto;
-    padding: 16px 0;
-  }
-  
-  .header {
-    height: auto;
-  }
-  
-  .nav {
-    gap: 16px;
-    flex-wrap: wrap;
-    justify-content: center;
-  }
-  
-  .logo-text {
-    font-size: 24px;
-  }
-  
-  .logo-icon {
-    font-size: 28px;
-  }
-  
-  .favorite-btn {
-    padding: 6px 12px;
-    font-size: 13px;
-    
-    .favorite-text {
-      font-size: 13px;
-    }
-    
-    .favorite-icon {
-      font-size: 14px;
-    }
-  }
-}
-
-@media (max-width: 480px) {
-  .header-content { gap: 6px; padding: 10px 0; }
-  .logo-text { font-size: 22px; }
-  .logo-icon { font-size: 24px; }
-  .nav { gap: 4px; }
-  .nav-link { padding: 8px 10px; font-size: 13px; }
-  
-  .favorite-btn {
-    .favorite-text {
-      display: none;
-    }
-    
-    padding: 8px;
-    min-width: 36px;
-    justify-content: center;
-  }
-}
-</style> 
+.site-header{position:sticky;top:0;z-index:1000;background:rgba(9,10,11,.94);backdrop-filter:blur(14px);border-bottom:1px solid var(--markr-line)}
+.site-header-inner{max-width:1440px;margin:auto;padding:0 clamp(18px,4vw,64px);height:72px;display:flex;align-items:center;gap:44px}
+.wordmark{display:flex;align-items:center;gap:10px;font-size:23px;letter-spacing:-.04em;font-weight:650;color:var(--markr-text);text-decoration:none;white-space:nowrap}
+.brand-symbol{width:17px;height:17px;display:inline-block;border:1px solid var(--markr-muted);border-radius:50%;box-shadow:inset 0 0 0 4px var(--markr-bg),inset 0 0 0 5px var(--markr-accent)}
+.brand-label{font-size:10px;letter-spacing:.08em;font-weight:400;color:var(--markr-muted);margin-left:8px}
+.primary-nav{display:flex;gap:8px;align-items:center}.nav-item,.studio-link{color:var(--markr-muted);font-size:14px;text-decoration:none;padding:9px 12px;border-radius:var(--markr-radius-small);transition:color .15s,background .15s;white-space:nowrap}.nav-item:hover,.nav-item.selected{color:var(--markr-text);background:var(--markr-surface)}
+.studio-link{margin-left:auto;color:var(--markr-text);border:1px solid var(--markr-line-strong)}.studio-link:hover,.studio-link.selected{border-color:var(--markr-accent);background:var(--markr-surface)}
+.skip-link{position:absolute;left:18px;top:-60px;padding:10px;background:var(--markr-accent);color:var(--markr-bg)}.skip-link:focus{top:10px}
+@media(max-width:900px){.brand-label{display:none}.site-header-inner{gap:24px}}
+@media(max-width:520px){.site-header-inner{height:64px;gap:8px;padding:0 16px}.wordmark{font-size:20px;gap:6px}.brand-symbol{width:14px;height:14px}.primary-nav{gap:0}.nav-item{font-size:13px;padding:8px}.studio-link{padding:8px;font-size:12px}.studio-link span{display:none}}
+@media(max-width:350px){.brand-symbol{display:none}.site-header-inner{gap:4px;padding:0 12px}.nav-item{padding:7px}}
+</style>

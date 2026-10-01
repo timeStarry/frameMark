@@ -52,3 +52,13 @@ Node 至少 22.13；服务器实际为 22.22，SQLite 仍有实验性提示。�
 已核实 [Creative Commons 官方许可说明](https://creativecommons.org/cc-licenses/) 和各许可说明页：[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)、[CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)、[CC BY-ND 4.0](https://creativecommons.org/licenses/by-nd/4.0/)、[CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/)、[CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/)、[CC BY-NC-ND 4.0](https://creativecommons.org/licenses/by-nc-nd/4.0/)。原始入口 [CC 许可介绍](https://creativecommons.org/share-your-work/cclicenses/) 本次获取超时，使用官方新入口核验。CC0、公有领域和自定义许可暂仅设计预留，不混为 CC 4.0 许可。
 
 AI 训练限制仅设计预留于版权/使用限制区域，不能伪装为 CC 标准条款或承诺技术上阻止训练。它可能与选用许可授予的权利冲突，因此本次不实现训练禁令开关。依据 [Creative Commons 关于 AI 与许可的 FAQ](https://creativecommons.org/faq/#artificial-intelligence-and-cc-licenses)，CC 的适用与是否需要版权许可及具体使用条件有关；不能把 CC 标签当成通用训练禁令。
+
+## 系统视觉语言与导航迭代
+
+按用户最新要求，页面移除 Cursor 署名与友情链接；只改界面，不删除任何许可证或依法需要的第三方版权文件。页脚保留简洁的 Markr 标识、版本和既有作者版权信息，作品观看页不显示页脚。
+
+新视觉语言以中性黑、炭灰和纸白为主体，低饱和强调色用于焦点与主操作。`src/styles/design-system.scss` 提供颜色、文字层级、描边、圆角和交互 token；系统字体、8 px 间距节奏、6 px 控件圆角、10 px 面板圆角，减少玻璃效果、装饰阴影与旧棕色渐变。平台页面、旧工具面板、输入、选择器、按钮、状态反馈和导航使用同一组 token。照片仍占主要视觉空间，作者设置的画面边框/水印颜色不随界面改动。
+
+顶层导航只提供广场与工具箱，我的工作台位于最右。独立 `/tools` 页面内提供水印和拼图，原 `/frame-watermark` 与 `/image-collage` 路径保留；工具页提供返回工具箱的局部导航，继续不要求账户或自动上传。桌面与窄屏通过明确断点调整导航、工具入口和页面布局，当前没有新的浏览器截图验收。
+
+未登录访问 `/studio` 经路由守卫进入独立 `/login?returnTo=...`，不是模态弹窗或展示 401 页面。登录页检查 `/api/me`；身份服务失败显示可重试状态，正常匿名状态明确说明登录未开放。输入与登录按钮保持禁用，不收集密码、创建账号或生成密钥。真实已有登录状态恢复时，使用保留的 `returnTo` 返回内部目标；仅允许已知站内路径，外部链接、编码跳转和登录循环回落到 `/studio`。这不等于完成登录后端或真实登录成功验收，身份功能仍待安全授权。
