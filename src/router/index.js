@@ -1,6 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import Home from '@/views/Platform.vue'
-import FrameWatermark from '@/views/FrameWatermark.vue'
+import FrameWatermark from '@/tools/watermark/WatermarkTool.vue'
 import ImageCollage from '@/views/ImageCollage.vue'
 import Toolbox from '@/views/Toolbox.vue'
 import Login from '@/views/Login.vue'

@@ -8,7 +8,7 @@
 | --- | --- |
 | 服务 | `systemctl --user status markr-phase1.service` |
 | 服务根目录 | `/home/timestarry/deploy/markr-phase1` |
-| 发布目录 | `releases/20261001-design-language` |
+| 发布目录 | `releases/20261001-tools-watermark` |
 | 当前版本 | `current` 软链接指向发布目录 |
 | 持久化目录 | `data`，权限 0700，数据库和媒体均在此 |
 | 监听 | `100.99.0.5:18140`，仅已有 Tailscale 私有接口 |
@@ -25,7 +25,7 @@ ssh -N -L 18141:100.99.0.5:18140 timestarry@server
 
 ## 发布与回滚
 
-在独立分支执行 `npm ci`、`npm run check`、`npm test` 和 `npm run build`。将代码、锁文件和 `dist` 传至新的发布目录，服务器执行 `npm ci --omit=dev`，保持 `data` 目录不变。首次部署的 unit 位于 `ops/markr-phase1.service`。后续发布使用新的目录名，不覆盖当前版本。
+在独立分支执行 `npm ci`、`npm run typecheck`、`npm run check`、`npm test` 和 `npm run build`。将代码、锁文件和 `dist` 传至新的发布目录，服务器执行 `npm ci --omit=dev`，保持 `data` 目录不变。首次部署的 unit 位于 `ops/markr-phase1.service`。后续发布使用新的目录名，不覆盖当前版本。
 
 切换版本时将 `current` 指向新的完整发布目录，然后执行：
 
@@ -48,3 +48,7 @@ journalctl --user -u markr-phase1.service -n 100 --no-pager
 ```
 
 部署前服务器磁盘剩余约 9.8 GB，不应沿用无限上传或长期备份假设。`MAX_UPLOAD_MB` 和 `MAX_ASSETS` 是临时可配置默认值；未来还需要全局容量与处理并发限制。
+
+## 工具检查点发布
+
+水印重构检查点发布目录为 `20261001-tools-watermark`；前版 `20261001-design-language` 保留，可回滚。拼图尚未迁移，浏览器验收未完成。SSH在授权环境下连接正常，普通沙箱内解析失败不能推断Mac断网。持久化目录和账号配置不变。

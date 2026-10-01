@@ -1,0 +1,12 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import {readFile} from 'node:fs/promises'
+import ts from 'typescript'
+const source=await readFile(new URL('../src/tools/core/document.ts',import.meta.url),'utf8')
+const output=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ES2022}}).outputText
+const {defaults,History,Jobs,dimensions,outputSize,validateOutput,applyPreset}=await import('data:text/javascript;base64,'+Buffer.from(output).toString('base64'))
+test('watermark uses source output coordinates and scales only at output boundary',()=>{const d=defaults();assert.deepEqual(dimensions(d,{width:4000,height:3000}),{width:4360,height:3360});d.frame='bottom-bar';d.bottom=15;assert.deepEqual(dimensions(d,{width:4000,height:3000}),{width:4360,height:3810});assert.deepEqual(outputSize({width:4000,height:3000},1600),{width:1600,height:1200});assert.deepEqual(outputSize({width:4000,height:3000},0),{width:4000,height:3000})})
+test('preset preserves original references, author text and explicit EXIF choices',()=>{const d={...defaults(),assetIds:['original'],text:'摄影\n中文签名',fields:['Model']};const next=applyPreset(d,'dark');assert.equal(next.text,d.text);assert.deepEqual(next.fields,d.fields);assert.deepEqual(next.assetIds,['original']);assert.equal(next.color,'#16191b');assert.equal(d.color,'#f3f1ea')})
+test('history commits drag once, supports removal recovery and bounds memory references',()=>{const h=new History({...defaults(),assetIds:['a']},2);const transient={...h.value,border:8};transient.border=12;h.commit(transient);assert.equal(h.past.length,1);h.commit({...h.value,assetIds:[]});assert.deepEqual(h.undo().assetIds,['a']);assert.deepEqual(h.redo().assetIds,[]);h.commit({...h.value,border:14});assert.equal(h.future.length,0);assert.equal(h.past.length,2);h.commit(h.value);assert.equal(h.past.length,2)})
+test('late tasks and cancellation cannot publish stale output',()=>{const jobs=new Jobs();const first=jobs.start();const second=jobs.start();assert.throws(()=>jobs.check(first),{name:'AbortError'});jobs.check(second);jobs.cancel();assert.throws(()=>jobs.check(second),{name:'AbortError'})})
+test('export limits reject zero, nonfinite, excessive pixels and side length',()=>{validateOutput({width:4000,height:4000});for(const s of [{width:0,height:100},{width:NaN,height:1},{width:4001,height:4000},{width:8193,height:1}])assert.throws(()=>validateOutput(s));assert.deepEqual(outputSize({width:1,height:8192},1),{width:1,height:1})})

@@ -1,0 +1,23 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import {readFile} from 'node:fs/promises'
+import {createRequire} from 'node:module'
+import {pathToFileURL} from 'node:url'
+import ts from 'typescript'
+import {createCanvas,loadImage} from '@napi-rs/canvas'
+import sharp from 'sharp'
+const require=createRequire(import.meta.url)
+const compile=async(path,replacements=[])=>{let source=await readFile(new URL(path,import.meta.url),'utf8');for(const [a,b]of replacements)source=source.replace(a,b);return 'data:text/javascript;base64,'+Buffer.from(ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ES2022}}).outputText).toString('base64')}
+const core=await compile('../src/tools/core/document.ts');const assets=await compile('../src/tools/engine/assets.ts',[["'exifr'",JSON.stringify(pathToFileURL(require.resolve('exifr')).href)]]);const engine=await compile('../src/tools/engine/render.ts',[["'../core/document'",JSON.stringify(core)],["'./assets'",JSON.stringify(assets)]])
+const {defaults}=await import(core),{render,encode}=await import(engine),{preflight,Assets}=await import(assets)
+let open=0
+// Real Skia Canvas pixels, controlled browser bitmap adapter. Browser API compatibility remains untested.
+globalThis.createImageBitmap=async(source,opts={})=>{const image=source instanceof Blob?await loadImage(Buffer.from(await source.arrayBuffer())):source;const c=createCanvas(opts.resizeWidth||image.width,opts.resizeHeight||image.height);c.getContext('2d').drawImage(image,0,0,c.width,c.height);open++;let closed=false;c.close=()=>{if(!closed){open--;closed=true}};return c}
+globalThis.document={createElement:()=>createCanvas(1,1),fonts:{ready:Promise.resolve(),load:async()=>[]}}
+const makeFile=async()=>new File([await sharp({create:{width:320,height:240,channels:4,background:{r:220,g:20,b:40,alpha:1}}}).png().toBuffer()],'sample.png',{type:'image/png'})
+test('actual canvas renders source coordinates, exports real PNG dimensions, and releases decoded bitmaps',async()=>{const repo=new Assets(),a=await repo.add(await makeFile()),d={...defaults(),assetIds:[a.id],format:'image/png',text:'中文签名\nPhoto journal',longEdge:800};const preview=createCanvas(1,1),full=createCanvas(1,1);await render(d,a,preview,true,()=>{},()=>{});await render(d,a,full,false,()=>{},()=>{});const blob=await encode(full,d);const metadata=await sharp(Buffer.from(await blob.arrayBuffer())).metadata();assert.equal(metadata.width,800);assert.equal(metadata.height,616);assert.equal(metadata.format,'png');assert.equal(metadata.exif,undefined);assert.equal(open,0);const rgba=full.getContext('2d').getImageData(400,240,1,1).data;assert.equal(rgba[0],220);assert.equal(rgba[1],20);repo.dispose();assert.equal(repo.items.size,0)})
+test('preview and export use identical renderer pixels at identical target size',async()=>{const repo=new Assets(),a=await repo.add(await makeFile()),d={...defaults(),assetIds:[a.id],frame:'gradient',text:'多行中文\n123',format:'image/png'};const p=createCanvas(1,1),e=createCanvas(1,1);await render(d,a,p,true,()=>{},()=>{});await render(d,a,e,false,()=>{},()=>{});assert.deepEqual(p.getContext('2d').getImageData(0,0,p.width,p.height).data,e.getContext('2d').getImageData(0,0,e.width,e.height).data);repo.dispose();assert.equal(open,0)})
+test('cancel during decode discards output and closes bitmap; unsupported format is explicit',async()=>{const repo=new Assets(),a=await repo.add(await makeFile()),c=createCanvas(1,1);await assert.rejects(render(defaults(),a,c,true,()=>{throw new DOMException('cancel','AbortError')},()=>{}),{name:'AbortError'});assert.equal(open,0);await assert.rejects(encode({toBlob:cb=>cb(new Blob(['x'],{type:'image/png'}))},{...defaults(),format:'image/webp'}),/不支持/);repo.dispose()})
+test('oversized file and PNG dimensions reject before bitmap allocation; malformed decode keeps repository intact',async()=>{const bytes=new Uint8Array(24);new DataView(bytes.buffer).setUint32(16,10000);new DataView(bytes.buffer).setUint32(20,10000);await assert.rejects(preflight(new File([bytes],'large.png',{type:'image/png'})),/4000/);const repo=new Assets();await assert.rejects(repo.add(new File(['broken'],'bad.png',{type:'image/png'})));assert.equal(repo.items.size,0);assert.equal(open,0);repo.dispose()})
+
+test('transparent PNG retains alpha and JPEG fills explicit background',async()=>{const repo=new Assets(),a=await repo.add(await makeFile());for(const format of ['image/png','image/jpeg']){const d={...defaults(),transparent:true,format};const c=createCanvas(1,1);await render(d,a,c,false,()=>{},()=>{});assert.equal(c.getContext('2d').getImageData(0,0,1,1).data[3],format==='image/png'?0:255)}repo.dispose()})
