@@ -39,8 +39,16 @@ Node 至少 22.13；服务器实际为 22.22，SQLite 仍有实验性提示。�
 
 ## 通用标签与标记
 
-用户新增要求包括 `no AGI` 声明及未来自动识别、审核与风控标记。`no AGI` 是未使用生成式 AI、禁止 AI 训练还是其他含义，尚未确认；当前不建立固定语义或承诺执行效果。
+用户新增要求包括 `no AGI` 声明及未来自动识别、审核与风控标记。用户已确认 `no AGI` 表示“未使用生成式 AI”，属于作者自声明，不是平台认证。禁止 AI 训练属于另一类使用限制。
 
 实际最小实现是作品、作品集与主页 API 的 `tags` 数组，每条包含 `label`、`type`、`source`、`visibility`。作者可写 `content`（内容标签）或 `self_declaration`（作者自声明），来源固定为 `author`，可见性为 `public` 或 `private`。默认没有标记，每对象最多 20 条、标签最多 64 字符。公开 API 只返回公开作者标记；私有标记在作者工作台 API 中可见。当前没有标记编辑/展示 UI 或检索功能，也没有平台认证语义。
 
 后续系统标记应独立写入和鉴权，来源为受信任的系统任务。识别结果可扩展创建时间、模型版本、置信度、证据和审核状态；风控标记默认仅内部可读，不作为公开作者标签返回。作者 API 拒绝创建系统来源，不能填写平台认证。现在尚未实现系统标记表、识别执行、风控规则、审核后台或模型服务，不能把数据扩展点当成已具备识别能力。
+
+### 作者声明与版权许可的最小实现
+
+作品另有独立 `aiDeclaration` 与 `license` 字段，默认均为空。工作台提供“未使用生成式 AI（作者自声明）”选项及 6 种 CC 4.0 许可；观看页显示已选声明及官方许可跳转。许可代码、名称和链接来自固定白名单，不能传入任意网址或伪造平台认证。未替任何真实用户作品选择或授予许可，测试只使用临时合成图片。
+
+已核实 [Creative Commons 官方许可说明](https://creativecommons.org/cc-licenses/) 和各许可说明页：[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)、[CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)、[CC BY-ND 4.0](https://creativecommons.org/licenses/by-nd/4.0/)、[CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/)、[CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/)、[CC BY-NC-ND 4.0](https://creativecommons.org/licenses/by-nc-nd/4.0/)。原始入口 [CC 许可介绍](https://creativecommons.org/share-your-work/cclicenses/) 本次获取超时，使用官方新入口核验。CC0、公有领域和自定义许可暂仅设计预留，不混为 CC 4.0 许可。
+
+AI 训练限制仅设计预留于版权/使用限制区域，不能伪装为 CC 标准条款或承诺技术上阻止训练。它可能与选用许可授予的权利冲突，因此本次不实现训练禁令开关。依据 [Creative Commons 关于 AI 与许可的 FAQ](https://creativecommons.org/faq/#artificial-intelligence-and-cc-licenses)，CC 的适用与是否需要版权许可及具体使用条件有关；不能把 CC 标签当成通用训练禁令。

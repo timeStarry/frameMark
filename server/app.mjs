@@ -1,4 +1,5 @@
 import express from 'express';
+import {licenses, aiDeclaration} from '../src/shared/declarations.mjs';
 import multer from 'multer';
 import sharp from 'sharp';
 import { mkdirSync, writeFileSync, unlinkSync } from 'node:fs';
@@ -53,6 +54,16 @@ export function createApp({ directory = './data', viewer = () => null, staticDir
         if(t.source!==undefined&&t.source!=='author') throw fail(400,'作者不能创建系统标记');
         return {label:t.label.trim(),type:t.type,source:'author',visibility:t.visibility};
       });
+    }
+    if(kind==='work') {
+      if(b.license!==undefined) {
+        if(b.license!==null&&!Object.hasOwn(licenses,b.license)) throw fail(400,'许可无效');
+        data.license=b.license===null?null:licenses[b.license];
+      }
+      if(b.aiDeclaration!==undefined) {
+        if(b.aiDeclaration!==null&&b.aiDeclaration!==aiDeclaration.code) throw fail(400,'作者声明无效');
+        data.aiDeclaration=b.aiDeclaration===null?null:aiDeclaration;
+      }
     }
     const refField=kind==='work'?'assets':kind==='collection'?'works':null;
     if(refField) { const ids=b[refField]??data[refField]??[]; if(!Array.isArray(ids)||ids.length>40||new Set(ids).size!==ids.length) throw fail(400,'引用列表无效'); ids.forEach(id=>owned(id,req.viewer,kind==='work'?'asset':'work')); data[refField]=ids; }

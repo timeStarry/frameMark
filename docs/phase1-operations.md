@@ -8,7 +8,7 @@
 | --- | --- |
 | 服务 | `systemctl --user status markr-phase1.service` |
 | 服务根目录 | `/home/timestarry/deploy/markr-phase1` |
-| 发布目录 | `releases/20261001-final` |
+| 发布目录 | `releases/20261001-final-cc` |
 | 当前版本 | `current` 软链接指向发布目录 |
 | 持久化目录 | `data`，权限 0700，数据库和媒体均在此 |
 | 监听 | `127.0.0.1:18140`，仅服务器回环 |
