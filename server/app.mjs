@@ -16,7 +16,7 @@ export function createApp({ directory = './data', viewer = () => null, staticDir
   const auth = (req,res,next) => req.viewer ? next() : next(fail(401,'身份入口尚未启用，请等待管理员配置。'));
   const owned = (id, user, kind) => { const r=store.get(id); if(!r || r.owner!==user || (kind && r.kind!==kind)) throw fail(404,'内容不存在'); return r; };
   const visible = (id,user,kind) => { const r=store.get(id); if(!r || r.kind!==kind || !canRead(r,user)) throw fail(404,'内容不存在'); return r; };
-  const clean = r => { const {owner,...data}=r; return {...data, photographer:owner}; };
+  const clean = r => { const {owner,...data}=r; return {...data, tags:(data.tags||[]).filter(t=>t.visibility==='public'&&t.source==='author'&&['content','self_declaration'].includes(t.type)), photographer:owner}; };
   const wrap = fn => (req,res,next) => Promise.resolve().then(()=>fn(req,res)).catch(next);
   app.get('/api/health', (req,res)=>res.json({ok:true, identityEnabled:false}));
   app.get('/api/me',(req,res)=>res.json({user:req.viewer}));
@@ -45,6 +45,14 @@ export function createApp({ directory = './data', viewer = () => null, staticDir
       data.distribute=b.distribute??data.distribute??true; data.allowOriginal=b.allowOriginal??data.allowOriginal??false;
       if(typeof data.distribute!=='boolean'||typeof data.allowOriginal!=='boolean') throw fail(400,'开关格式无效');
       if(!data.title) throw fail(400,'请填写标题');
+    }
+    if(b.tags!==undefined) {
+      if(!Array.isArray(b.tags)||b.tags.length>20) throw fail(400,'标记列表无效');
+      data.tags=b.tags.map(t=>{
+        if(!t||typeof t.label!=='string'||!t.label.trim()||t.label.length>64||!['content','self_declaration'].includes(t.type)||!['public','private'].includes(t.visibility)) throw fail(400,'作者标记格式无效');
+        if(t.source!==undefined&&t.source!=='author') throw fail(400,'作者不能创建系统标记');
+        return {label:t.label.trim(),type:t.type,source:'author',visibility:t.visibility};
+      });
     }
     const refField=kind==='work'?'assets':kind==='collection'?'works':null;
     if(refField) { const ids=b[refField]??data[refField]??[]; if(!Array.isArray(ids)||ids.length>40||new Set(ids).size!==ids.length) throw fail(400,'引用列表无效'); ids.forEach(id=>owned(id,req.viewer,kind==='work'?'asset':'work')); data[refField]=ids; }

@@ -20,12 +20,12 @@ test('persistent publication and media permissions across owners and visibility 
   const uploaded=await request('assets',{user:'alice',method:'POST',body:form});assert.equal(uploaded.status,201);const asset=uploaded.data.id;
   const original=await request('media/'+asset+'/original',{user:'alice'});assert.deepEqual(Buffer.from(original.data),bytes);
   const display=await request('media/'+asset+'/display',{user:'alice'});assert.equal((await sharp(Buffer.from(display.data)).metadata()).exif,undefined);assert.equal(display.cache,'private, no-store');assert.equal('path' in uploaded.data,false);
-  const draft=await request('work',{user:'alice',method:'POST',body:{title:'A photograph',assets:[asset],visibility:'public'}});assert.equal(draft.status,201);const id=draft.data.id;
+  const draft=await request('work',{user:'alice',method:'POST',body:{title:'A photograph',assets:[asset],visibility:'public',tags:[{label:'街头',type:'content',visibility:'public'},{label:'待整理',type:'content',visibility:'private'},{label:'作者声明',type:'self_declaration',visibility:'public'}]}});assert.equal(draft.status,201);const id=draft.data.id;
   assert.equal((await request('work/'+id)).status,404);assert.equal((await request('media/'+asset+'/display')).status,404);
   assert.equal((await request('work/'+id,{user:'bob',method:'PUT',body:{title:'takeover'}})).status,404);
   assert.equal((await request('work',{user:'bob',method:'POST',body:{title:'foreign',assets:[asset]}})).status,404);
   assert.equal((await request('work/'+id,{user:'alice',method:'PUT',body:{status:'published'}})).status,200);
-  assert.equal((await request('square')).data.works.length,1);assert.equal((await request('media/'+asset+'/display')).status,200);assert.equal((await request('media/'+asset+'/original')).status,404);
+  assert.equal((await request('square')).data.works.length,1);assert.equal((await request('work/'+id)).data.tags.length,2);assert.equal((await request('studio',{user:'alice'})).data.work[0].tags.length,3);assert.equal((await request('work/'+id,{user:'alice',method:'PUT',body:{tags:[{label:'verified',type:'self_declaration',visibility:'public',source:'system'}]}})).status,400);assert.equal((await request('media/'+asset+'/display')).status,200);assert.equal((await request('media/'+asset+'/original')).status,404);
   await request('work/'+id,{user:'alice',method:'PUT',body:{distribute:false}});assert.equal((await request('square')).data.works.length,0);assert.equal((await request('work/'+id)).status,200);
   await request('work/'+id,{user:'alice',method:'PUT',body:{visibility:'unlisted'}});assert.equal((await request('work/'+id)).status,200);assert.equal((await request('square')).data.works.length,0);
   const hidden=(await request('work',{user:'alice',method:'POST',body:{title:'Hidden',text:'secret',status:'published'}})).data;
