@@ -25,3 +25,21 @@ export async function requireStudioSession(to, fetcher = fetch) {
 export function loginReturnTarget(session, returnTo) {
   return session?.user ? safeReturnTo(returnTo) : null
 }
+
+export async function accountSession(fetcher = fetch) {
+  const response=await fetcher('/api/auth/session',{credentials:'same-origin',cache:'no-store',signal:AbortSignal.timeout(8000)});
+  const data=await response.json();
+  if(!response.ok)throw Error(data.error||'无法连接账户服务。');
+  return data;
+}
+export async function accountRequest(path,options={},fetcher=fetch) {
+  const method=options.method||'GET',headers=new Headers(options.headers);
+  if(!['GET','HEAD'].includes(method.toUpperCase())) {
+    const session=await accountSession(fetcher);
+    headers.set('X-CSRF-Token',session.csrfToken);
+  }
+  const response=await fetcher('/api/'+path,{...options,headers,credentials:'same-origin',cache:'no-store'});
+  const data=await response.json();
+  if(!response.ok)throw Object.assign(Error(data.error||'请求失败，请重试。'),{status:response.status});
+  return data;
+}

@@ -1,4 +1,5 @@
 import express from 'express';
+import { createIdentity } from './identity.mjs';
 import {licenses, aiDeclaration} from '../src/shared/declarations.mjs';
 import multer from 'multer';
 import sharp from 'sharp';
@@ -7,20 +8,23 @@ import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createStore, canRead, inSquare } from './store.mjs';
 
-export function createApp({ directory = './data', viewer = () => null, staticDirectory = './dist' } = {}) {
+export function createApp({ directory = './data', viewer = () => null, staticDirectory = './dist', identity = {} } = {}) {
   const app = express(), store = createStore(directory);
   const mediaDirectory = resolve(directory, 'media'); mkdirSync(mediaDirectory, { recursive:true, mode:0o700 });
   app.disable('x-powered-by');
   app.use((req,res,next) => { res.set('X-Content-Type-Options','nosniff'); res.set('Referrer-Policy','no-referrer'); if(req.path.startsWith('/api/')) res.set('Cache-Control','private, no-store'); req.viewer = viewer(req); next(); });
+  const accounts=createIdentity(app,store.db,identity);
+  app.use(accounts.middleware);
   app.use(express.json({limit:'128kb'}));
+  accounts.installRoutes?.();
   const fail = (status,message) => Object.assign(new Error(message),{status});
-  const auth = (req,res,next) => req.viewer ? next() : next(fail(401,'身份入口尚未启用，请等待管理员配置。'));
+  const auth = (req,res,next) => req.viewer ? next() : next(fail(401,accounts.enabled?'请登录后继续。':'身份入口尚未启用，请等待管理员配置。'));
   const owned = (id, user, kind) => { const r=store.get(id); if(!r || r.owner!==user || (kind && r.kind!==kind)) throw fail(404,'内容不存在'); return r; };
   const visible = (id,user,kind) => { const r=store.get(id); if(!r || r.kind!==kind || !canRead(r,user)) throw fail(404,'内容不存在'); return r; };
   const clean = r => { const {owner,...data}=r; return {...data, tags:(data.tags||[]).filter(t=>t.visibility==='public'&&t.source==='author'&&['content','self_declaration'].includes(t.type)), photographer:owner}; };
   const wrap = fn => (req,res,next) => Promise.resolve().then(()=>fn(req,res)).catch(next);
-  app.get('/api/health', (req,res)=>res.json({ok:true, identityEnabled:false}));
-  app.get('/api/me',(req,res)=>res.json({user:req.viewer}));
+  app.get('/api/health', (req,res)=>res.json({ok:true, identityEnabled:accounts.enabled}));
+  app.get('/api/me',(req,res)=>res.json({user:req.viewer,identityEnabled:accounts.enabled}));
   app.get('/api/square',(req,res)=>res.json({works:store.list('work').filter(inSquare).map(clean), banner:store.list('work').filter(r=>inSquare(r)&&r.featuredRank>0).sort((a,b)=>a.featuredRank-b.featuredRank).map(clean)}));
   app.get('/api/studio',auth,(req,res)=>res.json(Object.fromEntries(['asset','work','collection','profile'].map(k=>[k,store.list(k).filter(r=>r.owner===req.viewer)]))));
   const upload = multer({storage:multer.memoryStorage(),limits:{fileSize:Number(process.env.MAX_UPLOAD_MB||20)*1024*1024,files:1}});

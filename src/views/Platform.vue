@@ -1,4 +1,5 @@
 <script setup>
+import { accountRequest } from '../auth/session.mjs'
 import { ref, watch, onBeforeUnmount } from 'vue'
 import {licenses,aiDeclaration} from '../shared/declarations.mjs'
 import { useRoute, useRouter } from 'vue-router'
@@ -6,7 +7,8 @@ const router=useRouter(), route=useRoute(), result=ref({}), error=ref(''), busy=
 const form=ref({title:'',text:'',license:null,aiDeclaration:null,assets:[],works:[],status:'draft',visibility:'private',distribute:true,allowOriginal:false})
 const kind=ref('work'), editing=ref(null), profile=ref({name:'',bio:'',accent:'#ccd4c4',layout:'grid',modules:['works','collections'],cover:null})
 const image=id=>'/api/media/'+id+'/display'
-async function api(url,options={}) {const r=await fetch('/api/'+url,options), data=await r.json();if(!r.ok)throw Error(data.error);return data}
+const api=accountRequest
+async function logout(all=false){await action(async()=>{await api('auth/'+(all?'logout-all':'logout'),{method:'POST'});await router.replace('/login')})}
 let loadVersion=0, loadController
 async function load(){
  const version=++loadVersion, path=route.path
@@ -30,7 +32,7 @@ async function load(){
 function goBack(){if(window.history.state?.back)router.back();else router.push('/')}
 onBeforeUnmount(()=>{loadVersion++;loadController?.abort()})
 watch(()=>route.fullPath,load,{immediate:true})
-async function action(fn){if(busy.value)return;busy.value=true;error.value='';try{await fn()}catch(e){error.value=e.message}finally{busy.value=false}}
+async function action(fn){if(busy.value)return;busy.value=true;error.value='';try{await fn()}catch(e){error.value=e.message;if(e.status===401)await router.replace({path:'/login',query:{returnTo:route.fullPath}})}finally{busy.value=false}}
 async function upload(event){const files=[...event.target.files];await action(async()=>{for(const file of files){const body=new FormData();body.append('file',file);const a=await api('assets',{method:'POST',body});studio.value.asset.unshift(a);form.value.assets.push(a.id)}});event.target.value=''}
 async function save(){await action(async()=>{const record=await api(kind.value+(editing.value?'/'+editing.value:''),{method:editing.value?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(form.value)});editing.value=record.id;studio.value=await api('studio')})}
 function edit(record){kind.value=record.kind;editing.value=record.id;form.value={...record,license:record.license?.code||null,aiDeclaration:record.aiDeclaration?.code||null}}
@@ -52,7 +54,7 @@ async function saveProfile(){await action(async()=>{const old=studio.value.profi
   <template v-else-if="route.path==='/studio'">
    <div class="section-title"><h1>我的工作台</h1><p>素材 → 草稿 → 作品 → 作品集</p></div>
    <div v-if="result.locked" class="empty-state"><h2>登录尚未开放</h2><p>登录后即可上传与管理作品。工具箱无需账号即可使用。</p><router-link to="/tools">打开工具箱 →</router-link></div>
-   <template v-else-if="me">
+   <template v-else-if="me"><div class="actions"><button :disabled="busy" @click="logout()">退出登录</button><button :disabled="busy" @click="logout(true)">退出所有会话</button></div>
     <div class="editor-grid"><form @submit.prevent="save" class="panel"><h2>{{editing?'编辑':'新建'}}{{kind==='work'?'作品':'作品集'}}</h2><label>类型<select v-model="kind" @change="fresh"><option value="work">作品（图片 / 组图 / 文字）</option><option value="collection">作品集</option></select></label><label>标题<input v-model="form.title" required maxlength="200"></label><label>文字<textarea v-model="form.text" rows="4"></textarea></label>
      <template v-if="kind==='work'"><label class="upload">上传成片<input type="file" accept="image/jpeg,image/png,image/webp" multiple @change="upload" :disabled="busy"></label><small>每张默认上限 20 MB，仅在主动选择后上传；展示图不含位置元数据。</small><div class="asset-picker"><label v-for="a in studio.asset" :key="a.id"><img :src="image(a.id)" alt="素材缩略图"><input type="checkbox" v-model="form.assets" :value="a.id">选用</label></div><label><input type="checkbox" v-model="form.allowOriginal">允许访客下载原文件（原文件可能含位置元数据）</label></template>
      <div v-else><label v-for="w in studio.work" :key="w.id"><input type="checkbox" v-model="form.works" :value="w.id">{{w.title}}</label><small>作品集不会改变成员作品自身的可见性。</small></div>

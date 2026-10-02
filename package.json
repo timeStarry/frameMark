@@ -8,14 +8,17 @@
     "preview": "vite preview",
     "start": "node server/index.mjs",
     "test": "node --test tests/*.test.mjs",
-    "check": "node --check server/app.mjs && node --check server/store.mjs && node --check server/index.mjs",
+    "check": "node --check server/app.mjs && node --check server/store.mjs && node --check server/index.mjs && node --check server/identity.mjs && node --check server/mail.mjs",
     "typecheck": "vue-tsc --noEmit"
   },
   "dependencies": {
+    "dotenv": "^18.0.5",
     "exifr": "^7.1.3",
     "express": "^5.2.1",
     "multer": "^2.4.0",
+    "nodemailer": "^10.0.13",
     "sharp": "^0.35.5",
+    "validator": "^13.15.35",
     "vue": "^3.4.0",
     "vue-router": "^4.2.0"
   },
