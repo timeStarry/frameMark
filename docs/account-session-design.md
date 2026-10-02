@@ -50,3 +50,11 @@ IDENTITY_ENABLED 默认 false；REGISTRATION_OPEN 默认 false。启用需要 ID
 - [Nodemailer SMTP](https://nodemailer.com/smtp)、[validator](https://github.com/validatorjs/validator.js)、[dotenv](https://github.com/motdotla/dotenv)：使用公开库 API，不手写 SMTP 或 .env 密码解析。
 
 自动测试区分真实 HTTP/SQLite/Sharp 权限闭环、Vue+Router+happy-dom 页面状态与真实浏览器。浏览器工具当前未暴露，因此 Mac 原生 cookie/邮件链接、真实下载和桌面/移动视觉均未验收。生产服务保持身份关闭，真实账户端到端未验收。
+
+## 已授权私网 HTTP 试验（2026-10-02）
+
+用户已批准当前试验忽略正式域名迁移、开放注册，并向指定邮箱发送一封验证测试邮件。新增显式 `IDENTITY_TRIAL_MODE=tailscale-http`，只允许匹配实际绑定的100.64.0.0/10 IPv4、10000以上端口与精确HTTP origin；拒绝公网域名/IP、0.0.0.0绑定与不匹配入口。请求实际本地socket地址还需匹配绑定，生产入口不暴露testTransport。正式模式默认仍强制HTTPS；未来markr.tsio.top迁移后必须关闭试验模式并设置HTTPS origin，不能沿用HTTP例外。
+
+本次入口为 http://100.99.0.5:18140，现有Tailscale传输保护依赖设备/网络已有接入；浏览器仍将HTTP视为非安全上下文，无法设置Secure cookie。试验使用独立markr_trial_session cookie，HttpOnly、SameSite=Strict，保留CSRF/来源/限速/会话隔离；最长会话1天、空闲1小时。登录和验证设置密码需要明确一次性试验密码确认，前后端均校验；不要输入正式或常用密码。注册邮件标注Markr私网测试，链接使用当前IP而非尚未迁移的正式域名。代理/防火墙/DNS/其它服务均不更改。
+
+使用独立trial-data数据库和媒体目录，不迁移或认领原生产data。试验账户与作品不会自动转为正式数据。此次代理只申请邮件验证挑战，不自动创建用户、不消费真实链接、不为用户挑选密码。用户收到邮件后可手动打开链接、设置一次性密码并试验上传；真实投递和原生浏览器仍需用户确认，SMTP接受不等于收件箱收到。

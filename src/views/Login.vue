@@ -2,13 +2,15 @@
 import { computed, ref, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { readSession, safeReturnTo, loginReturnTarget, accountSession, accountRequest } from '../auth/session.mjs'
-const route=useRoute(),router=useRouter(),busy=ref(true),error=ref(''),message=ref(''),enabled=ref(false),registrationOpen=ref(false),mode=ref('login'),email=ref(''),password=ref(''),confirmation=ref(''),verification=ref('')
+const route=useRoute(),router=useRouter(),busy=ref(true),error=ref(''),message=ref(''),enabled=ref(false),privateTrial=ref(false),trialAcknowledged=ref(false),registrationOpen=ref(false),mode=ref('login'),email=ref(''),password=ref(''),confirmation=ref(''),verification=ref('')
 const returnTo=computed(()=>safeReturnTo(route.query.returnTo))
-async function checkSession(){busy.value=true;error.value='';try{const session=await readSession();enabled.value=session.identityEnabled===true;if(enabled.value){const state=await accountSession();registrationOpen.value=state.registrationOpen}const target=loginReturnTarget(session,route.query.returnTo);if(target&&!verification.value)await router.replace(target)}catch(e){error.value=e.message}finally{busy.value=false}}
+async function checkSession(){busy.value=true;error.value='';try{const session=await readSession();enabled.value=session.identityEnabled===true;if(enabled.value){const state=await accountSession();registrationOpen.value=state.registrationOpen;privateTrial.value=state.privateTrial===true}const target=loginReturnTarget(session,route.query.returnTo);if(target&&!verification.value)await router.replace(target)}catch(e){error.value=e.message}finally{busy.value=false}}
 function switchMode(){mode.value=mode.value==='login'?'register':'login';password.value='';confirmation.value='';error.value='';message.value=''}
 async function submit(){if(busy.value)return;busy.value=true;error.value='';message.value='';try{
  if(mode.value==='verify'&&password.value!==confirmation.value)throw Error('两次密码不一致。')
  const payload=mode.value==='verify'?{token:verification.value,password:password.value}:mode.value==='register'?{email:email.value}:{email:email.value,password:password.value}
+ if(privateTrial.value&&mode.value!=='register'&&!trialAcknowledged.value)throw Error('请确认仅使用一次性试验密码。')
+ if(privateTrial.value)payload.trialAcknowledged=trialAcknowledged.value
  const result=await accountRequest('auth/'+mode.value,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
  password.value='';confirmation.value=''
  if(result.user){verification.value='';await router.replace(returnTo.value)}else message.value=result.message
@@ -21,6 +23,7 @@ onMounted(async()=>{const match=/^#verify=([A-Za-z0-9_-]{43})$/.exec(route.hash)
   <div class="login-panel"><span class="eyebrow">ACCOUNT</span><h2>{{mode==='verify'?'验证邮箱并设置密码':mode==='register'?'注册 Markr':'登录 Markr'}}</h2>
    <p v-if="busy" role="status" class="state-message">正在处理……</p>
    <div v-if="error" role="alert" class="state-message state-error">{{error}}<button v-if="!enabled" class="btn btn-secondary" @click="checkSession">重试</button></div>
+   <p v-if="privateTrial" role="note" class="state-message">私网 HTTP 试验：仅限当前 Tailscale 入口。请使用一次性密码，不要输入常用或正式密码；试验数据与正式数据分开。</p>
    <p v-if="message" role="status" class="state-message">{{message}}</p>
    <div v-if="!busy&&!enabled" class="state-message"><span class="status-label">登录暂未开放</span><p>账户服务尚未启用，当前不能登录或注册。工具箱无需账号即可使用。</p></div>
    <form v-if="enabled" class="login-fields" @submit.prevent="submit">
@@ -28,6 +31,7 @@ onMounted(async()=>{const match=/^#verify=([A-Za-z0-9_-]{43})$/.exec(route.hash)
     <template v-if="mode!=='register'"><label>密码<input v-model="password" required type="password" minlength="15" :autocomplete="mode==='verify'?'new-password':'current-password'" :disabled="busy"></label><small>至少 15 个字符，最多 256 字节；可使用长口令。</small></template>
     <label v-if="mode==='verify'">再次输入密码<input v-model="confirmation" required type="password" minlength="15" autocomplete="new-password" :disabled="busy"></label>
     <p v-if="mode==='register'" class="return-note">我们将发送验证链接。验证邮箱后设置密码，不限制邮箱服务商。</p>
+    <label v-if="privateTrial&&mode!=='register'"><input v-model="trialAcknowledged" type="checkbox" required :disabled="busy">我确认仅使用一次性试验密码</label>
     <button class="btn btn-primary" :disabled="busy">{{mode==='verify'?'完成注册':mode==='register'?'发送验证邮件':'登录'}}</button>
     <button v-if="registrationOpen&&mode!=='verify'" type="button" class="btn btn-secondary" :disabled="busy" @click="switchMode">{{mode==='register'?'已有账户？登录':'创建账户'}}</button>
     <router-link v-if="mode==='verify'" to="/login" @click="verification='';mode='login'">返回邮箱登录</router-link>

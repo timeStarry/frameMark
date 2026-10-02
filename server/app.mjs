@@ -23,8 +23,8 @@ export function createApp({ directory = './data', viewer = () => null, staticDir
   const visible = (id,user,kind) => { const r=store.get(id); if(!r || r.kind!==kind || !canRead(r,user)) throw fail(404,'内容不存在'); return r; };
   const clean = r => { const {owner,...data}=r; return {...data, tags:(data.tags||[]).filter(t=>t.visibility==='public'&&t.source==='author'&&['content','self_declaration'].includes(t.type)), photographer:owner}; };
   const wrap = fn => (req,res,next) => Promise.resolve().then(()=>fn(req,res)).catch(next);
-  app.get('/api/health', (req,res)=>res.json({ok:true, identityEnabled:accounts.enabled}));
-  app.get('/api/me',(req,res)=>res.json({user:req.viewer,identityEnabled:accounts.enabled}));
+  app.get('/api/health', (req,res)=>res.json({ok:true, identityEnabled:accounts.enabled,privateTrial:accounts.privateTrial===true}));
+  app.get('/api/me',(req,res)=>res.json({user:req.viewer,identityEnabled:accounts.enabled,privateTrial:accounts.privateTrial===true}));
   app.get('/api/square',(req,res)=>res.json({works:store.list('work').filter(inSquare).map(clean), banner:store.list('work').filter(r=>inSquare(r)&&r.featuredRank>0).sort((a,b)=>a.featuredRank-b.featuredRank).map(clean)}));
   app.get('/api/studio',auth,(req,res)=>res.json(Object.fromEntries(['asset','work','collection','profile'].map(k=>[k,store.list(k).filter(r=>r.owner===req.viewer)]))));
   const upload = multer({storage:multer.memoryStorage(),limits:{fileSize:Number(process.env.MAX_UPLOAD_MB||20)*1024*1024,files:1}});

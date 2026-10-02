@@ -1,6 +1,7 @@
 import { randomBytes, randomUUID, scrypt, timingSafeEqual, createHash } from 'node:crypto';
 import { promisify } from 'node:util';
 import validator from 'validator';
+import { isIP } from 'node:net';
 import { domainToASCII } from 'node:url';
 export function normalizeEmail(value) {
   if(typeof value!=='string')throw failure(400,'请填写有效邮箱。');
@@ -25,18 +26,23 @@ export async function verifyPassword(password, encoded) {
   const hash = await derive(password,salt,64,costs);
   return timingSafeEqual(hash,Buffer.from(hex,'hex'));
 }
-export function createIdentity(app, db, {enabled=false, registrationOpen=false, origin, testTransport=false, now=Date.now, sessionMs=7*86400000, idleMs=86400000, rateLimit=10, mailer}={}) {
+export function isPrivateTrialOrigin(origin,bindHost) {
+  try {const u=new URL(origin),parts=u.hostname.split('.').map(Number);return u.origin===origin&&u.protocol==='http:'&&isIP(u.hostname)===4&&parts[0]===100&&parts[1]>=64&&parts[1]<=127&&u.hostname===bindHost&&Number(u.port)>=10000&&Number(u.port)<=65535;}catch{return false;}
+}
+export function createIdentity(app, db, {enabled=false, registrationOpen=false, origin, testTransport=false, privateTrial=false, bindHost, now=Date.now, sessionMs=7*86400000, idleMs=86400000, rateLimit=10, mailer}={}) {
   if(!enabled) return {enabled:false, middleware:(req,res,next)=>next()};
   const site = new URL(origin);
-  if(site.origin!==origin || (site.protocol!=='https:' && !(testTransport && site.protocol==='http:' && ['127.0.0.1','localhost'].includes(site.hostname)))) throw Error('Identity requires an exact HTTPS origin');
+  if(privateTrial&&!isPrivateTrialOrigin(origin,bindHost))throw Error('Private trial requires a matching Tailscale IPv4 binding and high port');
+  if(site.origin!==origin || (site.protocol!=='https:' && !(testTransport && site.protocol==='http:' && ['127.0.0.1','localhost'].includes(site.hostname)) && !(privateTrial&&isPrivateTrialOrigin(origin,bindHost)))) throw Error('Identity requires an exact HTTPS origin');
   if(!Number.isSafeInteger(sessionMs)||sessionMs<1||!Number.isSafeInteger(idleMs)||idleMs<1||!Number.isSafeInteger(rateLimit)||rateLimit<1) throw Error('Invalid identity limits');
+  if(privateTrial){sessionMs=Math.min(sessionMs,86400000);idleMs=Math.min(idleMs,3600000);}
   // Additive migration only: existing records/owners remain untouched; older releases ignore these tables.
   db.exec(`BEGIN; CREATE TABLE IF NOT EXISTS identity_users(id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, password TEXT NOT NULL, created INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS identity_sessions(hash TEXT PRIMARY KEY, user TEXT REFERENCES identity_users(id), csrf TEXT NOT NULL, expires INTEGER NOT NULL, touched INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS identity_pending(email TEXT PRIMARY KEY, hash TEXT UNIQUE NOT NULL, expires INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS identity_rates(key TEXT PRIMARY KEY, count INTEGER NOT NULL, expires INTEGER NOT NULL); PRAGMA user_version=1; COMMIT;`);
-  const cookieName=site.protocol==='https:'?'__Host-markr_session':'markr_test_session';
-  const cookie=(res,value,age)=>res.cookie(cookieName,value,{httpOnly:true,secure:site.protocol==='https:',sameSite:'lax',path:'/',maxAge:age});
+  const cookieName=site.protocol==='https:'?'__Host-markr_session':privateTrial?'markr_trial_session':'markr_test_session';
+  const cookie=(res,value,age)=>res.cookie(cookieName,value,{httpOnly:true,secure:site.protocol==='https:',sameSite:privateTrial?'strict':'lax',path:'/',maxAge:age});
   const prune=()=>{db.prepare('DELETE FROM identity_pending WHERE expires<=?').run(now());db.prepare('DELETE FROM identity_sessions WHERE expires<=? OR touched<=?').run(now(),now()-idleMs);db.prepare('DELETE FROM identity_rates WHERE expires<=?').run(now());};
   function session(req) {
     const raw=(req.headers.cookie||'').split(';').map(x=>x.trim()).filter(x=>x.startsWith(cookieName+'='));
@@ -61,6 +67,7 @@ export function createIdentity(app, db, {enabled=false, registrationOpen=false, 
   const middleware=(req,res,next)=>{
     try {
       if(!req.path.startsWith('/api/'))return next();
+      if(privateTrial&&!testTransport&&req.socket.localAddress?.replace(/^::ffff:/,'')!==bindHost)throw failure(403,'私网试验入口无效。');
       prune();req.identitySession=session(req);req.viewer=req.identitySession?.user||null;
       if(req.identitySession)db.prepare('UPDATE identity_sessions SET touched=? WHERE hash=?').run(now(),req.identitySession.hash);
       if(req.path.startsWith('/api/')&&!['GET','HEAD','OPTIONS'].includes(req.method)) {
@@ -73,21 +80,21 @@ export function createIdentity(app, db, {enabled=false, registrationOpen=false, 
   };
   // Must be mounted after middleware and JSON parser; installRoutes is called by app.mjs.
   function installRoutes() {
-    app.get('/api/auth/session',wrap((req,res)=>{if(!req.identitySession){rate('bootstrap:'+req.ip,60);issue(req,res,null)}res.json({user:req.viewer,csrfToken:req.identitySession.csrf,registrationOpen});}));
-    function passwordInput(value) {if(typeof value!=='string'||[...value].length<15||Buffer.byteLength(value)>256)throw failure(400,'密码至少 15 个字符，最多 256 字节。');return value;}
+    app.get('/api/auth/session',wrap((req,res)=>{if(!req.identitySession){rate('bootstrap:'+req.ip,60);issue(req,res,null)}res.json({user:req.viewer,csrfToken:req.identitySession.csrf,registrationOpen,privateTrial});}));
+    function passwordInput(value,req) {if(privateTrial&&req.body?.trialAcknowledged!==true)throw failure(400,'私网HTTP试验仅允许一次性密码，请确认试验提示。');if(typeof value!=='string'||[...value].length<15||Buffer.byteLength(value)>256)throw failure(400,'密码至少 15 个字符，最多 256 字节。');return value;}
     const registration=()=>{if(!registrationOpen)throw failure(403,'注册尚未开放。');if(typeof mailer?.sendVerification!=='function')throw failure(503,'验证邮件服务暂不可用。');};
     app.post('/api/auth/register',wrap(async(req,res)=>{
       registration();rate('register-ip:'+req.ip,5);const email=normalizeEmail(req.body?.email);rate('register-email:'+email,3);
       if(!db.prepare('SELECT id FROM identity_users WHERE email=?').get(email)) {
         const value=token(),hash=digest(value);
         db.prepare('INSERT INTO identity_pending VALUES(?,?,?) ON CONFLICT(email) DO UPDATE SET hash=excluded.hash,expires=excluded.expires').run(email,hash,now()+1800000);
-        try {await bounded(()=>mailer.sendVerification({to:email,url:origin+'/login#verify='+value}))}
+        try {await bounded(()=>mailer.sendVerification({to:email,url:origin+'/login#verify='+value,trial:privateTrial}))}
         catch {db.prepare('DELETE FROM identity_pending WHERE hash=?').run(hash);throw failure(503,'验证邮件暂时发送失败，请稍后重试。');}
       }
       res.status(202).json({message:'如果该邮箱可以注册，验证邮件已发送。请在 30 分钟内打开链接并设置密码。'});
     }));
     app.post('/api/auth/verify',wrap(async(req,res)=>{
-      registration();rate('verify-ip:'+req.ip);const value=req.body?.token,password=passwordInput(req.body?.password);
+      registration();rate('verify-ip:'+req.ip);const value=req.body?.token,password=passwordInput(req.body?.password,req);
       if(typeof value!=='string'||! /^[A-Za-z0-9_-]{43}$/.test(value))throw failure(400,'验证链接无效或已过期。');
       const pending=db.prepare('SELECT * FROM identity_pending WHERE hash=? AND expires>?').get(digest(value),now());
       if(!pending)throw failure(400,'验证链接无效或已过期。');
@@ -103,7 +110,7 @@ export function createIdentity(app, db, {enabled=false, registrationOpen=false, 
       issue(req,res,id);res.status(201).json({user:id,csrfToken:req.identitySession.csrf});
     }));
     app.post('/api/auth/login',wrap(async(req,res)=>{
-      rate('auth-ip:'+req.ip);const email=normalizeEmail(req.body?.email),password=passwordInput(req.body?.password);rate('account:'+email);
+      rate('auth-ip:'+req.ip);const email=normalizeEmail(req.body?.email),password=passwordInput(req.body?.password,req);rate('account:'+email);
       const user=db.prepare('SELECT * FROM identity_users WHERE email=?').get(email);
       const valid=await bounded(()=>verifyPassword(password,user?.password||dummy));
       if(!valid||!user)throw failure(401,'邮箱或密码不正确。');
@@ -112,5 +119,5 @@ export function createIdentity(app, db, {enabled=false, registrationOpen=false, 
     app.post('/api/auth/logout',wrap((req,res)=>{db.prepare('DELETE FROM identity_sessions WHERE hash=?').run(req.identitySession.hash);cookie(res,'',0);res.json({user:null});}));
     app.post('/api/auth/logout-all',wrap((req,res)=>{if(!req.viewer)throw failure(401,'请先登录。');db.prepare('DELETE FROM identity_sessions WHERE user=?').run(req.viewer);cookie(res,'',0);res.json({user:null});}));
   }
-  return {enabled:true,middleware,installRoutes};
+  return {enabled:true,privateTrial,middleware,installRoutes};
 }
