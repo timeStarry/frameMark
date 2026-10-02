@@ -2,7 +2,7 @@
 
 ## 本轮交付与生产边界
 
-默认登录方式为邮箱＋密码。代码已实现注册邮件申请、邮箱验证后设置密码、登录、当前会话退出、全部会话撤销，以及用户与素材/作品/作品集/主页 owner 的联动。现网身份与注册继续关闭；实现完成不等于已开放生产账户。测试只使用临时数据库、一次性 fixture 与内存 outbox，没有创建生产账户或发送真实邮件。
+默认登录方式为邮箱＋密码。代码已实现注册邮件申请、邮箱验证后设置密码、登录、当前会话退出、全部会话撤销，以及用户与素材/作品/作品集/主页 owner 的联动。默认正式配置仍关闭；当前已获授权开启独立Tailscale私网试验注册，见末节。正式域名尚未迁移。测试只使用临时数据库、一次性 fixture 与内存 outbox，没有创建生产账户或发送真实邮件。
 
 ## 用户流程
 
@@ -49,7 +49,7 @@ IDENTITY_ENABLED 默认 false；REGISTRATION_OPEN 默认 false。启用需要 ID
 - [OWASP 会话管理](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html)、[CSRF 防护](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html)：服务器会话、cookie 属性、轮换与同步 token。
 - [Nodemailer SMTP](https://nodemailer.com/smtp)、[validator](https://github.com/validatorjs/validator.js)、[dotenv](https://github.com/motdotla/dotenv)：使用公开库 API，不手写 SMTP 或 .env 密码解析。
 
-自动测试区分真实 HTTP/SQLite/Sharp 权限闭环、Vue+Router+happy-dom 页面状态与真实浏览器。浏览器工具当前未暴露，因此 Mac 原生 cookie/邮件链接、真实下载和桌面/移动视觉均未验收。生产服务保持身份关闭，真实账户端到端未验收。
+自动测试区分真实 HTTP/SQLite/Sharp 权限闭环、Vue+Router+happy-dom 页面状态与真实浏览器。浏览器工具当前未暴露，因此 Mac 原生 cookie/邮件链接、真实下载和桌面/移动视觉均未验收。正式数据保持隔离；当前私网试验已启用并发送一次真实挑战，真实浏览器与用户账户端到端仍未验收。
 
 ## 已授权私网 HTTP 试验（2026-10-02）
 
@@ -58,3 +58,5 @@ IDENTITY_ENABLED 默认 false；REGISTRATION_OPEN 默认 false。启用需要 ID
 本次入口为 http://100.99.0.5:18140，现有Tailscale传输保护依赖设备/网络已有接入；浏览器仍将HTTP视为非安全上下文，无法设置Secure cookie。试验使用独立markr_trial_session cookie，HttpOnly、SameSite=Strict，保留CSRF/来源/限速/会话隔离；最长会话1天、空闲1小时。登录和验证设置密码需要明确一次性试验密码确认，前后端均校验；不要输入正式或常用密码。注册邮件标注Markr私网测试，链接使用当前IP而非尚未迁移的正式域名。代理/防火墙/DNS/其它服务均不更改。
 
 使用独立trial-data数据库和媒体目录，不迁移或认领原生产data。试验账户与作品不会自动转为正式数据。此次代理只申请邮件验证挑战，不自动创建用户、不消费真实链接、不为用户挑选密码。用户收到邮件后可手动打开链接、设置一次性密码并试验上传；真实投递和原生浏览器仍需用户确认，SMTP接受不等于收件箱收到。
+
+HTTP cookie 边界依据：[MDN Set-Cookie](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Set-Cookie)。非HTTPS页面不具有正式Secure cookie保护；本试验没有将该例外用于公网域名。

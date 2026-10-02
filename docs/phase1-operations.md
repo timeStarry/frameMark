@@ -8,9 +8,9 @@
 | --- | --- |
 | 服务 | `systemctl --user status markr-phase1.service` |
 | 服务根目录 | `/home/timestarry/deploy/markr-phase1` |
-| 发布目录 | `releases/20261002-account-off` |
+| 发布目录 | `releases/20261002-tailscale-trial` |
 | 当前版本 | `current` 软链接指向发布目录 |
-| 持久化目录 | `data`，权限 0700，数据库和媒体均在此 |
+| 试验持久化 | `trial-data`，0700；原正式 `data` 保留且不迁移 |
 | 监听 | `100.99.0.5:18140`，仅已有 Tailscale 私有接口 |
 | 健康 | `http://100.99.0.5:18140/api/health` |
 | server 地址 | `http://100.99.0.5:18140/`，需要已有 Tailscale 通路；Mac curl 成功，最新用户截图确认已能打开；真实自动化UI验收未完成 |
@@ -21,7 +21,7 @@
 ssh -N -L 18141:100.99.0.5:18140 timestarry@server
 ```
 
-最终 server 地址不依赖 Mac 终端转发。需要设备接入用户现有 Tailscale 网络；没有修改防火墙、Tailscale ACL、公网代理或扩展权限。早期 Mac Edge 曾被客户端拦截（ERR_BLOCKED_BY_CLIENT）；最新用户截图确认已能打开 server 工具页。当前没有浏览器控制工具，交互自动化验收仍未完成。原 `markr.tsio.top` 是旧 GitHub Pages 服务，未替换。身份入口关闭，不可创建真实账户或上传作品。
+最终 server 地址不依赖 Mac 终端转发。需要设备接入用户现有 Tailscale 网络；没有修改防火墙、Tailscale ACL、公网代理或扩展权限。早期 Mac Edge 曾被客户端拦截（ERR_BLOCKED_BY_CLIENT）；最新用户截图确认已能打开 server 工具页。当前没有浏览器控制工具，交互自动化验收仍未完成。原 `markr.tsio.top` 是旧 GitHub Pages 服务，未替换。当前私网试验已按授权开放注册，验证后可上传；只用一次性试验密码，正式域名与data尚未迁移。
 
 ## 发布与回滚
 
@@ -68,3 +68,11 @@ journalctl --user -u markr-phase1.service -n 100 --no-pager
 现有HTTP/Tailscale地址仍只提供身份关闭预览。开启身份要求精确HTTPS origin并需要用户确认启用范围；不以现有HTTP地址启用cookie认证、不擅自配置代理/TLS。真实验证邮件须确认收件人。SMTP复用已获授权且完成接入，不再重复要求同一接入授权。
 
 回滚指向 `releases/20261001-tools-final` 并重启，drop-in保持身份关闭；旧版本不读取SMTP引用。未来开启身份后仅追加账户表，回滚时关闭身份并保留新表，不DROP；备份包含SQLite/WAL、媒体及受限配置引用，秘密不放入公开发布包。
+
+## 当前：私网HTTP注册试验
+
+current指向 `releases/20261002-tailscale-trial`，代码7c62410，完整提交见REVISION。新增0600用户级drop-in `40-tailscale-trial.conf`，覆盖前一30-identity-off.conf：IDENTITY_ENABLED=true、REGISTRATION_OPEN=true、IDENTITY_TRIAL_MODE=tailscale-http、IDENTITY_ORIGIN=http://100.99.0.5:18140、DATA_DIR=/home/timestarry/deploy/markr-phase1/trial-data。原data5156365/0700不改写；新trial-data0700，账户/素材/作品与正式数据隔离。SMTP仍引用原专用配置，没有复制秘密或改原服务。
+
+已按授权向指定收件人发送一次测试验证挑战，SMTP接受，未代设密码或创建正式账户；邮件打开后用户自行选择一次性试验密码。服务器 `trial-mail-test-result.json` 为0600单次发送记录，不包含token或密码，不因排障自动重发。未来HTTPS域名迁移时关闭试验模式，设置精确HTTPS origin并移除HTTP试验配置；不要自动认领或迁移试验用户/作品。
+
+完整回滚：将40-tailscale-trial.conf移动到此独立服务的受限备份目录（不要删除trial-data），让30-identity-off.conf重新生效；current指回20261002-account-off，daemon-reload并restart。身份/注册关闭、数据目录恢复原data；两个数据目录与旧发布均保留。没有改DNS、TLS/反代、ACL、防火墙或其他服务。
