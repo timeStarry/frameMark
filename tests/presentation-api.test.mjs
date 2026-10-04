@@ -52,6 +52,10 @@ test('display dimensions follow orientation, old files are read without migratio
   const publicWork=store.save('work','alice',work('Portrait',{assets:[asset.id]}),'portrait');
   const publicResult=(await get('work/'+publicWork.id)).data;
   assert.deepEqual(publicResult.media,[{id:asset.id,width:60,height:90}]);
+  const permissionHead=await fetch(base+'media/'+asset.id+'/display',{method:'HEAD',cache:'no-store'});
+  assert.equal(permissionHead.status,200);assert.equal(permissionHead.headers.get('cache-control'),'private, no-store');
+  assert.equal((await permissionHead.arrayBuffer()).byteLength,0);
+  assert.equal((await fetch(base+'media/'+asset.id+'/original',{method:'HEAD'})).status,404);
   // Exercise pre-redesign records without changing their stored schema or original file.
   const {displayWidth,displayHeight,...legacy}=asset;
   store.save('asset','alice',legacy,asset.id);
@@ -78,6 +82,7 @@ test('display dimensions follow orientation, old files are read without migratio
   assert.equal(removeCover.status,200);
   assert.equal((await get('profile/alice')).data.coverMedia,null);
   assert.equal((await fetch(base+'media/'+asset.id+'/display')).status,404);
+  assert.equal((await fetch(base+'media/'+asset.id+'/display',{method:'HEAD',cache:'no-store'})).status,404);
   store.save('asset','alice',{width:200,height:300},'missing-file');
   store.save('work','alice',work('Missing preview',{assets:['missing-file']}),'missing-work');
   assert.deepEqual((await get('work/missing-work')).data.media,[{id:'missing-file',width:null,height:null}]);

@@ -13,6 +13,7 @@ export function rememberPublicPosition(path, state = {}) {
     top: Math.max(0, Number(state.top) || 0),
     left: Math.max(0, Number(state.left) || 0),
     focusId: typeof state.focusId === 'string' ? state.focusId : null,
+    mediaId: typeof state.mediaId === 'string' ? state.mediaId : null,
     pages: Math.max(1, Number(state.pages) || 1),
     position: Number.isFinite(state.position) ? state.position : null,
   })

@@ -4,13 +4,18 @@ import PhotoMedia from './PhotoMedia.vue'
 import PhotographerByline from './PhotographerByline.vue'
 import { useReveal } from '../../composables/useReveal.js'
 import { plainNavigation } from '../../composables/publicBrowse.js'
+import { preparePhotoNavigation } from '../../composables/photoTransition.js'
 const props = defineProps({ work: { type: Object, required: true } })
 const emit = defineEmits(['navigate'])
 const root = ref(), picture = ref(), failed = ref(false)
 const imageMotion = globalThis.navigator?.connection?.saveData !== true
 const media = computed(() => props.work.media?.[0] || { id: props.work.assets[0], width: 22, height: 10 })
 const description = computed(() => props.work.text?.trim().split(/\r?\n/).find(Boolean) || props.work.title)
-function navigate(event) { if (plainNavigation(event)) emit('navigate', `featured-${props.work.id}`) }
+function navigate(event) {
+  if (!plainNavigation(event)) return
+  emit('navigate', `featured-${props.work.id}`)
+  if (event.currentTarget?.getAttribute('href') === `/work/${props.work.id}`) preparePhotoNavigation(event, root.value)
+}
 function retry() { failed.value = false; picture.value?.retry() }
 useReveal(root, () => ({ key: `featured:${props.work.id}` }))
 </script>

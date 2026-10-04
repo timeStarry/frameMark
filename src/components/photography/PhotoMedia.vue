@@ -73,8 +73,8 @@ onBeforeUnmount(() => { disposed = true; requestVersion.value += 1 })
 </script>
 
 <template>
-  <div class="photo-media" :class="{ 'photo-media--error': state === 'error', 'photo-media--decoded': animate }" :style="{ '--photo-ratio': `${dimensions.width} / ${dimensions.height}` }" :aria-busy="state === 'loading'">
-    <img v-if="source" :key="requestVersion" ref="image" class="photo-media__image" :src="source" :alt="alt" :width="dimensions.width" :height="dimensions.height" :loading="eager ? 'eager' : 'lazy'" :fetchpriority="eager ? 'high' : 'auto'" decoding="async" :data-request="requestVersion" :style="{ objectFit: fit }" @load="loaded" @error="failed">
+  <div class="photo-media" :class="{ 'photo-media--error': state === 'error', 'photo-media--decoded': animate }" :style="{ '--photo-ratio': `${dimensions.width} / ${dimensions.height}` }" :aria-busy="state === 'loading'" :data-photo-state="state">
+    <img v-if="source" :key="requestVersion" ref="image" class="photo-media__image" :src="source" :alt="alt" :width="dimensions.width" :height="dimensions.height" :loading="eager ? 'eager' : 'lazy'" :fetchpriority="eager ? 'high' : 'auto'" decoding="async" :data-request="requestVersion" :data-photo-id="mediaId" :style="{ objectFit: fit }" @load="loaded" @error="failed">
     <span v-if="state === 'loading'" class="photo-media__loading" role="status">正在载入照片…</span>
     <div v-else-if="state === 'error'" class="photo-media__error">
       <span role="status">照片暂时无法载入</span>

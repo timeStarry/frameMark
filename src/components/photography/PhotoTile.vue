@@ -4,6 +4,7 @@ import PhotoMedia from './PhotoMedia.vue'
 import PhotographerByline from './PhotographerByline.vue'
 import { useReveal } from '../../composables/useReveal.js'
 import { photoFocusId, plainNavigation } from '../../composables/publicBrowse.js'
+import { preparePhotoNavigation } from '../../composables/photoTransition.js'
 
 const props = defineProps({
   work: { type: Object, required: true }, index: { type: Number, default: 0 },
@@ -19,7 +20,11 @@ const ratio = computed(() => {
 })
 const destination = computed(() => `/${props.work.kind === 'collection' ? 'collection' : 'work'}/${props.work.id}`)
 const count = computed(() => props.work.assets?.length || 0)
-function navigate(event) { if (plainNavigation(event)) emit('navigate', photoFocusId(props.work)) }
+function navigate(event) {
+  if (!plainNavigation(event)) return
+  emit('navigate', photoFocusId(props.work))
+  if (event.currentTarget?.getAttribute('href') === destination.value) preparePhotoNavigation(event, tile.value)
+}
 function retry() { failed.value = false; mediaElement.value?.retry() }
 useReveal(tile, () => ({ key: `${props.revealKey}:${props.work.id}`, index: props.append ? props.index % 12 : props.index, append: props.append }))
 </script>

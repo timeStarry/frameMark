@@ -9,11 +9,16 @@ import ProfileHeader from '../components/photography/ProfileHeader.vue'
 import PageState from '../components/photography/PageState.vue'
 import WorkViewer from '../components/photography/WorkViewer.vue'
 import { isPublicPath, publicHistoryPosition, publicPositionFor, rememberPublicPosition } from '../composables/publicBrowse.js'
+import { createPhotoTransitionController } from '../composables/photoTransition.js'
 
 const route = useRoute(), router = useRouter()
 const page = ref(null), state = ref('loading'), error = ref('')
 const appending = ref(false), appendError = ref(''), announcement = ref('')
 const root = ref(null), pageCount = ref(1)
+const photoTransition = createPhotoTransitionController(router, {
+  getRoot: () => root.value,
+  getReturnHint: to => publicPositionFor(to.fullPath, publicHistoryPosition()),
+})
 let requestVersion = 0, controller, loadedPath = '', loadedPosition = null, focusId = null, disposed = false
 const section = computed(() => route.path === '/' ? 'square' : route.path.split('/')[1])
 const featured = computed(() => page.value?.banner?.find(work => work.assets?.length || work.media?.length))
@@ -23,9 +28,11 @@ const title = computed(() => section.value === 'square' ? '广场' : page.value?
 function capturePosition() {
   if (!loadedPath || state.value !== 'ready') return
   const activeId = document.activeElement?.id
+  const originId = activeId?.startsWith('photo-') || activeId?.startsWith('featured-') ? activeId : focusId
+  const originImage = (originId && document.getElementById(originId)?.querySelector('img[data-photo-id]')) || root.value?.querySelector('.work-viewer__stage img[data-photo-id]')
   rememberPublicPosition(loadedPath, {
     top: window.scrollY, left: window.scrollX, pages: pageCount.value,
-    focusId: activeId?.startsWith('photo-') || activeId?.startsWith('featured-') ? activeId : focusId,
+    focusId: originId, mediaId: originImage?.dataset.photoId,
     position: loadedPosition,
   })
 }
@@ -95,7 +102,10 @@ async function load({ restore = null } = {}) {
     if (!sameRequest(version) || failure.name === 'AbortError') return
     error.value = failure.message || '暂时无法载入，请重试。'; state.value = 'error'
   }
-  if (sameRequest(version)) await placePage(version, replayFailed ? null : restore, navigationFocus)
+  if (sameRequest(version)) {
+    await placePage(version, replayFailed ? null : restore, navigationFocus)
+    if (sameRequest(version)) photoTransition.pageReady(route.fullPath, { ok: state.value === 'ready' && !replayFailed })
+  }
 }
 async function loadMore() {
   if (appending.value || !page.value?.nextCursor) return
@@ -133,7 +143,7 @@ watch(() => route.fullPath, () => {
   const restore = publicPositionFor(route.fullPath, publicHistoryPosition())
   load({ restore })
 }, { immediate: true })
-onBeforeUnmount(() => { capturePosition(); disposed = true; ++requestVersion; controller?.abort() })
+onBeforeUnmount(() => { capturePosition(); disposed = true; ++requestVersion; controller?.abort(); photoTransition.dispose() })
 </script>
 
 <template>

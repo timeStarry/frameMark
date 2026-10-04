@@ -1,10 +1,13 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import PhotoMedia from './PhotoMedia.vue'
+import { useAdjacentPreload } from '../../composables/useAdjacentPreload.js'
 
 const props = defineProps({ work: { type: Object, required: true } })
 const emit = defineEmits(['back'])
 const active = ref(0)
+const displayAllowed = ref(false), pendingIndex = ref(null), selectionError = ref(''), retryIndex = ref(null)
+let selectionVersion = 0, selectionController, disposed = false
 const media = computed(() => {
   const descriptors = Array.isArray(props.work.media) ? props.work.media : []
   const assets = Array.isArray(props.work.assets) ? props.work.assets : []
@@ -14,19 +17,40 @@ const media = computed(() => {
   }).filter(item => typeof item?.id === 'string' && item.id.length > 0)
 })
 const current = computed(() => media.value[active.value])
+const preloader = useAdjacentPreload(() => ({ workId: props.work.id, ids: media.value.map(item => item.id), index: active.value }))
 const title = computed(() => props.work.title?.trim() || '未命名作品')
 const author = computed(() => props.work.photographerName?.trim() ? `@${props.work.photographerName.trim()}` : '摄影师')
 const profilePath = computed(() => props.work.photographer ? `/profile/${encodeURIComponent(props.work.photographer)}` : null)
 const imageDescription = computed(() => `${title.value}${media.value.length > 1 ? ` · 第 ${active.value + 1} 张` : ''}`)
-const originalPath = computed(() => props.work.allowOriginal === true && current.value
+const originalPath = computed(() => displayAllowed.value && props.work.allowOriginal === true && current.value
   ? `/api/media/${encodeURIComponent(current.value.id)}/original` : null)
 
-watch(() => props.work.id, () => { active.value = 0 }, { immediate: true })
-watch(media, items => { active.value = Math.min(active.value, Math.max(0, items.length - 1)) })
+function cancelSelection() { selectionVersion++; selectionController?.abort(); selectionController = null; pendingIndex.value = null }
+function show(index) { active.value = index; displayAllowed.value = true; selectionError.value = ''; retryIndex.value = null }
+async function select(index) {
+  const target = media.value[index]
+  if (!target || disposed) return
+  if (pendingIndex.value === index) return
+  cancelSelection()
+  if (displayAllowed.value && index === active.value) { selectionError.value = ''; retryIndex.value = null; return }
+  if (!preloader.wasPrefetched(target.id)) { show(index); return }
+  const version = selectionVersion, workId = props.work.id
+  selectionController = new AbortController(); pendingIndex.value = index; selectionError.value = ''; retryIndex.value = null
+  const allowed = await preloader.authorize(target.id, { signal: selectionController.signal })
+  if (disposed || version !== selectionVersion || props.work.id !== workId || media.value[index]?.id !== target.id) return
+  pendingIndex.value = null; selectionController = null
+  if (allowed) show(index)
+  else { retryIndex.value = index; selectionError.value = '这张照片暂时无法查看，请重试。' }
+}
+watch(() => JSON.stringify([props.work.id, media.value.map(item => item.id)]), () => {
+  cancelSelection(); active.value = 0; displayAllowed.value = false; selectionError.value = ''; retryIndex.value = null
+  if (media.value.length) select(0)
+}, { immediate: true, flush: 'sync' })
 function step(direction) {
   if (media.value.length < 2) return
-  active.value = (active.value + direction + media.value.length) % media.value.length
+  select(((pendingIndex.value ?? active.value) + direction + media.value.length) % media.value.length)
 }
+function decoded(id) { if (displayAllowed.value && id === current.value?.id) preloader.decoded(id) }
 function keydown(event) {
   if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return
   const target = event.target
@@ -36,20 +60,24 @@ function keydown(event) {
     step(event.key === 'ArrowLeft' ? -1 : 1)
   }
 }
+onBeforeUnmount(() => { disposed = true; cancelSelection() })
 </script>
 
 <template>
-  <article class="work-viewer" tabindex="0" aria-label="作品观看" @keydown="keydown">
+  <article class="work-viewer" tabindex="0" aria-label="作品观看" :data-photo-pending="pendingIndex === null ? null : media[pendingIndex]?.id" :data-photo-failed="selectionError ? media[retryIndex]?.id : null" @keydown="keydown">
     <nav class="work-viewer__nav" aria-label="作品导航">
       <button type="button" class="work-viewer__back" @click="emit('back')"><span aria-hidden="true">←</span> 返回</button>
       <router-link v-if="profilePath" class="work-viewer__author" :to="profilePath">{{ author }}</router-link>
       <span v-else class="work-viewer__author">{{ author }}</span>
     </nav>
 
-    <template v-if="current">
-      <div class="work-viewer__stage">
-        <PhotoMedia :media="current" :alt="imageDescription" eager fit="contain" />
+    <template v-if="media.length">
+      <div class="work-viewer__stage" data-photo-current="true">
+        <PhotoMedia v-if="displayAllowed && current" :media="current" :alt="imageDescription" eager fit="contain" @load="decoded" />
+        <p v-else-if="pendingIndex !== null" class="work-viewer__permission-status" role="status">正在确认照片访问权限…</p>
       </div>
+      <p v-if="pendingIndex !== null && displayAllowed" class="work-viewer__permission-status" role="status">正在确认照片访问权限…</p>
+      <div v-if="selectionError" class="work-viewer__permission-error" role="alert"><span>{{ selectionError }}</span><button type="button" @click="select(retryIndex)">重试照片</button></div>
       <div class="work-viewer__controls" aria-label="组图浏览">
         <button type="button" :disabled="media.length < 2" aria-label="上一张照片" @click="step(-1)"><span aria-hidden="true">←</span><span>上一张</span></button>
         <span class="work-viewer__count" role="status" aria-live="polite" aria-atomic="true" :aria-label="`第 ${active + 1} 张，共 ${media.length} 张`">{{ active + 1 }} <span aria-hidden="true">/</span> {{ media.length }}</span>
@@ -83,6 +111,7 @@ function keydown(event) {
 .work-viewer__author{display:inline-flex;align-items:center;min-height:44px;max-width:70%;overflow-wrap:anywhere;font-size:13px;line-height:1.5;text-align:right}
 .work-viewer__stage{width:100%;height:clamp(240px,70vh,900px);height:clamp(240px,70svh,900px);margin-top:24px}
 .work-viewer__stage :deep(.photo-media){height:100%;aspect-ratio:auto;background:transparent}
+.work-viewer__permission-status{color:var(--markr-muted,#a0a4a8);font-size:12px;margin:12px 0}.work-viewer__permission-error{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin-top:12px;color:var(--markr-error,#e5a6a2);font-size:13px}
 .work-viewer__controls{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:16px;margin-top:12px}
 .work-viewer__controls button:first-child{justify-self:start}
 .work-viewer__controls button:last-child{justify-self:end}

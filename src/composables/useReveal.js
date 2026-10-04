@@ -10,6 +10,7 @@ function reducedMotion() {
   return typeof window === 'undefined'
     || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
     || globalThis.navigator?.connection?.saveData === true
+    || globalThis.document?.documentElement?.hasAttribute('data-markr-photo-transition')
 }
 
 function remember(key) {
