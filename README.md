@@ -12,6 +12,7 @@
 - [账户与会话设计](docs/account-session-design.md)
 - [部署、回滚与运维](docs/phase1-operations.md)
 - [验证记录与未测边界](docs/phase1-validation.md)
+- [演示图库、来源许可与种子操作](docs/demo-showcase.md)
 
 ## 运行
 

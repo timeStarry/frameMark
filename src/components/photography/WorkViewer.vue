@@ -24,6 +24,27 @@ const profilePath = computed(() => props.work.photographer ? `/profile/${encodeU
 const imageDescription = computed(() => `${title.value}${media.value.length > 1 ? ` · 第 ${active.value + 1} 张` : ''}`)
 const originalPath = computed(() => displayAllowed.value && props.work.allowOriginal === true && current.value
   ? `/api/media/${encodeURIComponent(current.value.id)}/original` : null)
+const sourceHosts = new Set(['commons.wikimedia.org', 'flickr.com', 'www.flickr.com', 'unsplash.com'])
+const licenseHosts = new Set(['creativecommons.org', 'www.creativecommons.org', 'commons.wikimedia.org'])
+function attributionLink(value, hosts) {
+  if (typeof value !== 'string') return null
+  try {
+    const url = new URL(value)
+    return url.protocol === 'https:' && !url.username && !url.password && !url.port && hosts.has(url.hostname)
+      ? url.href : null
+  } catch { return null }
+}
+function attributionText(value) { return typeof value === 'string' ? value.trim() : '' }
+const attributions = computed(() => (Array.isArray(props.work.attributions) ? props.work.attributions : [])
+  .filter(item => item && typeof item === 'object' && !Array.isArray(item))
+  .map(item => ({
+    title: attributionText(item.title), author: attributionText(item.author),
+    sourcePage: attributionLink(item.sourcePage, sourceHosts),
+    licenseName: attributionText(item.licenseName), licenseURL: attributionLink(item.licenseURL, licenseHosts),
+    changes: attributionText(item.changes),
+  }))
+  .filter(item => item.title || item.author || item.sourcePage || item.licenseName || item.licenseURL || item.changes))
+const licensePath = computed(() => attributionLink(props.work.license?.url, licenseHosts))
 
 function cancelSelection() { selectionVersion++; selectionController?.abort(); selectionController = null; pendingIndex.value = null }
 function show(index) { active.value = index; displayAllowed.value = true; selectionError.value = ''; retryIndex.value = null }
@@ -87,10 +108,26 @@ onBeforeUnmount(() => { disposed = true; cancelSelection() })
 
     <div class="work-viewer__details" :class="{ 'work-viewer__details--text': !current }">
       <h1>{{ title }}</h1>
+      <p v-if="work.isDemo === true" class="work-viewer__demo">演示内容 · 非本站用户原创</p>
       <p v-if="work.text" class="work-viewer__text">{{ work.text }}</p>
+      <section v-if="attributions.length" class="work-viewer__attributions" aria-label="图片来源与许可">
+        <h2>图片来源与许可</h2>
+        <ul>
+          <li v-for="(attribution, index) in attributions" :key="index">
+            <p class="work-viewer__source-caption"><span v-if="attribution.title">{{ attribution.title }}</span><span v-if="attribution.title && attribution.author"> · </span><span v-if="attribution.author">{{ attribution.author }}</span></p>
+            <div class="work-viewer__source-links">
+              <a v-if="attribution.sourcePage" :href="attribution.sourcePage" target="_blank" rel="noopener noreferrer">原始页面 <span aria-hidden="true">↗</span><span class="work-viewer__sr">（新窗口）</span></a>
+              <span v-else>原始页面链接不可用</span>
+              <a v-if="attribution.licenseURL" :href="attribution.licenseURL" target="_blank" rel="noopener noreferrer"><span class="work-viewer__source-link-label">{{ attribution.licenseName || '许可说明' }}</span><span aria-hidden="true">↗</span><span class="work-viewer__sr">（新窗口）</span></a>
+              <span v-else-if="attribution.licenseName">{{ attribution.licenseName }}</span>
+            </div>
+            <p v-if="attribution.changes" class="work-viewer__source-changes">处理说明：{{ attribution.changes }}</p>
+          </li>
+        </ul>
+      </section>
       <div v-if="work.aiDeclaration || work.license || originalPath" class="work-viewer__permissions">
         <p v-if="work.aiDeclaration?.label">{{ work.aiDeclaration.label }}</p>
-        <a v-if="work.license?.url" :href="work.license.url" target="_blank" rel="noopener noreferrer">{{ work.license.label }} · 官方许可说明 <span aria-hidden="true">↗</span><span class="work-viewer__sr">（新窗口）</span></a>
+        <a v-if="licensePath" :href="licensePath" target="_blank" rel="noopener noreferrer">{{ work.license.label }} · 官方许可说明 <span aria-hidden="true">↗</span><span class="work-viewer__sr">（新窗口）</span></a>
         <a v-if="originalPath" :href="originalPath">下载原文件 <span aria-hidden="true">↓</span></a>
       </div>
     </div>
@@ -120,7 +157,16 @@ onBeforeUnmount(() => { disposed = true; cancelSelection() })
 .work-viewer__details{max-width:760px;margin:48px auto 32px}
 .work-viewer__details--text{margin-top:64px;min-height:32vh}
 .work-viewer__details h1{margin:0;font-size:clamp(28px,3vw,36px);font-weight:400;line-height:1.4;letter-spacing:-.025em;overflow-wrap:anywhere}
+.work-viewer__demo{margin:12px 0 0;color:var(--markr-muted,#a0a4a8);font-size:12px;line-height:1.7;overflow-wrap:anywhere}
 .work-viewer__text{margin:24px 0 0;color:var(--markr-text,#eeeee9);font-size:15px;line-height:1.9;white-space:pre-wrap;overflow-wrap:anywhere}
+.work-viewer__attributions{margin-top:28px;color:var(--markr-muted,#a0a4a8);font-size:12px;line-height:1.7;overflow-wrap:anywhere}
+.work-viewer__attributions h2{margin:0 0 12px;font-size:13px;font-weight:400;color:var(--markr-text,#eeeee9)}
+.work-viewer__attributions ul{list-style:none;margin:0;padding:0}.work-viewer__attributions li+li{margin-top:20px}
+.work-viewer__source-caption,.work-viewer__source-changes{margin:0}.work-viewer__source-caption{color:var(--markr-text,#eeeee9)}
+.work-viewer__source-links{display:flex;flex-wrap:wrap;align-items:center;column-gap:24px;row-gap:4px;min-width:0}
+.work-viewer__source-links a{display:inline-flex;align-items:center;gap:6px;min-width:44px;min-height:44px;max-width:100%;overflow-wrap:anywhere}
+.work-viewer__source-link-label{min-width:0;overflow-wrap:anywhere}
+.work-viewer__source-changes{white-space:pre-wrap}
 .work-viewer__permissions{display:flex;flex-wrap:wrap;align-items:center;column-gap:24px;row-gap:4px;margin-top:32px;padding-top:16px;border-top:1px solid var(--markr-line,#282d31);color:var(--markr-muted,#a0a4a8);font-size:12px;line-height:1.7}
 .work-viewer__permissions p{flex-basis:100%;margin:0 0 4px}
 .work-viewer__permissions a{display:inline-flex;align-items:center;gap:6px;min-height:44px;overflow-wrap:anywhere}
