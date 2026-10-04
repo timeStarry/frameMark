@@ -8,8 +8,8 @@
 | --- | --- |
 | 服务 | `systemctl --user status markr-phase1.service` |
 | 服务根目录 | `/home/timestarry/deploy/markr-phase1` |
-| 发布目录 | `releases/20261004-continuous-viewing` |
-| 应用代码 | `2b2a0adb2ed236610c3155ce545e08c951bef486`；完整文档版本见 `current/REVISION` |
+| 发布目录 | `releases/20261004-demo-showcase` |
+| 应用代码 | `9a26e62f12a1bb6a74ec78a03c46f0f28d585747`；完整文档版本见 `current/REVISION` |
 | 当前版本 | `current` 软链接指向发布目录 |
 | 试验持久化 | `trial-data`，0700；原正式 `data` 保留且不迁移 |
 | 监听 | `100.99.0.5:18140`，仅已有 Tailscale 私有接口 |
@@ -35,7 +35,7 @@ systemctl --user restart markr-phase1.service
 curl -fsS http://100.99.0.5:18140/api/health
 ```
 
-回滚时把 `current` 指回上一目录并重启。本轮前一目录 `releases/20261004-quiet-ui` 完整保留，可切回并重启；更早预览也未删除。需要撤销整个独立实例时，可执行 `systemctl --user disable --now markr-phase1.service` 撤销实例，保留发布目录和数据。当前只创建新 SQLite 表，没有接触现有业务数据库或执行破坏性迁移。
+回滚时把 `current` 指回上一目录并重启。本轮前一目录 `releases/20261004-continuous-viewing` 完整保留，可切回并重启；更早预览也未删除。需要撤销整个独立实例时，可执行 `systemctl --user disable --now markr-phase1.service` 撤销实例，保留发布目录和数据。当前只创建新 SQLite 表，没有接触现有业务数据库或执行破坏性迁移。
 
 ## 备份与容量
 
@@ -123,3 +123,11 @@ curl -fsS http://100.99.0.5:18140/api/health
 ```
 
 不改变身份试验或数据目录。本次验证了前版存在和配置一致，未实际执行回滚演练。
+
+## 2026-10-04：演示图库上线
+
+发布目录 `20261004-demo-showcase`，应用代码 `9a26e62f12a1bb6a74ec78a03c46f0f28d585747`；生产依赖审计 0 漏洞，27/27 隔离回归通过后切换独立服务。前版 `20261004-continuous-viewing` / `ea8885c73e5b967a7ad85df3a96b5bd952984079` 完整保留。回退应用可按前文原子切换步骤，将目标改为该前版，再重启 markr-phase1.service；本轮未演练回退。
+
+按用户授权向 trial-data 导入不可登录的 Markr Demo 展示身份、10 张 CC0 照片与 3 个作品集。身份表用户数仍为 0；无邮箱、密码、邮件或登录凭据。seed 默认只读，重复 apply 已验证 unchanged。图片原始下载 2,871,464 bytes，连同 WebP 共 4,868,360 bytes；下载副本保留在 0700 的 `demo-sources/markr-demo-v1`，方便复核与重复执行。代码仓库只保存来源清单，不含图片。
+
+unit 与两个 drop-in 哈希不变；data inode 5156365、trial-data inode 5455213 及 0700 权限不变。没有修改其他服务、网络、注册配置或原正式 data。应用回退不会自动删除演示数据；清理定位、图片许可和准确入口见 [演示图库文档](demo-showcase.md)。

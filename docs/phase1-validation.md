@@ -2,9 +2,9 @@
 
 ## 当前验收摘要
 
-摄影浏览与工作区重构、同图跨页转场及相邻展示图预载已部署至 `20261004-continuous-viewing`，应用代码 `2b2a0adb2ed236610c3155ce545e08c951bef486`，完整文档提交见 server REVISION。Mac Node 26.7：122/122 测试、check/typecheck/build 与 git diff --check 通过；server Node 22：18/18 隔离回归通过，生产依赖审计 0 漏洞。远端提交与适用 CI 在推送后单独确认，不以本机测试代替。
+摄影平台、连续观看与有来源署名的演示图库已部署至 `20261004-demo-showcase`，应用代码 `9a26e62f12a1bb6a74ec78a03c46f0f28d585747`，完整文档提交见 server REVISION。Mac Node 26.7：135/135 测试、check/typecheck/build 与 git diff --check 通过；server Node 22：27/27 隔离回归通过，生产依赖审计 0 漏洞。远端提交与适用 CI 在推送后单独确认，不以本机测试代替。
 
-本轮 Mac 实际 HTTP 检查通过：10 个构建资源哈希与本机一致、9 个 SPA 路径正常、健康和权限控制正常。identityEnabled/privateTrial 仍为 true，原正式 data 与 trial-data 保持隔离。没有创建真实账号或生产测试作品，没有发送新邮件；早先一次邮件试验仍只是历史记录。
+本轮 Mac 实际 HTTP 检查通过：10 个构建资源哈希与本机一致、15 个演示 SPA 路径正常、健康和权限控制正常。identityEnabled/privateTrial 仍为 true，原正式 data 与 trial-data 保持隔离。当前仅导入用户授权的不可登录演示图库（10 张许可清晰网图），没有创建认证账号或发送新邮件；早先一次邮件试验仍只是历史记录。
 
 当前受支持工具目录再次核实没有浏览器、CUA、node_repl 或 Playwright 入口；仓库提供 Node/Sharp/Skia/happy-dom 测试及手动 browser-preview 脚本，没有可调用的 Mac 浏览器执行器。本轮真实桌面/窄屏截图、触控、200% 缩放、浏览器滚动位置、动效帧率、原生文件选择/下载后打开和浏览器堆内存均未测。没有用 shell/CDP 启动浏览器绕过限制，也未改浏览器或网络安全设置。旧截图和云端参考站点审阅不能替代新界面验收。
 
@@ -171,3 +171,11 @@ SMTP专用引用文件方案已通过真实服务器连接/TLS/认证验证：sm
 主 JS `assets/index-D3DkNVW5.js` SHA256：`ec4ae81fd6d1240984e0aef74205c3e3b9399938bf8c919b9792f0def529590b`。主 CSS `assets/index-Bl4qXUjF.css`：`f4def4136a158fc0e670780aabbefefcfb1be0c23bf429441a3fdeff9e822974`。
 
 未测：真实浏览器的同图几何、动画流畅度、native Image 复用及取消耗时、HEAD 往返对预载收益的影响，以及既有移动/缩放/触控/滚动/下载矩阵。Mac 当前没有受支持的浏览器控制接口；父线程云端 Chrome 私网访问 502/Connection refused 仅说明该环境无法访问，不构成 server 故障证据。本轮没有改绑定、DNS、代理或安全设置。
+
+## 2026-10-04 演示图库验收
+
+新增 seed-demo 的 9 项与来源界面的 4 项测试，合计 135/135；check、种子脚本语法、typecheck、build 与 diff 检查通过。独立审阅发现 SQLite 自动回滚时可能跳过本次新文件清理，已修复并覆盖 ABORT / ROLLBACK 两种失败；完整回归再次通过。服务器 27/27 隔离回归通过。
+
+真实试验库导入 24 条演示记录、20 个文件；重复执行 unchanged，认证用户数前后均为 0，清理报告无删除。Mac 实际验证 10 张 WebP 的解码/尺寸/元数据移除、展示 GET/HEAD 200、原件 GET/HEAD 404、广场和精选、主页署名及封面、3 个作品集成员顺序/封面；15 个页面路径和 10 个构建资源哈希正常。匿名工作台 401、外部来源写入 403。没有调用注册、验证或邮件接口。
+
+这些是实际部署的演示数据读取与权限检查，不冒称用户账号上传浏览器全链路。受支持的 Mac 浏览器接口仍不可用，无新产品截图、触控/缩放/动效验收。来源许可、容量和准确链接见 [演示图库记录](demo-showcase.md)。
