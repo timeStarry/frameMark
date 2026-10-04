@@ -21,11 +21,56 @@ export function createApp({ directory = './data', viewer = () => null, staticDir
   const auth = (req,res,next) => req.viewer ? next() : next(fail(401,accounts.enabled?'请登录后继续。':'身份入口尚未启用，请等待管理员配置。'));
   const owned = (id, user, kind) => { const r=store.get(id); if(!r || r.owner!==user || (kind && r.kind!==kind)) throw fail(404,'内容不存在'); return r; };
   const visible = (id,user,kind) => { const r=store.get(id); if(!r || r.kind!==kind || !canRead(r,user)) throw fail(404,'内容不存在'); return r; };
-  const clean = r => { const {owner,...data}=r; return {...data, tags:(data.tags||[]).filter(t=>t.visibility==='public'&&t.source==='author'&&['content','self_declaration'].includes(t.type)), photographer:owner}; };
+  // Display files are immutable. Older uploads predate stored, orientation-correct dimensions.
+  const displayDimensions = new Map();
+  async function mediaInfo(id) {
+    const asset=store.get(id);
+    if(!asset || asset.kind!=='asset') return null;
+    let dimensions;
+    if(asset.displayWidth>0 && asset.displayHeight>0) dimensions={width:asset.displayWidth,height:asset.displayHeight};
+    else {
+      if(!displayDimensions.has(id)) {
+        if(displayDimensions.size>=256) displayDimensions.delete(displayDimensions.keys().next().value);
+        displayDimensions.set(id,sharp(join(mediaDirectory,id+'.webp')).metadata().then(m=>({width:m.width,height:m.height})).catch(()=>({width:null,height:null})));
+      }
+      dimensions=await displayDimensions.get(id);
+    }
+    return {id,...dimensions};
+  }
+  const readableMembers = (r,user) => (r.works||[]).map(id=>store.get(id)).filter(w=>w?.kind==='work'&&canRead(w,user));
+  async function clean(r,user=null) {
+    const {owner,...data}=r;
+    const profile=store.list('profile').find(p=>p.owner===owner);
+    const result={...data,tags:(data.tags||[]).filter(t=>t.visibility==='public'&&t.source==='author'&&['content','self_declaration'].includes(t.type)),photographer:owner,photographerName:profile?.name||null};
+    if(r.kind==='work') result.media=(await Promise.all((r.assets||[]).map(mediaInfo))).filter(Boolean);
+    if(r.kind==='collection') {
+      const members=readableMembers(r,user);
+      result.works=members.map(w=>w.id);
+      const cover=members.find(w=>w.assets?.length)?.assets[0];
+      result.coverMedia=cover ? await mediaInfo(cover) : null;
+    }
+    if(r.kind==='profile') result.coverMedia=r.cover ? await mediaInfo(r.cover) : null;
+    return result;
+  }
   const wrap = fn => (req,res,next) => Promise.resolve().then(()=>fn(req,res)).catch(next);
   app.get('/api/health', (req,res)=>res.json({ok:true, identityEnabled:accounts.enabled,privateTrial:accounts.privateTrial===true}));
   app.get('/api/me',(req,res)=>res.json({user:req.viewer,identityEnabled:accounts.enabled,privateTrial:accounts.privateTrial===true}));
-  app.get('/api/square',(req,res)=>res.json({works:store.list('work').filter(inSquare).map(clean), banner:store.list('work').filter(r=>inSquare(r)&&r.featuredRank>0).sort((a,b)=>a.featuredRank-b.featuredRank).map(clean)}));
+  app.get('/api/square',wrap(async(req,res)=>{
+    const all=store.list('work');
+    const paged=req.query.limit!==undefined || req.query.cursor!==undefined;
+    const limit=req.query.limit===undefined?12:Number(req.query.limit);
+    if(paged && (!Number.isInteger(limit)||limit<1||limit>48||Array.isArray(req.query.limit))) throw fail(400,'分页大小无效');
+    let start=0;
+    if(req.query.cursor!==undefined) {
+      if(typeof req.query.cursor!=='string') throw fail(400,'分页位置无效');
+      const index=all.findIndex(w=>w.id===req.query.cursor);
+      if(index<0) throw fail(400,'分页位置已失效，请重新浏览');
+      start=index+1;
+    }
+    const candidates=all.slice(start).filter(inSquare), selected=paged?candidates.slice(0,limit):candidates;
+    const banner=all.filter(r=>inSquare(r)&&r.featuredRank>0).sort((a,b)=>a.featuredRank-b.featuredRank);
+    res.json({works:await Promise.all(selected.map(r=>clean(r))),banner:await Promise.all(banner.map(r=>clean(r))),nextCursor:paged&&candidates.length>limit?selected.at(-1).id:null});
+  }));
   app.get('/api/studio',auth,(req,res)=>res.json(Object.fromEntries(['asset','work','collection','profile'].map(k=>[k,store.list(k).filter(r=>r.owner===req.viewer)]))));
   const upload = multer({storage:multer.memoryStorage(),limits:{fileSize:Number(process.env.MAX_UPLOAD_MB||20)*1024*1024,files:1}});
   app.post('/api/assets',auth,upload.single('file'),wrap(async(req,res)=>{
@@ -34,11 +79,11 @@ export function createApp({ directory = './data', viewer = () => null, staticDir
     if(count>=Number(process.env.MAX_ASSETS||100)) throw fail(413,'素材配额已满');
     const image=sharp(req.file.buffer,{limitInputPixels:40000000}), meta=await image.metadata();
     if(!['jpeg','png','webp'].includes(meta.format) || (meta.pages||1)>1) throw fail(400,'仅支持单帧 JPEG、PNG、WebP');
-    const display=await image.rotate().resize({width:2400,height:2400,fit:'inside',withoutEnlargement:true}).webp({quality:85}).toBuffer();
+    const {data:display,info}=await image.rotate().resize({width:2400,height:2400,fit:'inside',withoutEnlargement:true}).webp({quality:85}).toBuffer({resolveWithObject:true});
     const id=randomUUID(), original=join(mediaDirectory,id+'.original'), preview=join(mediaDirectory,id+'.webp');
     try {
       writeFileSync(original,req.file.buffer,{flag:'wx',mode:0o600}); writeFileSync(preview,display,{flag:'wx',mode:0o600});
-      res.status(201).json(store.save('asset',req.viewer,{format:meta.format,width:meta.width,height:meta.height,bytes:req.file.size,createdAt:new Date().toISOString()},id));
+      res.status(201).json(store.save('asset',req.viewer,{format:meta.format,width:meta.width,height:meta.height,displayWidth:info.width,displayHeight:info.height,bytes:req.file.size,createdAt:new Date().toISOString()},id));
     } catch(e) { for(const p of [original,preview]) {try{unlinkSync(p)}catch{}} throw e; }
   }));
   function validate(req,kind,existing={}) {
@@ -77,7 +122,7 @@ export function createApp({ directory = './data', viewer = () => null, staticDir
       data.accent=b.accent??data.accent??'#c8a477'; if(!/^#[0-9a-f]{6}$/i.test(data.accent)) throw fail(400,'颜色无效');
       data.layout=b.layout??data.layout??'grid'; if(!['grid','column'].includes(data.layout)) throw fail(400,'布局无效');
       data.modules=b.modules??data.modules??['works','collections']; if(!Array.isArray(data.modules)||data.modules.length!==2||!data.modules.includes('works')||!data.modules.includes('collections')) throw fail(400,'模块顺序无效');
-      data.cover=b.cover??data.cover??null; if(data.cover) owned(data.cover,req.viewer,'asset');
+      data.cover=b.cover!==undefined?b.cover:(data.cover??null); if(data.cover) owned(data.cover,req.viewer,'asset');
     }
     data.updatedAt=new Date().toISOString(); return data;
   }
@@ -85,9 +130,9 @@ export function createApp({ directory = './data', viewer = () => null, staticDir
     app.post('/api/'+kind,auth,wrap((req,res)=>res.status(201).json(store.save(kind,req.viewer,validate(req,kind)))));
     app.put('/api/'+kind+'/:id',auth,wrap((req,res)=>{const old=owned(req.params.id,req.viewer,kind);res.json(store.save(kind,req.viewer,validate(req,kind,old),old.id));}));
   }
-  app.get('/api/work/:id',wrap((req,res)=>res.json(clean(visible(req.params.id,req.viewer,'work')))));
-  app.get('/api/collection/:id',wrap((req,res)=>{const c=visible(req.params.id,req.viewer,'collection');res.json({...clean(c),items:c.works.map(id=>store.get(id)).filter(r=>r?.kind==='work'&&canRead(r,req.viewer)).map(clean)});}));
-  app.get('/api/profile/:owner',wrap((req,res)=>{ const owner=req.params.owner, p=store.list('profile').find(r=>r.owner===owner); if(!p) throw fail(404,'主页不存在');res.json({...clean(p),works:store.list('work').filter(r=>r.owner===owner&&r.status==='published'&&r.visibility==='public').map(clean),collections:store.list('collection').filter(r=>r.owner===owner&&r.status==='published'&&r.visibility==='public').map(clean)}); }));
+  app.get('/api/work/:id',wrap(async(req,res)=>res.json(await clean(visible(req.params.id,req.viewer,'work'),req.viewer))));
+  app.get('/api/collection/:id',wrap(async(req,res)=>{const c=visible(req.params.id,req.viewer,'collection');res.json({...await clean(c,req.viewer),items:await Promise.all(readableMembers(c,req.viewer).map(r=>clean(r,req.viewer)))});}));
+  app.get('/api/profile/:owner',wrap(async(req,res)=>{ const owner=req.params.owner, p=store.list('profile').find(r=>r.owner===owner); if(!p) throw fail(404,'主页不存在');res.json({...await clean(p),works:await Promise.all(store.list('work').filter(r=>r.owner===owner&&r.status==='published'&&r.visibility==='public').map(r=>clean(r))),collections:await Promise.all(store.list('collection').filter(r=>r.owner===owner&&r.status==='published'&&r.visibility==='public').map(r=>clean(r)))}); }));
   app.get('/api/media/:id/:variant',wrap((req,res)=>{
     const a=store.get(req.params.id),original=req.params.variant==='original';
     if(!a||a.kind!=='asset'||!['display','original'].includes(req.params.variant)) throw fail(404,'图片不存在');

@@ -1,6 +1,6 @@
 // Shared platform reset. Tool-specific styles live in src/tools/workspace.css.
 * { margin:0; padding:0; box-sizing:border-box; scrollbar-width:thin; scrollbar-color:#41494d transparent; }
-body { min-height:100vh; line-height:1.6; }
+body { min-height:100vh; }
 #app { min-height:100vh; }
 .btn { display:inline-flex; align-items:center; justify-content:center; gap:8px; cursor:pointer; text-decoration:none; text-align:center; }
 .btn:disabled { cursor:not-allowed; }

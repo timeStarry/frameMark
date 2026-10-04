@@ -29,16 +29,15 @@ let returnFocus: HTMLElement | null = null;
 watch(() => props.open, async (open) => { if (open) {
     returnFocus = document.activeElement as HTMLElement;
     await nextTick();
-    heading.value?.focus();
+    if (props.open) heading.value?.focus();
 }
 else {
-    returnFocus?.focus();
+    if (returnFocus?.isConnected) returnFocus.focus();
 } }, { flush: 'post' });
 </script>
 <template>
 <section v-if="open" class="export-panel" aria-label="导出设置">
-<h2 ref="heading" tabindex="-1">导出照片 <button @click="emit('close')">关闭</button>
-</h2>
+<div class="export-heading"><h2 ref="heading" tabindex="-1">导出照片</h2><button @click="emit('close')">关闭</button></div>
 <fieldset :disabled="busy">
 <div class="export-controls">
 <label>文件名<input :value="filename" maxlength="100" @input="emit('update:filename',($event.target as HTMLInputElement).value)">
@@ -53,8 +52,8 @@ else {
 <NumberControl v-if="settings.format!=='image/png'" label="质量" v-model="settings.quality" :min="1" :max="100" @commit="emit('commit')"/>
 </div>
 </fieldset>
-<p>{{size?.width}} × {{size?.height}} px · 输出最多1600万像素，长边8192px。编码阶段不提供百分比；取消后丢弃迟到结果。</p>
+<p>{{size?.width}} × {{size?.height}} px · 最多 1600 万像素，长边 ≤ 8192 px。</p>
 <button class="primary" :disabled="busy||!hasAssets" @click="emit('generate')">生成文件</button> <button :disabled="!hasResult||stale||busy" @click="emit('download')">下载文件</button>
-<small v-if="hasResult&&stale">设置已变化，请重新生成。</small>
+<small v-if="hasResult&&stale" role="status">设置已变化，请重新生成。</small>
 </section>
 </template>

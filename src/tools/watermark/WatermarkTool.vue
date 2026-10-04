@@ -21,7 +21,7 @@ function preset(name: string) { doc.value = applyPreset(snapshot(), name); commi
 <AssetList ref="assetList" :assets="assets" :selected="selected" :busy="busy" @import="importFiles" @remove="remove" @select="selected=$event"/>
 </template>
 <template #canvas>
-<CanvasViewport :has-assets="!!asset" :size="size" description="边框与文字的本地预览" @ready="canvas=$event" @import="assetList?.pick()"/>
+<CanvasViewport :busy="busy" :transparent="doc.transparent&&doc.format!=='image/jpeg'&&doc.frame==='solid'" :has-assets="!!asset" :size="size" description="边框与文字的本地预览" @ready="canvas=$event" @import="assetList?.pick()"/>
 </template>
 <template #properties>
 <fieldset :disabled="!asset||busy">
@@ -70,15 +70,18 @@ function preset(name: string) { doc.value = applyPreset(snapshot(), name); commi
 </select>
 </label>
 </fieldset>
+<details class="inspector-details">
+<summary>拍摄参数</summary>
 <fieldset :disabled="!asset||busy">
-<legend>拍摄参数（可选）</legend>
-<p>只读取拍摄字段，不读取位置；导出不复制原始元数据。</p>
+<legend class="sr-only">拍摄参数（可选）</legend>
+<p>不读取位置；导出不复制原始元数据。</p>
 <label v-for="(name,key) in fields" :key="key" class="check-row">
 <input type="checkbox" :value="key" v-model="doc.fields" :disabled="!asset?.metadata[key]" @change="commit">{{name}} <small>{{asset?.metadata[key]||'无信息'}}</small>
 </label>
 <label v-for="key in doc.fields" :key="'edit-'+key">{{fields[key]}}显示值<input :value="doc.fieldValues[key]||asset?.metadata[key]" maxlength="100" @change="doc.fieldValues[key]=($event.target as HTMLInputElement).value;commit()">
 </label>
 </fieldset>
+</details>
 </template>
 <template #export>
 <ExportPanel :open="exportOpen" :settings="doc" :size="size" :busy="busy" :has-assets="!!asset" :has-result="!!result" :stale="resultRevision!==revision" v-model:filename="filename" watermark @commit="commit" @generate="exportImage" @download="save" @close="exportOpen=false"/>

@@ -19,16 +19,19 @@ export function useEditor<T extends OutputSettings>(initial: () => T, renderer: 
         revision.value++;
         prune();
     }
-    function undo() { commit(); restore(history.undo()); }
-    function redo() { restore(history.redo()); }
-    function reset() { doc.value = { ...initial(), assetIds: [...doc.value.assetIds] }; commit(); }
+    function undo() { if (busy.value) return; commit(); restore(history.undo()); }
+    function redo() { if (busy.value) return; restore(history.redo()); }
+    function reset() { if (busy.value) return; doc.value = { ...initial(), assetIds: [...doc.value.assetIds] }; commit(); }
     function remove(id: string) {
+        if (busy.value) return;
+        const index = doc.value.assetIds.indexOf(id);
         doc.value.assetIds = doc.value.assetIds.filter(x => x !== id);
         if (selected.value === id)
-            selected.value = doc.value.assetIds[0] || '';
+            selected.value = doc.value.assetIds[Math.min(index, doc.value.assetIds.length - 1)] || '';
         commit();
     }
     function clear() {
+        if (busy.value) return;
         if (!confirm('清空当前素材？可以撤销恢复。'))
             return;
         doc.value.assetIds = [];
@@ -183,11 +186,11 @@ export function useEditor<T extends OutputSettings>(initial: () => T, renderer: 
         if (e.key === 'Escape') {
             busy.value ? cancel() : exportOpen.value = false;
         }
-        if ((e.target as HTMLElement).matches('input,textarea,[contenteditable]'))
+        if (e.target instanceof Element && e.target.closest('input,textarea,select,[contenteditable]:not([contenteditable=false])'))
             return;
         if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') {
             e.preventDefault();
-            e.shiftKey ? redo() : undo();
+            if (!busy.value) e.shiftKey ? redo() : undo();
         }
     }
     onMounted(() => window.addEventListener('keydown', keyboard));

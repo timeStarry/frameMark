@@ -4,6 +4,8 @@ import type { Size } from '../core/document';
 import type { Cell } from '../core/collage';
 const props = defineProps<{
     hasAssets: boolean;
+    busy?: boolean;
+    transparent?: boolean;
     size: Size | null;
     description: string;
     cells?: Cell[];
@@ -38,7 +40,7 @@ watch(() => [props.size?.width, props.size?.height], () => zoom.value = 'fit');
 </script>
 <template>
 <div ref="viewport" class="canvas-viewport">
-<div v-if="hasAssets&&size" class="canvas-stage" :style="{width:stageWidth+'px',aspectRatio:size.width+'/'+size.height}">
+<div v-if="hasAssets&&size" class="canvas-stage" :class="{'transparent-output':transparent}" :style="{width:stageWidth+'px',aspectRatio:size.width+'/'+size.height}">
 <canvas ref="canvas" role="img" :aria-label="description">
 </canvas>
 <button v-for="cell in cells||[]" :key="cell.id" class="cell-hit" :class="{selected:cell.id===selected}" :aria-label="'选择第 '+((cells||[]).indexOf(cell)+1)+' 格照片'" :aria-pressed="cell.id===selected" :style="{left:cell.x/(logicalSize?.width||1)*100+'%',top:cell.y/(logicalSize?.height||1)*100+'%',width:cell.width/(logicalSize?.width||1)*100+'%',height:cell.height/(logicalSize?.height||1)*100+'%'}" @click="emit('select',cell.id)">
@@ -47,14 +49,13 @@ watch(() => [props.size?.width, props.size?.height], () => zoom.value = 'fit');
 <div v-else class="editor-empty">
 <canvas ref="canvas" hidden>
 </canvas>
-<h2>从照片开始创作</h2>
 <p>拖入照片，或选择本地文件。</p>
-<button @click="emit('import')">选择照片</button>
+<button :disabled="busy" @click="emit('import')">选择照片</button>
 </div>
 </div>
 <div class="canvas-status">
-<span>预览 · {{size?`${size.width} × ${size.height} px 导出`:''}}</span>
-<label>缩放 <select v-model="zoom">
+<span>{{hasAssets&&size?`预览 · ${size.width} × ${size.height} px`:'预览'}}</span>
+<label>缩放 <select v-model="zoom" :disabled="!hasAssets">
 <option value="fit">适应</option>
 <option value="0.25">25%</option>
 <option value="0.5">50%</option>

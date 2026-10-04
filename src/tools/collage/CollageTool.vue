@@ -43,7 +43,7 @@ function setDimension(key: 'width' | 'height', value: number) { const ratio = do
 <AssetList ref="assetList" :assets="assets" :selected="selected" :busy="busy" multiple @import="importing" @remove="remove" @select="selected=$event" @move="move" @clear="clear"/>
 </template>
 <template #canvas>
-<CanvasViewport :has-assets="!!assets.length" :size="size" :logical-size="{width:doc.width,height:doc.height}" :cells="layout" :selected="selected" description="拼图预览；格子选择不改变图片顺序和裁切" @ready="canvas=$event" @select="selected=$event" @import="assetList?.pick()"/>
+<CanvasViewport :busy="busy" :transparent="doc.transparent&&doc.format!=='image/jpeg'" :has-assets="!!assets.length" :size="size" :logical-size="{width:doc.width,height:doc.height}" :cells="layout" :selected="selected" description="拼图预览；格子选择不改变图片顺序和裁切" @ready="canvas=$event" @select="selected=$event" @import="assetList?.pick()"/>
 </template>
 <template #properties>
 <fieldset :disabled="!assets.length||busy">
@@ -55,7 +55,7 @@ function setDimension(key: 'width' | 'height', value: number) { const ratio = do
 </select>
 </label>
 <NumberControl v-if="doc.mode==='grid'" label="列数" v-model="doc.columns" :min="1" :max="6" @commit="commit"/>
-<p>切换布局保留素材顺序和每张裁切；不满行留空。</p>
+<p>不满行留空，切换布局保留裁切。</p>
 <NumberControl label="间距" v-model="doc.gap" :min="0" :max="200" unit="px" @commit="commit"/>
 <NumberControl label="外边距" v-model="doc.padding" :min="0" :max="200" unit="px" @commit="commit"/>
 <NumberControl label="圆角" v-model="doc.radius" :min="0" :max="100" unit="px" @commit="commit"/>
@@ -74,7 +74,7 @@ function setDimension(key: 'width' | 'height', value: number) { const ratio = do
 <NumberControl label="水平焦点" :model-value="placement.x" :min="0" :max="100" unit="%" @update:model-value="setPlacement('x',$event)" @commit="commit"/>
 <NumberControl label="垂直焦点" :model-value="placement.y" :min="0" :max="100" unit="%" @update:model-value="setPlacement('y',$event)" @commit="commit"/>
 <button @click="doc.placements[selected]={x:50,y:50,fit:'cover'};commit()">重置此照片构图</button>
-<p>选择、替换、重排、裁切为独立操作；替换保留此格构图设置。</p>
+<p>替换照片保留此格构图。</p>
 </fieldset>
 <fieldset :disabled="busy">
 <legend>画布尺寸</legend>
@@ -87,7 +87,7 @@ function setDimension(key: 'width' | 'height', value: number) { const ratio = do
 <NumberControl label="高度" :model-value="doc.height" :min="64" :max="8192" unit="px" @update:model-value="setDimension('height',$event)" @commit="commit"/>
 <label class="check-row">
 <input type="checkbox" v-model="lockRatio">锁定当前宽高比</label>
-<p>比例锁定是视图操作，不进入撤销历史。输出最多1600万像素。</p>
+<p>输出最多 1600 万像素。</p>
 </fieldset>
 </template>
 <template #export>

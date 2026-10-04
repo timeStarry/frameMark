@@ -1,75 +1,194 @@
 <script setup>
-import { accountRequest } from '../auth/session.mjs'
-import { ref, watch, onBeforeUnmount } from 'vue'
-import {licenses,aiDeclaration} from '../shared/declarations.mjs'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-const router=useRouter(), route=useRoute(), result=ref({}), error=ref(''), busy=ref(false), me=ref(null), studio=ref({asset:[],work:[],collection:[],profile:[]}), active=ref(0)
-const form=ref({title:'',text:'',license:null,aiDeclaration:null,assets:[],works:[],status:'draft',visibility:'private',distribute:true,allowOriginal:false})
-const kind=ref('work'), editing=ref(null), profile=ref({name:'',bio:'',accent:'#ccd4c4',layout:'grid',modules:['works','collections'],cover:null})
-const image=id=>'/api/media/'+id+'/display'
-const api=accountRequest
-async function logout(all=false){await action(async()=>{await api('auth/'+(all?'logout-all':'logout'),{method:'POST'});await router.replace('/login')})}
-let loadVersion=0, loadController
-async function load(){
- const version=++loadVersion, path=route.path
- loadController?.abort(); loadController=new AbortController()
- const signal=loadController.signal
- busy.value=true; error.value=''; active.value=0; result.value={}
- try{
-  const identity=await api('me',{signal})
-  if(version!==loadVersion)return
-  me.value=identity.user
-  if(path==='/studio'){
-   if(me.value){const data=await api('studio',{signal});if(version!==loadVersion)return;studio.value=data;profile.value=data.profile[0]||profile.value}
-   else result.value={locked:true}
-  }else{
-   const data=await api(path==='/'?'square':path.slice(1),{signal})
-   if(version===loadVersion)result.value=data
-  }
- }catch(e){if(version===loadVersion&&e.name!=='AbortError')error.value=e.message}
- finally{if(version===loadVersion)busy.value=false}
+import { accountRequest } from '../auth/session.mjs'
+import StudioView from './StudioView.vue'
+import FeaturedPhoto from '../components/photography/FeaturedPhoto.vue'
+import PhotoGrid from '../components/photography/PhotoGrid.vue'
+import ProfileHeader from '../components/photography/ProfileHeader.vue'
+import PageState from '../components/photography/PageState.vue'
+import WorkViewer from '../components/photography/WorkViewer.vue'
+import { isPublicPath, publicHistoryPosition, publicPositionFor, rememberPublicPosition } from '../composables/publicBrowse.js'
+
+const route = useRoute(), router = useRouter()
+const page = ref(null), state = ref('loading'), error = ref('')
+const appending = ref(false), appendError = ref(''), announcement = ref('')
+const root = ref(null), pageCount = ref(1)
+let requestVersion = 0, controller, loadedPath = '', loadedPosition = null, focusId = null, disposed = false
+const section = computed(() => route.path === '/' ? 'square' : route.path.split('/')[1])
+const featured = computed(() => page.value?.banner?.find(work => work.assets?.length || work.media?.length))
+const modules = computed(() => (page.value?.modules || ['works', 'collections']).filter(value => value === 'works' || value === 'collections'))
+const title = computed(() => section.value === 'square' ? '广场' : page.value?.name || page.value?.title || (section.value === 'profile' ? '摄影师' : '作品'))
+
+function capturePosition() {
+  if (!loadedPath || state.value !== 'ready') return
+  const activeId = document.activeElement?.id
+  rememberPublicPosition(loadedPath, {
+    top: window.scrollY, left: window.scrollX, pages: pageCount.value,
+    focusId: activeId?.startsWith('photo-') || activeId?.startsWith('featured-') ? activeId : focusId,
+    position: loadedPosition,
+  })
 }
-function goBack(){if(window.history.state?.back)router.back();else router.push('/')}
-onBeforeUnmount(()=>{loadVersion++;loadController?.abort()})
-watch(()=>route.fullPath,load,{immediate:true})
-async function action(fn){if(busy.value)return;busy.value=true;error.value='';try{await fn()}catch(e){error.value=e.message;if(e.status===401)await router.replace({path:'/login',query:{returnTo:route.fullPath}})}finally{busy.value=false}}
-async function upload(event){const files=[...event.target.files];await action(async()=>{for(const file of files){const body=new FormData();body.append('file',file);const a=await api('assets',{method:'POST',body});studio.value.asset.unshift(a);form.value.assets.push(a.id)}});event.target.value=''}
-async function save(){await action(async()=>{const record=await api(kind.value+(editing.value?'/'+editing.value:''),{method:editing.value?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(form.value)});editing.value=record.id;studio.value=await api('studio')})}
-function edit(record){kind.value=record.kind;editing.value=record.id;form.value={...record,license:record.license?.code||null,aiDeclaration:record.aiDeclaration?.code||null}}
-function fresh(){editing.value=null;form.value={title:'',text:'',license:null,aiDeclaration:null,assets:[],works:[],status:'draft',visibility:'private',distribute:true,allowOriginal:false}}
-async function saveProfile(){await action(async()=>{const old=studio.value.profile[0];profile.value=await api('profile'+(old?'/'+old.id:''),{method:old?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(profile.value)});studio.value=await api('studio')})}
+function rememberOrigin(id) { focusId = id; capturePosition() }
+function goBack() {
+  const back = window.history.state?.back
+  if (typeof back === 'string' && back.startsWith('/') && !back.startsWith('//')) router.back()
+  else router.push('/')
+}
+function sameRequest(version) { return !disposed && version === requestVersion }
+function mergeWorks(current, incoming) {
+  const ids = new Set(current.map(work => work.id))
+  return [...current, ...incoming.filter(work => !ids.has(work.id) && ids.add(work.id))]
+}
+async function requestSquare(cursor, signal) {
+  const suffix = cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''
+  return accountRequest(`square?limit=12${suffix}`, { signal })
+}
+async function placePage(version, restore, navigationFocus) {
+  await nextTick()
+  if (!sameRequest(version) || !root.value) return
+  document.title = `${title.value} · Markr`
+  const active = document.activeElement
+  if (active && active !== navigationFocus && active !== document.body && active !== document.documentElement) return
+  const focus = restore?.focusId ? document.getElementById(restore.focusId) : null
+  const target = focus || root.value.querySelector('.work-viewer, #public-page-title') || root.value
+  target.focus?.({ preventScroll: true })
+  const lostOrigin = restore?.focusId && !focus
+  window.scrollTo({ top: lostOrigin ? 0 : restore?.top || 0, left: lostOrigin ? 0 : restore?.left || 0, behavior: 'instant' })
+}
+async function load({ restore = null } = {}) {
+  const path = route.path
+  if (!isPublicPath(path)) return
+  const version = ++requestVersion
+  const navigationFocus = document.activeElement
+  let replayFailed = false
+  controller?.abort()
+  controller = new AbortController()
+  const signal = controller.signal
+  page.value = null; state.value = 'loading'; error.value = ''
+  appending.value = false; appendError.value = ''; announcement.value = ''; pageCount.value = 1
+  loadedPath = route.fullPath; loadedPosition = publicHistoryPosition(); focusId = restore?.focusId || null
+  try {
+    let data = path === '/' ? await requestSquare(null, signal) : await accountRequest(path.slice(1), { signal })
+    if (!sameRequest(version)) return
+    if (path === '/') {
+      data = { ...data, works: Array.isArray(data.works) ? data.works : [], nextCursor: data.nextCursor || null }
+      const visited = new Set()
+      while (pageCount.value < (restore?.pages || 1) && data.nextCursor && !visited.has(data.nextCursor)) {
+        visited.add(data.nextCursor)
+        let more
+        try { more = await requestSquare(data.nextCursor, signal) }
+        catch (failure) {
+          if (!sameRequest(version) || failure.name === 'AbortError') throw failure
+          appendError.value = failure.message || '暂时无法恢复后续作品，请重试。'
+          replayFailed = true
+          break
+        }
+        if (!sameRequest(version)) return
+        data.works = mergeWorks(data.works, more.works || [])
+        data.nextCursor = more.nextCursor || null
+        pageCount.value += 1
+      }
+    } else if (!data?.id) throw Error('内容不存在或暂时无法查看。')
+    page.value = data; state.value = 'ready'
+  } catch (failure) {
+    if (!sameRequest(version) || failure.name === 'AbortError') return
+    error.value = failure.message || '暂时无法载入，请重试。'; state.value = 'error'
+  }
+  if (sameRequest(version)) await placePage(version, replayFailed ? null : restore, navigationFocus)
+}
+async function loadMore() {
+  if (appending.value || !page.value?.nextCursor) return
+  const version = requestVersion, cursor = page.value.nextCursor
+  const launchTarget = document.activeElement
+  const launchedFromButton = launchTarget?.classList.contains('public-page__continue')
+  appending.value = true; appendError.value = ''; announcement.value = ''
+  try {
+    const data = await requestSquare(cursor, controller.signal)
+    if (!sameRequest(version)) return
+    const previous = page.value.works.length
+    page.value.works = mergeWorks(page.value.works, data.works || [])
+    page.value.nextCursor = data.nextCursor && data.nextCursor !== cursor ? data.nextCursor : null
+    pageCount.value += 1
+    announcement.value = `已载入 ${page.value.works.length - previous} 件作品，共 ${page.value.works.length} 件。`
+    if (launchedFromButton && !page.value.nextCursor) {
+      await nextTick()
+      if (!sameRequest(version)) return
+      if (document.activeElement === launchTarget || document.activeElement === document.body) {
+        const firstNew = page.value.works.slice(previous).find(work => work.id !== featured.value?.id)
+        const links = root.value?.querySelectorAll('.photo-tile__link')
+        const target = firstNew ? document.getElementById(`photo-${firstNew.kind === 'collection' ? 'collection' : 'work'}-${firstNew.id}`) : links?.[links.length - 1]
+        target?.focus({ preventScroll: true })
+      }
+    }
+  } catch (failure) {
+    if (sameRequest(version) && failure.name !== 'AbortError') appendError.value = failure.message || '暂时无法载入更多作品。'
+  } finally { if (sameRequest(version)) appending.value = false }
+}
+watch(() => route.fullPath, () => {
+  capturePosition()
+  if (!isPublicPath(route.path)) {
+    ++requestVersion; controller?.abort(); loadedPath = ''; return
+  }
+  const restore = publicPositionFor(route.fullPath, publicHistoryPosition())
+  load({ restore })
+}, { immediate: true })
+onBeforeUnmount(() => { capturePosition(); disposed = true; ++requestVersion; controller?.abort() })
 </script>
+
 <template>
- <section class="platform" :style="{'--accent':result.accent||'#ccd4c4'}">
-  <p v-if="error" role="alert" class="notice">{{error}} <button @click="load">重试</button> <router-link to="/">返回广场</router-link></p>
-  <p v-if="busy" role="status" class="loading-state"><span class="loading-dot" aria-hidden="true"></span>正在载入……</p>
-  <template v-if="route.path==='/'">
-   <div class="hero" v-if="result.banner?.length" :style="result.banner[0].assets?.length?{backgroundImage:`linear-gradient(0deg,#090a0c,transparent),url(${image(result.banner[0].assets[0])})`}:{}"><span>SELECTED / 精选影像</span><h1>{{result.banner[0].title}}</h1><router-link :to="'/work/'+result.banner[0].id">进入作品 →</router-link></div>
-   <div v-else class="hero empty"><span>MARKR JOURNAL / 摄影与表达</span><h1>让影像，成为你的语言。</h1><p>一处整理作品的空间，一个分享视角的窗口。</p><router-link to="/studio">创建我的作品空间 →</router-link></div>
-   <div class="section-title"><h2>广场</h2><span>发现独特的视角</span></div>
-   <div class="cards"><router-link v-for="w in result.works" :key="w.id" :to="'/work/'+w.id" class="card"><img v-if="w.assets.length" :src="image(w.assets[0])" :alt="w.title" loading="lazy"><div v-else class="text-cover">{{w.text}}</div><h3>{{w.title}}</h3><small>{{w.photographer}}</small></router-link></div>
-   <p v-if="!busy&&!result.works?.length" class="empty-state">广场还没有作品。公开发布的作品默认展示于此，作者也可以关闭广场分发。</p>
-   <aside class="tool-callout"><div><h2>先创作，再分享</h2><p>无需账号与上传，在浏览器中完成边框、水印和拼图。</p></div><router-link to="/tools">打开工具箱 →</router-link></aside>
-  </template>
-  <template v-else-if="route.path==='/studio'">
-   <div class="section-title"><h1>我的工作台</h1><p>素材 → 草稿 → 作品 → 作品集</p></div>
-   <div v-if="result.locked" class="empty-state"><h2>登录尚未开放</h2><p>登录后即可上传与管理作品。工具箱无需账号即可使用。</p><router-link to="/tools">打开工具箱 →</router-link></div>
-   <template v-else-if="me"><div class="actions"><button :disabled="busy" @click="logout()">退出登录</button><button :disabled="busy" @click="logout(true)">退出所有会话</button></div>
-    <div class="editor-grid"><form @submit.prevent="save" class="panel"><h2>{{editing?'编辑':'新建'}}{{kind==='work'?'作品':'作品集'}}</h2><label>类型<select v-model="kind" @change="fresh"><option value="work">作品（图片 / 组图 / 文字）</option><option value="collection">作品集</option></select></label><label>标题<input v-model="form.title" required maxlength="200"></label><label>文字<textarea v-model="form.text" rows="4"></textarea></label>
-     <template v-if="kind==='work'"><label class="upload">上传成片<input type="file" accept="image/jpeg,image/png,image/webp" multiple @change="upload" :disabled="busy"></label><small>每张默认上限 20 MB，仅在主动选择后上传；展示图不含位置元数据。</small><div class="asset-picker"><label v-for="a in studio.asset" :key="a.id"><img :src="image(a.id)" alt="素材缩略图"><input type="checkbox" v-model="form.assets" :value="a.id">选用</label></div><label><input type="checkbox" v-model="form.allowOriginal">允许访客下载原文件（原文件可能含位置元数据）</label></template>
-     <div v-else><label v-for="w in studio.work" :key="w.id"><input type="checkbox" v-model="form.works" :value="w.id">{{w.title}}</label><small>作品集不会改变成员作品自身的可见性。</small></div>
-     <template v-if="kind==='work'"><label>作者声明<select v-model="form.aiDeclaration"><option :value="null">未声明</option><option :value="aiDeclaration.code">{{aiDeclaration.label}}</option></select></label><label>版权许可<select v-model="form.license"><option :value="null">未选择 CC 许可</option><option v-for="license in licenses" :key="license.code" :value="license.code">{{license.label}} · {{license.name}}</option></select></label><small>请先阅读许可条款，只有权利人能授予许可。未使用 AI 与禁止 AI 训练是不同声明。</small><a v-if="form.license" :href="licenses[form.license].url" target="_blank" rel="noopener noreferrer">阅读所选许可官方说明 ↗</a></template><label>状态<select v-model="form.status"><option value="draft">草稿</option><option value="published">发布</option></select></label><label>可见性<select v-model="form.visibility"><option value="private">私密</option><option value="unlisted">仅链接</option><option value="public">公开</option></select></label><small>仅链接不出现在广场和主页；任何获得链接的人都可以访问。</small><label><input type="checkbox" v-model="form.distribute">公开时进入广场</label><div class="actions"><button :disabled="busy">{{editing?'保存修改':'保存'}}</button><button type="button" @click="fresh">新建</button></div></form>
-     <section class="panel"><h2>作品与草稿</h2><div v-for="r in [...studio.work,...studio.collection]" :key="r.id" class="record"><div><strong>{{r.title}}</strong><p>{{r.kind==='work'?'作品':'作品集'}} · {{r.status==='draft'?'草稿':'已发布'}} · {{r.visibility}}</p></div><button @click="edit(r)">编辑</button><router-link :to="'/'+r.kind+'/'+r.id">查看</router-link></div><p v-if="!studio.work.length&&!studio.collection.length">还没有作品，先上传图片或写下文字。</p></section></div>
-    <form class="panel profile-editor" @submit.prevent="saveProfile"><h2>摄影师主页</h2><label>名称<input v-model="profile.name" required></label><label>简介<textarea v-model="profile.bio"></textarea></label><label>封面<select v-model="profile.cover"><option :value="null">无封面</option><option v-for="a in studio.asset" :value="a.id" :key="a.id">{{a.id.slice(0,8)}}</option></select></label><label>配色<input type="color" v-model="profile.accent"></label><label>布局<select v-model="profile.layout"><option value="grid">网格</option><option value="column">单列</option></select></label><label>模块顺序<select v-model="profile.modules"><option :value="['works','collections']">作品优先</option><option :value="['collections','works']">作品集优先</option></select></label><button :disabled="busy">保存主页</button><router-link :to="'/profile/'+me">查看主页 →</router-link></form>
-   </template>
-  </template>
-  <template v-else-if="route.path.startsWith('/work/')&&result.id">
-   <nav class="viewer-nav"><button @click="goBack">← 返回</button><router-link :to="'/profile/'+result.photographer">摄影师主页</router-link></nav><div class="viewer"><img v-if="result.assets?.length" :src="image(result.assets[active])" :alt="result.title"><div v-if="result.assets?.length>1" class="actions"><button @click="active=(active-1+result.assets.length)%result.assets.length">← 上一张</button><span>{{active+1}} / {{result.assets.length}}</span><button @click="active=(active+1)%result.assets.length">下一张 →</button></div></div><div class="caption"><h1>{{result.title}}</h1><p>{{result.text}}</p><p v-if="result.aiDeclaration">{{result.aiDeclaration.label}}</p><a v-if="result.license" :href="result.license.url" target="_blank" rel="noopener noreferrer">{{result.license.label}} · 官方许可说明 ↗</a><a v-if="result.allowOriginal&&result.assets?.length" :href="'/api/media/'+result.assets[active]+'/original'">下载原文件</a></div>
-  </template>
-  <template v-else-if="route.path.startsWith('/collection/')&&result.id"><button @click="goBack">← 返回</button><h1>{{result.title}}</h1><p class="caption">{{result.text}}</p><div class="cards"><router-link v-for="w in result.items" :key="w.id" :to="'/work/'+w.id" class="card"><img v-if="w.assets.length" :src="image(w.assets[0])" :alt="w.title"><h2>{{w.title}}</h2></router-link></div><p v-if="!result.items?.length" class="empty-state">此作品集暂时没有可查看的作品。</p></template>
-  <template v-else-if="route.path.startsWith('/profile/')&&result.id"><div class="hero profile-hero" :style="result.cover?{backgroundImage:`linear-gradient(0deg,#090a0c,transparent),url(${image(result.cover)})`}:{}"><h1>{{result.name||'摄影师'}}</h1><p>{{result.bio}}</p></div><section v-for="module in result.modules" :key="module"><h2>{{module==='works'?'作品':'作品集'}}</h2><div class="cards" :class="{column:result.layout==='column'}"><router-link v-for="r in result[module]" :key="r.id" :to="'/'+r.kind+'/'+r.id" class="card"><img v-if="r.assets?.length" :src="image(r.assets[0])" :alt="r.title"><div v-else class="text-cover">{{r.text||'作品集'}}</div><h3>{{r.title}}</h3></router-link></div><p v-if="!result[module]?.length" class="empty-state">暂无公开内容</p></section></template>
- </section>
+  <StudioView v-if="route.path === '/studio'" />
+  <section v-else ref="root" class="public-page" :class="{ 'public-page--viewer': section === 'work' }" tabindex="-1">
+    <h1 v-if="section === 'square' || state !== 'ready'" id="public-page-title" class="public-page__sr" tabindex="-1">{{ title }}</h1>
+    <PageState v-if="state === 'loading'" kind="loading" message="正在载入……" />
+    <PageState v-else-if="state === 'error'" kind="error" :message="error" @retry="load()" />
+    <template v-else-if="page">
+      <template v-if="section === 'square'">
+        <FeaturedPhoto v-if="featured" :work="featured" @navigate="rememberOrigin" />
+        <PhotoGrid v-if="page.works.length" :works="page.works" paginated :eager-first="!featured" :exclude-id="featured?.id || ''" reveal-key="square" @navigate="rememberOrigin" />
+        <PageState v-else-if="!featured" message="广场还没有公开作品。" />
+        <div v-if="page.nextCursor || appending || appendError" class="public-page__more">
+          <p v-if="appendError" role="alert">{{ appendError }}</p>
+          <button class="public-page__continue" type="button" :disabled="appending" @click="loadMore">{{ appending ? '正在载入……' : appendError ? '重试' : '继续浏览' }}</button>
+        </div>
+        <p class="public-page__sr" role="status" aria-live="polite">{{ announcement }}</p>
+      </template>
+      <WorkViewer v-else-if="section === 'work'" :work="page" @back="goBack" />
+      <template v-else-if="section === 'collection'">
+        <button type="button" class="public-page__back" @click="goBack"><span aria-hidden="true">←</span> 返回</button>
+        <header class="collection-intro">
+          <h1 id="public-page-title" tabindex="-1">{{ page.title }}</h1>
+          <p v-if="page.text">{{ page.text }}</p>
+        </header>
+        <PhotoGrid v-if="page.items?.length" :works="page.items" :reveal-key="route.path" @navigate="rememberOrigin" />
+        <PageState v-else message="此作品集暂时没有可查看的作品。" />
+      </template>
+      <template v-else-if="section === 'profile'">
+        <ProfileHeader :profile="page" />
+        <section v-for="module in modules" :key="module" class="profile-section" :aria-labelledby="`profile-${module}`">
+          <h2 :id="`profile-${module}`">{{ module === 'works' ? '作品' : '作品集' }}</h2>
+          <PhotoGrid v-if="page[module]?.length" :works="page[module]" :eager-first="!page.cover && !page.coverMedia && module === modules[0]" :show-author="false" :column="page.layout === 'column'" :reveal-key="`${route.path}:${module}`" @navigate="rememberOrigin" />
+          <PageState v-else :message="module === 'works' ? '暂无公开作品。' : '暂无公开作品集。'" />
+        </section>
+      </template>
+    </template>
+  </section>
 </template>
-<style>
-.platform{max-width:1440px;margin:auto;padding:40px clamp(18px,4vw,64px);color:var(--markr-text);--accent:var(--markr-accent)}.platform a{color:inherit;text-decoration:none}.platform h1{font-weight:450;letter-spacing:-.035em;line-height:1.2;font-size:clamp(30px,4.4vw,60px)}.platform h2{font-weight:500}.platform p{white-space:pre-wrap;color:var(--markr-muted)}.platform h1,.platform h2,.platform h3,.platform small,.platform p{overflow-wrap:anywhere}.platform button,.platform .upload{min-height:42px;border:1px solid var(--markr-line-strong);background:var(--markr-surface-raised);color:var(--markr-text);padding:10px 18px;border-radius:var(--markr-radius-small);cursor:pointer;font-size:13px;transition:border-color .15s}.platform button:hover{border-color:var(--markr-muted)}.platform button:disabled{opacity:.45;cursor:not-allowed}.hero{min-height:480px;display:flex;flex-direction:column;justify-content:flex-end;padding:44px;background-position:center;background-size:cover;border-radius:var(--markr-radius);gap:20px;background-color:var(--markr-surface)}.hero.empty{background:#111416;border:1px solid var(--markr-line);position:relative}.hero.empty:before{content:'';position:absolute;top:40px;right:44px;width:48px;height:48px;border-top:1px solid var(--markr-line-strong);border-right:1px solid var(--markr-line-strong);pointer-events:none}.hero h1{max-width:820px}.hero span{font-size:10px;letter-spacing:.18em;color:var(--markr-muted)}.hero p{max-width:620px;font-size:14px;line-height:1.8}.hero a{color:var(--accent);font-size:13px}.section-title{display:flex;align-items:baseline;justify-content:space-between;margin:44px 0 24px;gap:16px}.section-title h2{font-size:24px}.section-title span{color:var(--markr-faint);font-size:12px}.cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:24px}.cards.column{grid-template-columns:1fr}.platform .cards>.card{background:var(--markr-surface);border:1px solid var(--markr-line);padding:0;overflow:hidden;border-radius:var(--markr-radius);box-shadow:none;transition:border-color .15s}.platform .cards>.card:hover{border-color:var(--markr-line-strong)}.platform .card h2,.platform .card h3,.platform .card small{padding:0 18px}.platform .card h2{font-size:20px;padding:18px}.platform .card small{display:block;margin:8px 0 18px}.card img{width:100%;height:320px;object-fit:cover;display:block}.card h3{margin-top:16px;font-size:16px;font-weight:500}.card small{font-size:11px;color:var(--markr-faint)}.text-cover{height:260px;background:var(--markr-surface-raised);padding:28px;overflow:hidden;color:var(--markr-muted);font-size:15px;line-height:1.8}.empty-state{padding:56px 24px;text-align:center;border:1px solid var(--markr-line);background:var(--markr-surface);border-radius:var(--markr-radius);margin:24px 0;font-size:13px;line-height:1.8}.empty-state h2{font-size:22px;margin-bottom:12px}.empty-state a{display:inline-block;margin-top:20px;color:var(--accent)}.tool-callout{display:flex;align-items:center;gap:30px;border-top:1px solid var(--markr-line);padding:32px 0;margin-top:64px}.tool-callout div{flex:1}.tool-callout h2{font-size:20px;margin-bottom:8px}.tool-callout p{font-size:13px}.tool-callout a{border:1px solid var(--markr-line-strong);padding:12px 18px;border-radius:var(--markr-radius-small);font-size:13px}.notice{display:flex;align-items:center;flex-wrap:wrap;gap:16px;background:#241c1d;border:1px solid #584044;color:var(--markr-error)!important;padding:20px;border-radius:var(--markr-radius);margin-bottom:24px;font-size:13px}.notice a{margin-left:auto}.loading-state{display:flex;align-items:center;gap:10px;font-size:12px;padding:8px 0 24px}.loading-dot{width:6px;height:6px;background:var(--markr-accent);border-radius:50%}.editor-grid{display:grid;grid-template-columns:1.1fr 1fr;gap:24px}.panel{padding:28px;background:var(--markr-surface);border:1px solid var(--markr-line);border-radius:var(--markr-radius);margin-bottom:24px}.panel h2{font-size:22px}.panel label{display:block;margin:18px 0;font-size:13px;color:var(--markr-muted)}.panel input:not([type=checkbox]):not([type=color]),.panel textarea,.panel select{display:block;width:100%;padding:12px;background:var(--markr-bg);color:var(--markr-text);border:1px solid var(--markr-line-strong);border-radius:var(--markr-radius-small);margin-top:8px;font:inherit}.panel small{display:block;color:var(--markr-faint);font-size:12px}.asset-picker{display:flex;flex-wrap:wrap;gap:10px}.asset-picker img{width:90px;height:70px;object-fit:cover;display:block;border-radius:4px}.actions{display:flex;gap:16px;align-items:center;margin-top:20px}.record{display:flex;gap:14px;align-items:center;border-bottom:1px solid var(--markr-line);padding:18px 0;font-size:13px}.record div{flex:1}.record p{font-size:12px;margin-top:4px}.profile-editor{max-width:800px}.viewer-nav{display:flex;justify-content:space-between;align-items:center;font-size:13px;color:var(--markr-muted)}.viewer{margin-top:28px;text-align:center}.viewer img{max-width:100%;max-height:80vh;object-fit:contain}.viewer .actions{justify-content:center;font-size:12px;color:var(--markr-muted)}.viewer .actions button{background:transparent;border-color:var(--markr-line)}.caption{max-width:850px;margin:40px auto}.caption h1{font-size:clamp(28px,3vw,42px)}.caption p{margin:20px 0;line-height:1.9;font-size:14px}.caption a{color:var(--accent);display:inline-block;margin:8px 18px 8px 0;font-size:12px}.profile-hero{margin-bottom:48px}.platform section>h2{margin:36px 0 24px;font-size:24px}@media(max-width:800px){.cards{grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}.editor-grid{grid-template-columns:1fr}.hero{min-height:380px;padding:28px}.tool-callout{flex-wrap:wrap}.tool-callout div{flex-basis:100%}.section-title{flex-wrap:wrap}.card img{height:240px}}@media(max-width:480px){.platform{padding-top:24px}.cards{grid-template-columns:1fr}.card img{height:auto;max-height:420px}.panel{padding:20px}.record{flex-wrap:wrap}.hero{min-height:360px;padding:24px}.hero.empty:before{top:24px;right:24px;width:32px;height:32px}.hero h1{font-size:34px}.hero span{font-size:9px}.section-title{margin-top:32px}.notice a{margin-left:0}.caption{margin-top:28px}.text-cover{height:220px}}
+
+<style scoped>
+.public-page { max-width: 1600px; width: 100%; margin-inline: auto; padding: 32px clamp(16px, 4vw, 64px) 64px; color: var(--markr-text); outline: none; }
+.public-page--viewer { padding-top: 16px; }
+.public-page__sr { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+.public-page__more { display: grid; justify-items: center; gap: 16px; margin-top: 48px; }
+.public-page__more p { color: var(--markr-error); font-size: 13px; }
+.public-page__more button { min-height: 44px; padding: 10px 24px; border: 1px solid var(--markr-line-strong); border-radius: 6px; background: transparent; color: var(--markr-text); font-size: 13px; cursor: pointer; }
+.public-page__more button:hover:not(:disabled) { border-color: var(--markr-muted); }
+.public-page__more button:disabled { opacity: .55; cursor: wait; }
+.public-page__back { display: inline-flex; align-items: center; gap: 10px; min-height: 44px; padding: 8px 0; border: 0; color: var(--markr-muted); background: transparent; cursor: pointer; font-size: 13px; }
+.collection-intro { max-width: 760px; margin: 24px 0 40px; }
+.collection-intro h1 { font-size: clamp(28px, 3vw, 36px); font-weight: 400; line-height: 1.35; letter-spacing: -.025em; overflow-wrap: anywhere; }
+.collection-intro p { margin-top: 16px; color: var(--markr-muted); font-size: 15px; line-height: 1.8; white-space: pre-wrap; overflow-wrap: anywhere; }
+.profile-section + .profile-section { margin-top: 48px; }
+.profile-section > h2 { margin: 0 0 24px; font-size: 15px; font-weight: 500; }
+@media (max-width: 639px) { .public-page { padding-top: 20px; padding-bottom: 40px; } .public-page--viewer { padding-top: 8px; } .collection-intro { margin-bottom: 32px; } .public-page__more { margin-top: 32px; } }
 </style>
