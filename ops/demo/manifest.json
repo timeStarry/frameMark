@@ -1,0 +1,383 @@
+{
+  "version": 1,
+  "seed": "markr-demo-v1",
+  "owner": "markr-demo",
+  "profile": {
+    "name": "Markr Demo · 演示图库",
+    "bio": "这是不可登录的展示身份，仅用于预览界面。收录 10 张 CC0 授权照片，并非本站用户原创；作者、来源和许可见各作品详情。没有设置密码、邮箱或登录凭据。",
+    "accent": "#ccd4c4",
+    "layout": "grid",
+    "modules": [
+      "collections",
+      "works"
+    ],
+    "cover": "iceland-snow-cabin"
+  },
+  "photos": [
+    {
+      "id": "veluwe-lone-tree",
+      "file": "veluwe-lone-tree.jpg",
+      "sha256": "e529580b45b2992a7dbb5ae9aa3105cdd08b365067c70adde244b900b013c28c",
+      "title": "旷野中的一束光 · 演示",
+      "text": "旷野中的一束光 · Markr Demo 展示选图\n摄影：Rogier Nieuwendijk。这是许可明确的网图占位展示，并非 Markr Demo 或本站用户原创。",
+      "collection": "light",
+      "source": {
+        "title": "A bright light on a lone tree",
+        "author": "Rogier Nieuwendijk",
+        "authorUrl": "https://unsplash.com/@docrogier",
+        "sourcePage": "https://commons.wikimedia.org/wiki/File:A_bright_light_on_a_lone_tree_(Unsplash).jpg",
+        "originalSourcePage": "https://unsplash.com/photos/4Z2kcVjEeVw",
+        "downloadURL": "https://thumb.wikimedia.org/wikipedia/commons/thumb/1/17/A_bright_light_on_a_lone_tree_%28Unsplash%29.jpg/1280px-A_bright_light_on_a_lone_tree_%28Unsplash%29.jpg",
+        "licenseName": "CC0 1.0 Universal",
+        "licenseURL": "https://creativecommons.org/publicdomain/zero/1.0/",
+        "changes": "采用 Wikimedia 中等尺寸版本；展示图转换为 WebP、移除元数据。未改变画面构图；列表和封面可能裁切，观看页显示完整图像。",
+        "verifiedAt": "2026-10-04",
+        "verification": "Commons Licensing explicitly CC0 1.0; current original Unsplash page confirms Rogier Nieuwendijk and publication 2017-05-18, before the 2017-06-05 license change.",
+        "originalDimensions": [
+          5568,
+          3712
+        ],
+        "downloadDimensions": [
+          1280,
+          853
+        ],
+        "licenseEvidence": "https://commons.wikimedia.org/wiki/File:A_bright_light_on_a_lone_tree_(Unsplash).jpg#Licensing",
+        "verificationReferences": [
+          "https://commons.wikimedia.org/wiki/File:A_bright_light_on_a_lone_tree_(Unsplash).jpg#Licensing",
+          "https://unsplash.com/photos/4Z2kcVjEeVw",
+          "https://creativecommons.org/publicdomain/zero/1.0/"
+        ],
+        "published": "2017-05-18"
+      },
+      "featuredRank": 1
+    },
+    {
+      "id": "iceland-snow-cabin",
+      "file": "iceland-snow-cabin.jpg",
+      "sha256": "6f9b3fa12604b5e7e1bfcdd205db01b2df86c25232939e07f178f9bb42037dab",
+      "title": "雪境中的小屋 · 演示",
+      "text": "雪境中的小屋 · Markr Demo 展示选图\n摄影：Asgeir Pall Juliusson。这是许可明确的网图占位展示，并非 Markr Demo 或本站用户原创。",
+      "collection": "landscape",
+      "source": {
+        "title": "A cabin with snow by the lake",
+        "author": "Asgeir Pall Juliusson",
+        "authorUrl": "https://unsplash.com/@asgeir",
+        "sourcePage": "https://commons.wikimedia.org/wiki/File:A_cabin_with_snow_by_the_lake_(Unsplash).jpg",
+        "originalSourcePage": "https://unsplash.com/photos/-90kxRqKSmc",
+        "downloadURL": "https://thumb.wikimedia.org/wikipedia/commons/thumb/1/1d/A_cabin_with_snow_by_the_lake_%28Unsplash%29.jpg/1280px-A_cabin_with_snow_by_the_lake_%28Unsplash%29.jpg",
+        "licenseName": "CC0 1.0 Universal",
+        "licenseURL": "https://creativecommons.org/publicdomain/zero/1.0/",
+        "changes": "采用 Wikimedia 中等尺寸版本；展示图转换为 WebP、移除元数据。未改变画面构图；列表和封面可能裁切，观看页显示完整图像。",
+        "verifiedAt": "2026-10-04",
+        "verification": "Commons Licensing explicitly CC0 1.0, with reviewer Hike395 on 2022-09-13 confirming upload 2016-01-15. Current original Unsplash page confirms author and publication 2016-01-15.",
+        "originalDimensions": [
+          3888,
+          2592
+        ],
+        "downloadDimensions": [
+          1280,
+          853
+        ],
+        "licenseEvidence": "https://commons.wikimedia.org/wiki/File:A_cabin_with_snow_by_the_lake_(Unsplash).jpg#Licensing",
+        "verificationReferences": [
+          "https://commons.wikimedia.org/wiki/File:A_cabin_with_snow_by_the_lake_(Unsplash).jpg#Licensing",
+          "https://unsplash.com/photos/-90kxRqKSmc",
+          "https://creativecommons.org/publicdomain/zero/1.0/"
+        ],
+        "published": "2016-01-15"
+      }
+    },
+    {
+      "id": "nescio-bridge-portrait",
+      "file": "nescio-bridge-portrait.jpg",
+      "sha256": "da7c24c1f3ef51a8b57a8f273dad16cfc0997470938f033e368bfffcb0e51309",
+      "title": "向上的结构 · 演示",
+      "text": "向上的结构 · Markr Demo 展示选图\n摄影：Fons Heijnsbroek。这是许可明确的网图占位展示，并非 Markr Demo 或本站用户原创。",
+      "collection": "architecture",
+      "source": {
+        "title": "Nescio Bridge · 向上",
+        "author": "Fons Heijnsbroek",
+        "authorUrl": "https://commons.wikimedia.org/wiki/User:FotoDutch",
+        "sourcePage": "https://commons.wikimedia.org/wiki/File:2011.07_-_%27Photo_of_modern_bridge_architecture%27,_a_Dutch_suspension-bridge_the_Nesciobrug;_northeast_of_Amsterdam_city;_photo_geotagged,_in_public_domain_(26322314745).jpg",
+        "originalSourcePage": "https://www.flickr.com/photos/city-amsterdam/26322314745/",
+        "downloadURL": "https://thumb.wikimedia.org/wikipedia/commons/thumb/7/77/2011.07_-_%27Photo_of_modern_bridge_architecture%27%2C_a_Dutch_suspension-bridge_the_Nesciobrug%3B_northeast_of_Amsterdam_city%3B_photo_geotagged%2C_in_public_domain_%2826322314745%29.jpg/960px-thumbnail.jpg",
+        "licenseName": "CC0 1.0 Universal",
+        "licenseURL": "https://creativecommons.org/publicdomain/zero/1.0/",
+        "changes": "采用 Wikimedia 中等尺寸版本；展示图转换为 WebP、移除元数据。未改变画面构图；列表和封面可能裁切，观看页显示完整图像。",
+        "verifiedAt": "2026-10-04",
+        "verification": "Commons 文件页 Licensing 明确 CC0，FlickreviewR 2 于 2020-12-04 确认 Flickr CC0 许可。",
+        "originalDimensions": [
+          2592,
+          3456
+        ],
+        "downloadDimensions": [
+          960,
+          1280
+        ],
+        "sourceFileTitle": "2011.07 - 'Photo of modern bridge architecture', a Dutch suspension-bridge the Nesciobrug; northeast of Amsterdam city; photo geotagged, in public domain (26322314745).jpg"
+      }
+    },
+    {
+      "id": "cloudy-sunrise",
+      "file": "cloudy-sunrise.jpg",
+      "sha256": "ce2489ebe86d3279f398976764eaa911e82a1f24a8f5d0d222058a06191eba88",
+      "title": "云隙晨光 · 演示",
+      "text": "云隙晨光 · Markr Demo 展示选图\n摄影：Rajiv Bajaj。这是许可明确的网图占位展示，并非 Markr Demo 或本站用户原创。",
+      "collection": "light",
+      "source": {
+        "title": "A Cloudy Sunrise",
+        "author": "Rajiv Bajaj",
+        "authorUrl": "https://unsplash.com/@rajiv63",
+        "sourcePage": "https://commons.wikimedia.org/wiki/File:A_Cloudy_Sunrise_(Unsplash).jpg",
+        "originalSourcePage": "https://unsplash.com/photos/EGKnOydwJbc",
+        "downloadURL": "https://thumb.wikimedia.org/wikipedia/commons/thumb/a/a2/A_Cloudy_Sunrise_%28Unsplash%29.jpg/1280px-A_Cloudy_Sunrise_%28Unsplash%29.jpg",
+        "licenseName": "CC0 1.0 Universal",
+        "licenseURL": "https://creativecommons.org/publicdomain/zero/1.0/",
+        "changes": "采用 Wikimedia 中等尺寸版本；展示图转换为 WebP、移除元数据。未改变画面构图；列表和封面可能裁切，观看页显示完整图像。",
+        "verifiedAt": "2026-10-04",
+        "verification": "Commons Licensing explicitly CC0 1.0; current original Unsplash page confirms Rajiv Bajaj and publication 2017-05-31, before the 2017-06-05 license change.",
+        "originalDimensions": [
+          5184,
+          3888
+        ],
+        "downloadDimensions": [
+          1280,
+          960
+        ],
+        "licenseEvidence": "https://commons.wikimedia.org/wiki/File:A_Cloudy_Sunrise_(Unsplash).jpg#Licensing",
+        "verificationReferences": [
+          "https://commons.wikimedia.org/wiki/File:A_Cloudy_Sunrise_(Unsplash).jpg#Licensing",
+          "https://unsplash.com/photos/EGKnOydwJbc",
+          "https://creativecommons.org/publicdomain/zero/1.0/"
+        ],
+        "published": "2017-05-31"
+      }
+    },
+    {
+      "id": "yosemite-half-dome",
+      "file": "yosemite-half-dome.jpg",
+      "sha256": "204fe2e8e6fabfa8fd4342a25ec7ffec14262278f94fe5a60a8530a4f54490cd",
+      "title": "半穹顶 · 演示",
+      "text": "半穹顶 · Markr Demo 展示选图\n摄影：Hayden Hunt。这是许可明确的网图占位展示，并非 Markr Demo 或本站用户原创。",
+      "collection": "landscape",
+      "source": {
+        "title": "1/2 of a dome",
+        "author": "Hayden Hunt",
+        "authorUrl": "https://unsplash.com/@haydenhunt",
+        "sourcePage": "https://commons.wikimedia.org/wiki/File:1-u002F2_of_a_dome_(Unsplash).jpg",
+        "originalSourcePage": "https://unsplash.com/photos/-iV07vBmGLo",
+        "downloadURL": "https://thumb.wikimedia.org/wikipedia/commons/thumb/2/27/1-u002F2_of_a_dome_%28Unsplash%29.jpg/960px-1-u002F2_of_a_dome_%28Unsplash%29.jpg",
+        "licenseName": "CC0 1.0 Universal",
+        "licenseURL": "https://creativecommons.org/publicdomain/zero/1.0/",
+        "changes": "采用 Wikimedia 中等尺寸版本；展示图转换为 WebP、移除元数据。未改变画面构图；列表和封面可能裁切，观看页显示完整图像。",
+        "verifiedAt": "2026-10-04",
+        "verification": "Commons Licensing explicitly CC0 1.0. Original Unsplash URL currently 404; accessible Wayback capture 2017-06-24 explicitly confirms Hayden Hunt, Published on May 16, 2017, and 3072 x 3840, before the 2017-06-05 license change.",
+        "originalDimensions": [
+          3072,
+          3840
+        ],
+        "downloadDimensions": [
+          960,
+          1200
+        ],
+        "sourceArchive": "https://web.archive.org/web/20170624054417/https://unsplash.com/photos/-iV07vBmGLo",
+        "licenseEvidence": "https://commons.wikimedia.org/wiki/File:1-u002F2_of_a_dome_(Unsplash).jpg#Licensing",
+        "verificationReferences": [
+          "https://commons.wikimedia.org/wiki/File:1-u002F2_of_a_dome_(Unsplash).jpg#Licensing",
+          "https://web.archive.org/web/20170624054417/https://unsplash.com/photos/-iV07vBmGLo",
+          "https://creativecommons.org/publicdomain/zero/1.0/"
+        ],
+        "published": "2017-05-16"
+      }
+    },
+    {
+      "id": "amsterdam-sunlight-shadows",
+      "file": "amsterdam-sunlight-shadows.jpg",
+      "sha256": "22f2f6d4d70dc52c898ad32547006a5aaa93bb7348a1ee11c99dec3e4dc4486c",
+      "title": "春日街影 · 演示",
+      "text": "春日街影 · Markr Demo 展示选图\n摄影：Fons Heijnsbroek。这是许可明确的网图占位展示，并非 Markr Demo 或本站用户原创。",
+      "collection": "light",
+      "source": {
+        "title": "阿姆斯特丹 · 春日街影",
+        "author": "Fons Heijnsbroek",
+        "authorUrl": "https://commons.wikimedia.org/wiki/User:FotoDutch",
+        "sourcePage": "https://commons.wikimedia.org/wiki/File:Streetview_Amsterdam_in_sunlight_and_shadows_-_free_photo,_Fons_Heijnsbroek.jpg",
+        "originalSourcePage": "https://commons.wikimedia.org/wiki/File:Streetview_Amsterdam_in_sunlight_and_shadows_-_free_photo,_Fons_Heijnsbroek.jpg",
+        "downloadURL": "https://thumb.wikimedia.org/wikipedia/commons/thumb/7/7b/Streetview_Amsterdam_in_sunlight_and_shadows_-_free_photo%2C_Fons_Heijnsbroek.jpg/1280px-Streetview_Amsterdam_in_sunlight_and_shadows_-_free_photo%2C_Fons_Heijnsbroek.jpg",
+        "licenseName": "CC0 1.0 Universal",
+        "licenseURL": "https://creativecommons.org/publicdomain/zero/1.0/",
+        "changes": "采用 Wikimedia 中等尺寸版本；展示图转换为 WebP、移除元数据。未改变画面构图；列表和封面可能裁切，观看页显示完整图像。",
+        "verifiedAt": "2026-10-04",
+        "verification": "Own work；作者 FotoDutch 于 2021-02-11 上传；文件页直接声明 CC0。",
+        "originalDimensions": [
+          4724,
+          3543
+        ],
+        "downloadDimensions": [
+          1280,
+          960
+        ],
+        "sourceFileTitle": "Streetview Amsterdam in sunlight and shadows - free photo, Fons Heijnsbroek.jpg"
+      }
+    },
+    {
+      "id": "blue-sky-white-snow",
+      "file": "blue-sky-white-snow.jpg",
+      "sha256": "c8b407d0fe3121f1c447414958aef5ecaa25d08e9602b5276adf33886a04e134",
+      "title": "雪原与蓝天 · 演示",
+      "text": "雪原与蓝天 · Markr Demo 展示选图\n摄影：Drew Hays。这是许可明确的网图占位展示，并非 Markr Demo 或本站用户原创。",
+      "collection": "landscape",
+      "source": {
+        "title": "A blue sky above white snow",
+        "author": "Drew Hays",
+        "authorUrl": "https://unsplash.com/@dhproductions",
+        "sourcePage": "https://commons.wikimedia.org/wiki/File:A_blue_sky_above_white_snow_(Unsplash).jpg",
+        "originalSourcePage": "https://unsplash.com/photos/NRfoGWrg2sg",
+        "downloadURL": "https://thumb.wikimedia.org/wikipedia/commons/thumb/e/ef/A_blue_sky_above_white_snow_%28Unsplash%29.jpg/960px-A_blue_sky_above_white_snow_%28Unsplash%29.jpg",
+        "licenseName": "CC0 1.0 Universal",
+        "licenseURL": "https://creativecommons.org/publicdomain/zero/1.0/",
+        "changes": "采用 Wikimedia 中等尺寸版本；展示图转换为 WebP、移除元数据。未改变画面构图；列表和封面可能裁切，观看页显示完整图像。",
+        "verifiedAt": "2026-10-04",
+        "verification": "Commons Licensing explicitly CC0 1.0, with reviewer GRuban confirmation dated 2018-12-14. Current original Unsplash page confirms publication 2016-01-30. Commons credits Drew Hays; current original display name is Drew.",
+        "originalDimensions": [
+          3840,
+          5760
+        ],
+        "downloadDimensions": [
+          960,
+          1440
+        ],
+        "licenseEvidence": "https://commons.wikimedia.org/wiki/File:A_blue_sky_above_white_snow_(Unsplash).jpg#Licensing",
+        "verificationReferences": [
+          "https://commons.wikimedia.org/wiki/File:A_blue_sky_above_white_snow_(Unsplash).jpg#Licensing",
+          "https://unsplash.com/photos/NRfoGWrg2sg",
+          "https://creativecommons.org/publicdomain/zero/1.0/"
+        ],
+        "published": "2016-01-30"
+      }
+    },
+    {
+      "id": "nescio-bridge-wide",
+      "file": "nescio-bridge-wide.jpg",
+      "sha256": "7598c93273aacd0d3820e51b30599ebac8b79450225d9ae9f3fd1e95f72ab46f",
+      "title": "桥的曲线 · 演示",
+      "text": "桥的曲线 · Markr Demo 展示选图\n摄影：Fons Heijnsbroek。这是许可明确的网图占位展示，并非 Markr Demo 或本站用户原创。",
+      "collection": "architecture",
+      "source": {
+        "title": "Nescio Bridge · 曲线",
+        "author": "Fons Heijnsbroek",
+        "authorUrl": "https://commons.wikimedia.org/wiki/User:FotoDutch",
+        "sourcePage": "https://commons.wikimedia.org/wiki/File:2011.07_-_%27Photo_of_modern_bridge_architecture_-_a_narrow_long_bridge_with_floating_construction,_built_for_pedestrians_and_cyclists_over_the_canal_Amsterdam_Rijnkanaal;_geotagged_photo_in_the_public_domain_(25705239814).jpg",
+        "originalSourcePage": "https://www.flickr.com/photos/city-amsterdam/25705239814/",
+        "downloadURL": "https://thumb.wikimedia.org/wikipedia/commons/thumb/7/73/2011.07_-_%27Photo_of_modern_bridge_architecture_-_a_narrow_long_bridge_with_floating_construction%2C_built_for_pedestrians_and_cyclists_over_the_canal_Amsterdam_Rijnkanaal%3B_geotagged_photo_in_the_public_domain_%2825705239814%29.jpg/1280px-thumbnail.jpg",
+        "licenseName": "CC0 1.0 Universal",
+        "licenseURL": "https://creativecommons.org/publicdomain/zero/1.0/",
+        "changes": "采用 Wikimedia 中等尺寸版本；展示图转换为 WebP、移除元数据。未改变画面构图；列表和封面可能裁切，观看页显示完整图像。",
+        "verifiedAt": "2026-10-04",
+        "verification": "Commons 文件页 Licensing 明确 CC0，FlickreviewR 2 于 2020-12-04 确认 Flickr CC0 许可。",
+        "originalDimensions": [
+          3543,
+          2657
+        ],
+        "downloadDimensions": [
+          1280,
+          960
+        ],
+        "sourceFileTitle": "2011.07 - 'Photo of modern bridge architecture - a narrow long bridge with floating construction, built for pedestrians and cyclists over the canal Amsterdam Rijnkanaal; geotagged photo in the public domain (25705239814).jpg"
+      }
+    },
+    {
+      "id": "kattenburgerbrug-portrait",
+      "file": "kattenburgerbrug-portrait.jpg",
+      "sha256": "c4a26e9142190c1167da92e4d91076d1c0a46c8c974f7a6cc87aeb2db649ffb0",
+      "title": "水边的城市片刻 · 演示",
+      "text": "水边的城市片刻 · Markr Demo 展示选图\n摄影：Fons Heijnsbroek。这是许可明确的网图占位展示，并非 Markr Demo 或本站用户原创。",
+      "collection": "architecture",
+      "source": {
+        "title": "Kattenburgerbrug · 城市片刻",
+        "author": "Fons Heijnsbroek",
+        "authorUrl": "https://commons.wikimedia.org/wiki/User:FotoDutch",
+        "sourcePage": "https://commons.wikimedia.org/wiki/File:View_on_the_bridgeView_on_the_bridgeView_on_the_bridge_Kattenburgerbrug_in_Amsterdam_city;_photo_by_Fons_Heijnsbroek,_April_202000-View_on_the_bridge_Kattenburgerbrug_in_Amsterdam_city;_photo_by_Fons_Heijnsbroek,_April_2020.jpg",
+        "originalSourcePage": "https://commons.wikimedia.org/wiki/File:View_on_the_bridgeView_on_the_bridgeView_on_the_bridge_Kattenburgerbrug_in_Amsterdam_city;_photo_by_Fons_Heijnsbroek,_April_202000-View_on_the_bridge_Kattenburgerbrug_in_Amsterdam_city;_photo_by_Fons_Heijnsbroek,_April_2020.jpg",
+        "downloadURL": "https://thumb.wikimedia.org/wikipedia/commons/thumb/0/0b/View_on_the_bridgeView_on_the_bridgeView_on_the_bridge_Kattenburgerbrug_in_Amsterdam_city%3B_photo_by_Fons_Heijnsbroek%2C_April_202000-View_on_the_bridge_Kattenburgerbrug_in_Amsterdam_city%3B_photo_by_Fons_Heijnsbroek%2C_April_2020.jpg/960px-thumbnail.jpg",
+        "licenseName": "CC0 1.0 Universal",
+        "licenseURL": "https://creativecommons.org/publicdomain/zero/1.0/",
+        "changes": "采用 Wikimedia 中等尺寸版本；展示图转换为 WebP、移除元数据。未改变画面构图；列表和封面可能裁切，观看页显示完整图像。",
+        "verifiedAt": "2026-10-04",
+        "verification": "Own work；作者 FotoDutch 于 2020-10-15 上传；文件页直接声明 CC0。",
+        "originalDimensions": [
+          3448,
+          4592
+        ],
+        "downloadDimensions": [
+          960,
+          1279
+        ],
+        "sourceFileTitle": "View on the bridgeView on the bridgeView on the bridge Kattenburgerbrug in Amsterdam city; photo by Fons Heijnsbroek, April 202000-View on the bridge Kattenburgerbrug in Amsterdam city; photo by Fons Heijnsbroek, April 2020.jpg"
+      }
+    },
+    {
+      "id": "oba-window-construction",
+      "file": "oba-window-construction.jpg",
+      "sha256": "a03437d3d84193fbc8df78503a3e75aebcce01b65c957393f07114c72d43e110",
+      "title": "建造中的窗格 · 演示",
+      "text": "建造中的窗格 · Markr Demo 展示选图\n摄影：Fons Heijnsbroek。这是许可明确的网图占位展示，并非 Markr Demo 或本站用户原创。",
+      "collection": "architecture",
+      "source": {
+        "title": "OBA 图书馆 · 窗格",
+        "author": "Fons Heijnsbroek",
+        "authorUrl": "https://commons.wikimedia.org/wiki/User:FotoDutch",
+        "sourcePage": "https://commons.wikimedia.org/wiki/File:A_view_on_the_construction_of_large_windows,_Municipal_Library_OBA,_Amsterdam_City_in_2006.jpg",
+        "originalSourcePage": "https://commons.wikimedia.org/wiki/File:A_view_on_the_construction_of_large_windows,_Municipal_Library_OBA,_Amsterdam_City_in_2006.jpg",
+        "downloadURL": "https://thumb.wikimedia.org/wikipedia/commons/thumb/9/96/A_view_on_the_construction_of_large_windows%2C_Municipal_Library_OBA%2C_Amsterdam_City_in_2006.jpg/1280px-A_view_on_the_construction_of_large_windows%2C_Municipal_Library_OBA%2C_Amsterdam_City_in_2006.jpg",
+        "licenseName": "CC0 1.0 Universal",
+        "licenseURL": "https://creativecommons.org/publicdomain/zero/1.0/",
+        "changes": "采用 Wikimedia 中等尺寸版本；展示图转换为 WebP、移除元数据。未改变画面构图；列表和封面可能裁切，观看页显示完整图像。",
+        "verifiedAt": "2026-10-04",
+        "verification": "Own work；作者 FotoDutch 于 2013-06-04 上传；文件页直接声明 CC0。",
+        "originalDimensions": [
+          3264,
+          2448
+        ],
+        "downloadDimensions": [
+          1280,
+          960
+        ],
+        "sourceFileTitle": "A view on the construction of large windows, Municipal Library OBA, Amsterdam City in 2006.jpg"
+      }
+    }
+  ],
+  "collections": [
+    {
+      "id": "landscape",
+      "title": "远方与地形 · 演示",
+      "text": "雪地、小屋与山体。演示选图，摄影作者与 CC0 来源逐张列于作品页。",
+      "photos": [
+        "iceland-snow-cabin",
+        "yosemite-half-dome",
+        "blue-sky-white-snow"
+      ]
+    },
+    {
+      "id": "architecture",
+      "title": "城市结构 · 演示",
+      "text": "桥、窗格与城市边缘。Fons Heijnsbroek 摄影；此处为 CC0 授权作品的占位展示。",
+      "photos": [
+        "nescio-bridge-portrait",
+        "nescio-bridge-wide",
+        "kattenburgerbrug-portrait",
+        "oba-window-construction"
+      ]
+    },
+    {
+      "id": "light",
+      "title": "光与影 · 演示",
+      "text": "树、云与街道中的光线。演示选图，摄影作者与 CC0 来源逐张列于作品页。",
+      "photos": [
+        "veluwe-lone-tree",
+        "cloudy-sunrise",
+        "amsterdam-sunlight-shadows"
+      ]
+    }
+  ]
+}

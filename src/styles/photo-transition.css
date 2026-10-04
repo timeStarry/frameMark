@@ -1,0 +1,18 @@
+/* The selected image is the only shared element; the page and header never fly. */
+html[data-markr-photo-transition] { view-transition-name: none; }
+html[data-markr-photo-transition]::view-transition { pointer-events: none; }
+html[data-markr-photo-transition]::view-transition-group(root),
+html[data-markr-photo-transition]::view-transition-old(root),
+html[data-markr-photo-transition]::view-transition-new(root) { animation: none; }
+html[data-markr-photo-transition]::view-transition-group(markr-photo),
+html[data-markr-photo-transition]::view-transition-old(markr-photo),
+html[data-markr-photo-transition]::view-transition-new(markr-photo) {
+  animation-duration: 420ms;
+  animation-timing-function: cubic-bezier(.22, 1, .36, 1);
+}
+img[data-photo-shared] { animation: none !important; transition: none !important; }
+@media (prefers-reduced-motion: reduce) {
+  html::view-transition-group(markr-photo),
+  html::view-transition-old(markr-photo),
+  html::view-transition-new(markr-photo) { animation: none !important; }
+}

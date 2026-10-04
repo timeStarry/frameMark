@@ -1,216 +1,40 @@
+<script setup>
+import { computed } from 'vue'
+import { useRoute } from 'vue-router'
+defineProps({ minimal: Boolean })
+const route = useRoute()
+const toolRoute = computed(() => ['/tools', '/frame-watermark', '/image-collage'].includes(route.path))
+</script>
+
 <template>
-  <header class="header">
-    <div class="container">
-      <div class="header-content">
-        <div class="logo">
-          <router-link to="/" class="logo-link">
-            <div class="logo-icon">📷</div>
-            <span class="logo-text">Markr</span>
-          </router-link>
-        </div>
-        
-        <nav class="nav">
-          <router-link 
-            to="/" 
-            class="nav-link" 
-            :class="{ active: $route.name === 'Home' }"
-          >
-            首页
-          </router-link>
-          <router-link 
-            to="/frame-watermark" 
-            class="nav-link"
-            :class="{ active: $route.name === 'FrameWatermark' }"
-          >
-            边框水印
-          </router-link>
-          <router-link 
-            to="/image-collage" 
-            class="nav-link"
-            :class="{ active: $route.name === 'ImageCollage' }"
-          >
-            图片拼图
-          </router-link>
-          
+  <header class="site-header" :class="{ 'viewer-header': minimal }">
+    <a class="skip-link" href="#main-content">跳到内容</a>
+    <div class="site-header-inner">
+      <router-link to="/" class="wordmark" aria-label="Markr 首页">Markr</router-link>
+      <template v-if="!minimal">
+        <nav aria-label="主要导航" class="primary-nav">
+          <router-link to="/" class="nav-item" :class="{ selected: route.path === '/' }">广场</router-link>
+          <router-link to="/tools" class="nav-item" :class="{ selected: toolRoute }">工具箱</router-link>
         </nav>
-      </div>
+        <router-link to="/studio" class="studio-link" :class="{ selected: route.path === '/studio' || route.path === '/login' }">我的工作台</router-link>
+      </template>
     </div>
   </header>
 </template>
 
-
 <style scoped>
-.header {
-  background: rgba(161, 136, 117, 0.25);
-  backdrop-filter: blur(20px);
-  border-bottom: 1px solid rgba(161, 136, 117, 0.4);
-  box-shadow: 0 1px 0 rgba(161, 136, 117, 0.2), 0 2px 8px rgba(0, 0, 0, 0.1);
-  position: sticky;
-  top: 0;
-  z-index: 1000;
-  height: 80px;
-}
-
-.header-content {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  height: 80px;
-}
-
-.logo-link {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  text-decoration: none;
-  color: white;
-  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
-}
-
-.logo-icon {
-  font-size: 32px;
-}
-
-.logo-text {
-  font-size: 28px;
-  font-weight: 700;
-  color: white;
-  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
-}
-
-.nav {
-  display: flex;
-  gap: 32px;
-  align-items: center;
-}
-
-.nav-link {
-  text-decoration: none;
-  color: rgba(255, 255, 255, 0.9);
-  font-weight: 500;
-  padding: 8px 16px;
-  border-radius: 8px;
-  transition: all 0.3s ease;
-  position: relative;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
-  
-  &:hover {
-    color: white;
-    background: rgba(255, 255, 255, 0.1);
-  }
-  
-  &.active {
-    color: white;
-    background: rgba(255, 255, 255, 0.15);
-    
-    &::after {
-      content: '';
-      position: absolute;
-      bottom: -2px;
-      left: 50%;
-      transform: translateX(-50%);
-      width: 20px;
-      height: 3px;
-      background: linear-gradient(135deg, #a18875 0%, #8b7968 100%);
-      border-radius: 2px;
-    }
-  }
-}
-
-.favorite-btn {
-  background: transparent;
-  border: 1px solid rgba(255, 255, 255, 0.3);
-  color: rgba(255, 255, 255, 0.9);
-  font-weight: 500;
-  padding: 8px 16px;
-  border-radius: 8px;
-  transition: all 0.3s ease;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
-  font-size: 14px;
-  
-  &:hover {
-    color: white;
-    background: rgba(255, 255, 255, 0.1);
-    border-color: rgba(255, 255, 255, 0.5);
-    transform: translateY(-1px);
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
-    
-    .favorite-icon {
-      transform: scale(1.1);
-    }
-  }
-  
-  &:active {
-    transform: translateY(0);
-  }
-}
-
-.favorite-icon {
-  font-size: 16px;
-  transition: transform 0.3s ease;
-}
-
-.favorite-text {
-  font-size: 14px;
-}
-
-@media (max-width: 768px) {
-  .header-content {
-    flex-direction: column;
-    gap: 16px;
-    height: auto;
-    padding: 16px 0;
-  }
-  
-  .header {
-    height: auto;
-  }
-  
-  .nav {
-    gap: 16px;
-    flex-wrap: wrap;
-    justify-content: center;
-  }
-  
-  .logo-text {
-    font-size: 24px;
-  }
-  
-  .logo-icon {
-    font-size: 28px;
-  }
-  
-  .favorite-btn {
-    padding: 6px 12px;
-    font-size: 13px;
-    
-    .favorite-text {
-      font-size: 13px;
-    }
-    
-    .favorite-icon {
-      font-size: 14px;
-    }
-  }
-}
-
-@media (max-width: 480px) {
-  .nav {
-    gap: 12px;
-  }
-  
-  .favorite-btn {
-    .favorite-text {
-      display: none;
-    }
-    
-    padding: 8px;
-    min-width: 36px;
-    justify-content: center;
-  }
-}
-</style> 
+.site-header{position:sticky;top:0;z-index:100;background:var(--markr-bg)}
+.site-header-inner{max-width:1600px;margin:auto;padding:0 var(--markr-page-gutter);min-height:72px;display:flex;align-items:center;gap:48px}
+.wordmark{display:inline-flex;align-items:center;min-height:44px;color:var(--markr-text);font-size:23px;letter-spacing:-.045em;font-weight:500;text-decoration:none}
+.primary-nav{display:flex;gap:24px;align-items:center}
+.nav-item,.studio-link{display:inline-flex;align-items:center;min-height:44px;color:var(--markr-muted);font-size:14px;text-decoration:none;transition:color var(--markr-motion-control) var(--markr-ease-control);white-space:nowrap}
+.nav-item:hover,.nav-item.selected,.studio-link:hover,.studio-link.selected{color:var(--markr-text)}
+.studio-link{margin-left:auto}
+.viewer-header{position:relative}
+.viewer-header .site-header-inner{min-height:56px}
+.viewer-header .wordmark{font-size:20px;color:var(--markr-muted)}
+.skip-link{position:absolute;left:16px;top:-80px;padding:12px 16px;background:var(--markr-accent);color:var(--markr-bg);z-index:1}
+.skip-link:focus{top:8px}
+@media(max-width:600px){.site-header-inner{min-height:64px;gap:24px}.primary-nav{gap:16px}.wordmark{font-size:21px}.nav-item,.studio-link{font-size:13px}}
+@media(max-width:370px){.site-header-inner{gap:18px}.primary-nav{gap:12px}.studio-link{font-size:12px}}
+</style>
