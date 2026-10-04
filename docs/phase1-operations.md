@@ -8,12 +8,13 @@
 | --- | --- |
 | 服务 | `systemctl --user status markr-phase1.service` |
 | 服务根目录 | `/home/timestarry/deploy/markr-phase1` |
-| 发布目录 | `releases/20261002-tailscale-trial` |
+| 发布目录 | `releases/20261004-quiet-ui` |
+| 应用代码 | `28e9e594d1d93a35833d78881e1658ee156e29e9`；完整文档版本见 `current/REVISION` |
 | 当前版本 | `current` 软链接指向发布目录 |
 | 试验持久化 | `trial-data`，0700；原正式 `data` 保留且不迁移 |
 | 监听 | `100.99.0.5:18140`，仅已有 Tailscale 私有接口 |
 | 健康 | `http://100.99.0.5:18140/api/health` |
-| server 地址 | `http://100.99.0.5:18140/`，需要已有 Tailscale 通路；Mac curl 成功，最新用户截图确认已能打开；真实自动化UI验收未完成 |
+| server 地址 | `http://100.99.0.5:18140/`，需要已有 Tailscale 通路；本轮 Mac HTTP 与资源哈希验证成功；真实浏览器 UI 验收未完成 |
 
 旧 Mac 转发仅作为历史记录，不能当作最终 server 访问入口。改用 Tailscale 接口后若需诊断转发，其目标需同步为该接口：
 
@@ -34,7 +35,7 @@ systemctl --user restart markr-phase1.service
 curl -fsS http://100.99.0.5:18140/api/health
 ```
 
-回滚时把 `current` 指回上一目录并重启。已保留前一目录 `releases/20261001-tools-final`，可切回并重启；更早预览也未删除。需要撤销整个独立实例时，可执行 `systemctl --user disable --now markr-phase1.service` 撤销实例，保留发布目录和数据。当前只创建新 SQLite 表，没有接触现有业务数据库或执行破坏性迁移。
+回滚时把 `current` 指回上一目录并重启。本轮前一目录 `releases/20261002-tailscale-trial` 完整保留，可切回并重启；更早预览也未删除。需要撤销整个独立实例时，可执行 `systemctl --user disable --now markr-phase1.service` 撤销实例，保留发布目录和数据。当前只创建新 SQLite 表，没有接触现有业务数据库或执行破坏性迁移。
 
 ## 备份与容量
 
@@ -69,10 +70,33 @@ journalctl --user -u markr-phase1.service -n 100 --no-pager
 
 回滚指向 `releases/20261001-tools-final` 并重启，drop-in保持身份关闭；旧版本不读取SMTP引用。未来开启身份后仅追加账户表，回滚时关闭身份并保留新表，不DROP；备份包含SQLite/WAL、媒体及受限配置引用，秘密不放入公开发布包。
 
-## 当前：私网HTTP注册试验
+## 2026-10-02：私网HTTP注册试验（配置沿用）
 
-current指向 `releases/20261002-tailscale-trial`，代码7c62410，完整提交见REVISION。新增0600用户级drop-in `40-tailscale-trial.conf`，覆盖前一30-identity-off.conf：IDENTITY_ENABLED=true、REGISTRATION_OPEN=true、IDENTITY_TRIAL_MODE=tailscale-http、IDENTITY_ORIGIN=http://100.99.0.5:18140、DATA_DIR=/home/timestarry/deploy/markr-phase1/trial-data。原data5156365/0700不改写；新trial-data0700，账户/素材/作品与正式数据隔离。SMTP仍引用原专用配置，没有复制秘密或改原服务。
+该次发布目录为 `releases/20261002-tailscale-trial`，代码7c62410；现在作为可回滚前版保留。新增0600用户级drop-in `40-tailscale-trial.conf`，覆盖前一30-identity-off.conf：IDENTITY_ENABLED=true、REGISTRATION_OPEN=true、IDENTITY_TRIAL_MODE=tailscale-http、IDENTITY_ORIGIN=http://100.99.0.5:18140、DATA_DIR=/home/timestarry/deploy/markr-phase1/trial-data。原data5156365/0700不改写；新trial-data0700，账户/素材/作品与正式数据隔离。SMTP仍引用原专用配置，没有复制秘密或改原服务。
 
 已按授权向指定收件人发送一次测试验证挑战，SMTP接受，未代设密码或创建正式账户；邮件打开后用户自行选择一次性试验密码。服务器 `trial-mail-test-result.json` 为0600单次发送记录，不包含token或密码，不因排障自动重发。未来HTTPS域名迁移时关闭试验模式，设置精确HTTPS origin并移除HTTP试验配置；不要自动认领或迁移试验用户/作品。
 
 完整回滚：将40-tailscale-trial.conf移动到此独立服务的受限备份目录（不要删除trial-data），让30-identity-off.conf重新生效；current指回20261002-account-off，daemon-reload并restart。身份/注册关闭、数据目录恢复原data；两个数据目录与旧发布均保留。没有改DNS、TLS/反代、ACL、防火墙或其他服务。
+
+## 2026-10-04：全站摄影浏览与工作区重构
+
+设计提交 `35ac441`，应用代码 `28e9e59`；新 release 为 `20261004-quiet-ui`。先在新目录安装生产依赖（审计 0 漏洞），运行 Node 22 的 18 项隔离 API/账户/会话/分页测试，再原子替换 current 并仅重启 markr-phase1.service。切换脚本包含健康失败时恢复前版的保护；本次健康通过，没有触发回退。
+
+没有更改 unit/drop-in、监听端口、身份试验、SMTP 引用、Tailscale、代理或其他服务。data inode 5156365、trial-data inode 5455213 均仍为 0700。没有数据迁移；新上传增加展示宽高字段，旧素材只读展示文件推导尺寸。旧应用可继续读取记录。
+
+Mac HTTP 验证了首页及 8 个 SPA 路径、10 个实际资源的 SHA256、健康与匿名权限。健康仍为 identityEnabled=true/privateTrial=true。匿名工作台/上传/作品写入返回 401，未知作品/媒体返回 404，外部 Origin 写入返回 403。测试没有创建真实账号、作品或发送邮件。
+
+回退本轮界面（保留试验身份、SMTP 和 trial-data）可执行：
+
+```sh
+cd /home/timestarry/deploy/markr-phase1
+python3 - <<'PYROLLBACK'
+import os
+os.symlink('releases/20261002-tailscale-trial', 'current.rollback-quiet-ui')
+os.replace('current.rollback-quiet-ui', 'current')
+PYROLLBACK
+systemctl --user restart markr-phase1.service
+curl -fsS http://100.99.0.5:18140/api/health
+```
+
+上述回退与前节“关闭整个私网身份试验”不同：不要为撤回界面重构移动身份 drop-in 或切换数据目录。本次仅验证旧 release 存在及新旧数据兼容条件，未实际执行回滚演练。完整验收与未测项见验证文档。
