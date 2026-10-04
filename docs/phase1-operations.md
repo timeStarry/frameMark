@@ -8,8 +8,8 @@
 | --- | --- |
 | 服务 | `systemctl --user status markr-phase1.service` |
 | 服务根目录 | `/home/timestarry/deploy/markr-phase1` |
-| 发布目录 | `releases/20261004-quiet-ui` |
-| 应用代码 | `28e9e594d1d93a35833d78881e1658ee156e29e9`；完整文档版本见 `current/REVISION` |
+| 发布目录 | `releases/20261004-continuous-viewing` |
+| 应用代码 | `2b2a0adb2ed236610c3155ce545e08c951bef486`；完整文档版本见 `current/REVISION` |
 | 当前版本 | `current` 软链接指向发布目录 |
 | 试验持久化 | `trial-data`，0700；原正式 `data` 保留且不迁移 |
 | 监听 | `100.99.0.5:18140`，仅已有 Tailscale 私有接口 |
@@ -35,15 +35,15 @@ systemctl --user restart markr-phase1.service
 curl -fsS http://100.99.0.5:18140/api/health
 ```
 
-回滚时把 `current` 指回上一目录并重启。本轮前一目录 `releases/20261002-tailscale-trial` 完整保留，可切回并重启；更早预览也未删除。需要撤销整个独立实例时，可执行 `systemctl --user disable --now markr-phase1.service` 撤销实例，保留发布目录和数据。当前只创建新 SQLite 表，没有接触现有业务数据库或执行破坏性迁移。
+回滚时把 `current` 指回上一目录并重启。本轮前一目录 `releases/20261004-quiet-ui` 完整保留，可切回并重启；更早预览也未删除。需要撤销整个独立实例时，可执行 `systemctl --user disable --now markr-phase1.service` 撤销实例，保留发布目录和数据。当前只创建新 SQLite 表，没有接触现有业务数据库或执行破坏性迁移。
 
 ## 备份与容量
 
-不要只复制运行中的 SQLite 主文件而漏掉 WAL。小实例可先停止此独立服务，备份整个 `data` 目录，再启动；恢复时同时恢复数据库与媒体。备份目录应受访问限制，因为原件可能含 GPS。当前没有自动备份、对象存储或磁盘告警。
+不要只复制运行中的 SQLite 主文件而漏掉 WAL。小实例可先停止此独立服务，备份实际 DATA_DIR（当前为 `trial-data`）整个目录，再启动；原 `data` 另行保留。恢复时同时恢复对应数据库与媒体。备份目录应受访问限制，因为原件可能含 GPS。当前没有自动备份、对象存储或磁盘告警。
 
 ```sh
 systemctl --user stop markr-phase1.service
-# 将整个 data 目录归档至访问受限的备份位置。
+# 将当前 trial-data 及需保留的原 data 分别归档至访问受限的备份位置。
 systemctl --user start markr-phase1.service
 journalctl --user -u markr-phase1.service -n 100 --no-pager
 ```
@@ -100,3 +100,26 @@ curl -fsS http://100.99.0.5:18140/api/health
 ```
 
 上述回退与前节“关闭整个私网身份试验”不同：不要为撤回界面重构移动身份 drop-in 或切换数据目录。本次仅验证旧 release 存在及新旧数据兼容条件，未实际执行回滚演练。完整验收与未测项见验证文档。
+
+## 2026-10-04：连续观看补充发布
+
+应用代码 `2b2a0adb2ed236610c3155ce545e08c951bef486`，独立目录 `releases/20261004-continuous-viewing`；前版 `20261004-quiet-ui`（`7a56f327244e8bd018d80f2ed9086a6734fbff29`）完整保留。新目录安装生产依赖审计 0 漏洞，18/18 服务器隔离回归通过后原子切换 current，健康失败自动恢复前版；本次健康通过，没有触发回退。
+
+同图转场与相邻展示图预载都是前端增强；展示 GET 已有的 HEAD 行为保持原有鉴权，没有数据库迁移或新配置。unit 与两个 drop-in 的 SHA256 在部署前后完全一致。data inode 5156365、trial-data inode 5455213 均为 0700。没有创建真实用户、上传生产测试作品、发送邮件或修改网络。部署前剩余空间约 8.7 GiB；本轮未删除旧版本。
+
+Mac 核实 10 个构建资源哈希、9 个 SPA 路由，以及匿名工作台/上传/发布 401、未知资源及展示 HEAD 404、外部 Origin 写入 403。健康仍为 identityEnabled=true/privateTrial=true。线上广场没有公开作品，因此实际照片转场和真实用户上传仍需浏览器验收。
+
+仅回退本次连续观看增强：
+
+```sh
+cd /home/timestarry/deploy/markr-phase1
+python3 - <<'PYROLLBACK'
+import os
+os.symlink('releases/20261004-quiet-ui', 'current.rollback-continuous-viewing')
+os.replace('current.rollback-continuous-viewing', 'current')
+PYROLLBACK
+systemctl --user restart markr-phase1.service
+curl -fsS http://100.99.0.5:18140/api/health
+```
+
+不改变身份试验或数据目录。本次验证了前版存在和配置一致，未实际执行回滚演练。

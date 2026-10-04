@@ -91,3 +91,5 @@ API 增补公开作者姓名、可见封面与展示图尺寸；`photographer` �
 补充测试覆盖：转场旧/新 DOM 时序、唯一命名、API/解码失败、超时、连续导航、浏览器 Back、减少动态效果与不支持降级；邻图范围、去重、失败、快速切换、释放、HEAD 权限撤回及原件零预取。真实浏览器几何、动画流畅度和预取收益仍需要实际浏览器测量。父线程云端 Chrome 访问私网入口得到 502/Connection refused 且 URL 显示 HTTPS，只记为该执行环境无法访问；不推断 server 服务故障，不改绑定、代理或 DNS。
 
 补充实现已完成，Mac 全量 122/122 测试与 check/typecheck/build 通过。其中新增转场 9 项、邻图预载 17 项，真实展示接口新增 HEAD 成功/权限撤回断言；不把模拟 DOM 的通过称为浏览器动画验收。
+
+补充部署为 `20261004-continuous-viewing`，应用代码 `2b2a0adb2ed236610c3155ce545e08c951bef486`。服务器 18/18 隔离回归、Mac 对 10 个资源哈希/9 个路由/匿名权限的实际 HTTP 检查通过；前版 quiet-ui 保留。详情见[验证记录](phase1-validation.md)与[回滚步骤](phase1-operations.md)。
