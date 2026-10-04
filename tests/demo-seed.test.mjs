@@ -154,14 +154,16 @@ test('demo detects changed manifests, edited records, and corrupted display file
   assert.equal(readFileSync(path, 'utf8'), 'corrupt display');
 }));
 
-test('failed record transaction rolls back all new demo files and records while preserving identity data', () => fixture(async ({ directory, options, records, identity }) => {
+test('failed record transaction rolls back all new demo files and records while preserving identity data', async () => {
+ for (const action of ['ABORT', 'ROLLBACK']) await fixture(async ({ directory, options, records, identity }) => {
   const initial = records(), identities = identity();
   const db = new DatabaseSync(join(directory, 'markr.sqlite'));
-  db.exec("CREATE TRIGGER fail_demo_insert BEFORE INSERT ON records WHEN NEW.id='demo-v1-work-photo-4' BEGIN SELECT RAISE(ABORT,'simulated insert failure'); END;"); db.close();
+  db.exec(`CREATE TRIGGER fail_demo_insert BEFORE INSERT ON records WHEN NEW.id='demo-v1-work-photo-4' BEGIN SELECT RAISE(${action},'simulated insert failure'); END;`); db.close();
   await assert.rejects(seedDemo({ ...options, apply: true }), /simulated insert failure/);
   assert.deepEqual(records(), initial); assert.deepEqual(identity(), identities);
   assert.deepEqual(readdirSync(join(directory, 'media')), ['real-file.original']);
-}));
+ });
+});
 
 test('cleanup plan reports references and exact files without deleting or needing source images', () => fixture(async ({ directory, options, manifest, records }) => {
   // A process crash can leave a file before its record transaction commits.

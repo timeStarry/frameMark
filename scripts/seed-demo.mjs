@@ -256,7 +256,9 @@ export async function seedDemo({ directory, manifest, images, apply = false, cle
     db.exec('COMMIT'); inTransaction = false;
     return report;
   } catch (error) {
-    if (inTransaction) db.exec('ROLLBACK');
+    // SQLite may already have rolled back (for example RAISE(ROLLBACK)).
+    // Cleanup must still run and preserve the original import failure.
+    if (inTransaction) { try { db.exec('ROLLBACK'); } catch { /* Already rolled back or unavailable. */ } }
     for (const path of createdFiles) { try { unlinkSync(path); } catch { /* Report original failure; no unrelated files are touched. */ } }
     if (createdDirectory) { try { rmdirSync(paths.media); } catch { /* Keep nonempty directories. */ } }
     throw error;
