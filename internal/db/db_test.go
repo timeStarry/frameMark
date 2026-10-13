@@ -252,3 +252,17 @@ func TestForeignKeysCascade(t *testing.T) {
 		})
 	}
 }
+
+func TestDeleteCoverPhotoClearsCover(t *testing.T) {
+	d := openMigrated(t)
+	seedGraph(t, d)
+	mustExec(t, d, `UPDATE collections SET cover_photo_id='p1' WHERE id='c1'`)
+	mustExec(t, d, `DELETE FROM photos WHERE id='p1'`)
+	var cover sql.NullString
+	if err := d.QueryRow(`SELECT cover_photo_id FROM collections WHERE id='c1'`).Scan(&cover); err != nil {
+		t.Fatal(err)
+	}
+	if cover.Valid {
+		t.Fatalf("cover_photo_id = %q, want NULL", cover.String)
+	}
+}

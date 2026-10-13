@@ -112,7 +112,7 @@ CREATE TABLE collections (
     original_download INTEGER NOT NULL DEFAULT 0 CHECK (original_download IN (0, 1)),
     license           TEXT    NULL CHECK (license IS NULL OR license IN ('by', 'by-sa', 'by-nd', 'by-nc', 'by-nc-sa', 'by-nc-nd')),
     ai_declaration    TEXT    NULL CHECK (ai_declaration IS NULL OR ai_declaration IN ('no-generative-ai')),
-    cover_photo_id    TEXT    NULL REFERENCES photos(id),
+    cover_photo_id    TEXT    NULL REFERENCES photos(id) ON DELETE SET NULL,
     featured_rank     INTEGER NULL,
     wall_rank         INTEGER NOT NULL,
     published_at      INTEGER NULL,
