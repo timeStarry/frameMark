@@ -4,23 +4,23 @@
 
 ## 1. 目标与边界
 
-交付 `markr` Go 单二进制，提供后续子项目 2–4 需要的全部服务端能力：数据库结构、账户、上传、媒体管线、读取与权限、分发 URL，以及旧数据迁移。本子项目**不含**任何新界面。
+交付 `markr` Go 单二进制，提供后续子项目 2–4 需要的全部服务端能力：数据库结构、账户、上传、媒体管线、读取与权限、分发 URL，以及 Demo 种子。旧系统从未上线，**不做任何数据迁移**，新库从空开始。本子项目**不含**任何新界面。
 
 **完成标准**
 - 一个合成作者可以完成整条链路：注册 → 预签名直传 → worker 处理 → 读到 EXIF、直方图和多档衍生图 → 建合集和帧 → 发布 → 匿名读取 → 撤回 → 匿名读取被拒。
 - 链路由 Go 集成测试自动跑通，存储用 MinIO，SMTP 和 EO 用 fake。
-- 迁移脚本能把旧 `records` 测试库和 Demo 种子完整转入新库。
+- `seed-demo` 能把 Demo 清单写入空库，并通过同一条读取链路展示。
 
 **不在本子项目**
 - 前端：子项目 2 起重写。旧 Vue 前端和 Node 服务在本子项目期间保持原样，不并行改动。
-- 正式切换、EO 真实接入、停机迁移：子项目 6。
+- 正式上线、EO 真实接入：子项目 6。
 - 水印模板编辑 UI：子项目 5。本子项目只实现「文字水印」变体生成。
 
 ## 2. 仓库布局
 
 ```
 go.mod                      module github.com/timeStarry/frameMark
-cmd/markr/main.go           子命令：serve（--role=api|worker|all）、migrate、import-legacy、seed-demo
+cmd/markr/main.go           子命令：serve（--role=api|worker|all）、migrate、seed-demo、reprocess
 internal/config             环境变量解析与校验，启动时一次性失败
 internal/db                 SQLite 连接（WAL、foreign_keys、busy_timeout）、迁移执行器、嵌入的 *.sql
 internal/identity           注册、验证、登录、会话、CSRF、限流
@@ -31,11 +31,10 @@ internal/media              libvips 管线：解码校验、EXIF、直方图、�
 internal/jobs               SQLite 队列：入队、领取、心跳、重试、死信
 internal/domain             照片、合集、帧、作品集、主页的规则与权限判定（纯 Go，无 IO）
 internal/api                HTTP 路由、JSON 编解码、错误映射、安全头
-internal/legacy             旧 records 表读取与映射
 migrations/                 0001_init.sql …
 ```
 
-- 依赖库（版本在计划阶段锁定）：`modernc.org/sqlite`（纯 Go，免 CGO 的 SQLite）、`github.com/davidbyttow/govips/v2`（libvips 绑定，需要 CGO）、`github.com/aws/aws-sdk-go-v2/service/s3`、`golang.org/x/crypto/scrypt`。HTTP 用标准库 `net/http`（Go 1.22+ 路由），不引入 Web 框架。
+- 依赖库（版本在计划阶段锁定）：`modernc.org/sqlite`（纯 Go，免 CGO 的 SQLite）、`github.com/davidbyttow/govips/v2`（libvips 绑定，需要 CGO）、`github.com/aws/aws-sdk-go-v2/service/s3`、`golang.org/x/crypto/scrypt`、`github.com/go-chi/chi/v5`（路由与中间件分组；只用路由、子路由和 `middleware.Recoverer/RequestID`，鉴权、CSRF、限流自己写成标准 `func(http.Handler) http.Handler`，可脱离 chi 单测）。
 - 系统依赖：libvips ≥ 8.15，需要带 AVIF 编码支持（libheif）。Mac 开发用 `brew install vips`，Debian 用 `apt install libvips-dev`，CI 在 ubuntu 上安装。
 
 ## 3. 配置
@@ -48,7 +47,7 @@ migrations/                 0001_init.sql …
 | `MARKR_LISTEN` | 例如 `127.0.0.1:18150`。新端口，不占用旧服务的 18140 |
 | `MARKR_ORIGIN` | 精确站点 origin。必须是 HTTPS；只有 `MARKR_DEV=1` 时允许 `http://localhost` 或 `127.0.0.1` |
 | `MARKR_IDENTITY_ENABLED` / `MARKR_REGISTRATION_OPEN` | 默认关闭 |
-| `MARKR_SMTP_CONFIG_FILE` | 与旧服务相同的安全读取规则（O_NOFOLLOW、属主本人、权限 0600）及相同字段 |
+| `MARKR_SMTP_CONFIG_FILE` | dotenv 格式，字段 `SMTP_HOST/PORT/USER/PASSWORD/FROM`；以 O_NOFOLLOW 打开，必须是常规文件、属主为当前用户、权限无组和其他位 |
 | `MARKR_S3_ENDPOINT` `_REGION` `_ACCESS_KEY` `_SECRET_KEY` | 主存储（火山 TOS） |
 | `MARKR_BUCKET_ORIGINALS` / `MARKR_BUCKET_DERIVED` | 两个私有桶 |
 | `MARKR_REPLICA_*` | 可选，自建 MinIO 副本；不配置则不复制 |
@@ -56,11 +55,11 @@ migrations/                 0001_init.sql …
 | `MARKR_EO_*` | EO purge API 凭据；为空时使用 noop，并在日志中警告 |
 | `MARKR_UPLOAD_MAX_MB`（默认 60）、`MARKR_MAX_PIXELS`（默认 100M）、`MARKR_QUOTA_PHOTOS`（默认 2000）、`MARKR_WORKERS`（默认 2） | 资源上限 |
 
-私网 HTTP 试验模式**不移植**。新服务只接受 HTTPS origin，开发环境除外。旧试验仍由旧 Node 服务承载，直到子项目 6。
+私网 HTTP 试验模式**不移植**。新服务只接受 HTTPS origin，开发环境除外。
 
 ## 4. 数据库
 
-单个 SQLite 文件，开启 WAL。迁移通过 `PRAGMA user_version` 记版本，每次迁移在一个事务内执行，只前进，不回退；回滚依靠子项目 6 的整库备份。所有 ID 都是 UUIDv7，可按时间排序，适合作为游标；旧数据迁移时保留原 UUID。时间统一存 Unix 毫秒。
+单个 SQLite 文件，开启 WAL。迁移通过 `PRAGMA user_version` 记版本，每次迁移在一个事务内执行，只前进，不回退；回滚依靠整库备份（子项目 6 定义）。所有 ID 都是 UUIDv7，可按时间排序，适合作为游标。时间统一存 Unix 毫秒。
 
 ```sql
 users(id PK, email UNIQUE NOT NULL, password NOT NULL, created_at)
@@ -75,7 +74,8 @@ upload_prefs(user_id PK REFERENCES users, public_fields JSON NOT NULL, histogram
 
 photos(id PK, owner_id REFERENCES users, status CHECK IN ('uploading','processing','ready','failed'),
        original_key, original_sha256, original_bytes, format, width, height,       -- 转正后的尺寸
-       derived_hash NULL, title, caption,
+       derived_hash NULL, derived_salt TEXT NOT NULL DEFAULT '',
+       title, caption,
        public_fields JSON NOT NULL, histogram_public BOOL, original_download BOOL, -- 入库时的偏好快照
        latitude NULL, longitude NULL,                                             -- 仅 location_mode=archive 时写入
        error NULL, created_at, updated_at)
@@ -111,17 +111,17 @@ jobs(id PK, kind, payload JSON, state CHECK IN ('queued','running','done','dead'
 - `public_fields` 的取值为以下键的子集：`camera`、`lens`、`focal_length`、`aperture`、`shutter`、`iso`、`exposure_bias`、`taken_date`。
 - 照片在某个合集中**实际公开的字段** = 照片快照 → 被 `photo_overrides` 覆盖后的结果。`domain` 包统一提供这个判定，API 层不得自行拼装。
 - 位置信息：没有任何 API 序列化 `latitude`/`longitude`，作者自己的归档接口也不返回（地图视图后置）。测试会扫描所有响应，断言其中不出现这两个键。
-- 许可只允许旧白名单里的 6 种 CC 4.0 代码，AI 声明只允许 `no-generative-ai`，与旧服务一致。
+- 许可只允许 6 种 CC 4.0 代码 `by`、`by-sa`、`by-nd`、`by-nc`、`by-nc-sa`、`by-nc-nd`；AI 声明只允许 `no-generative-ai`。
 
 ## 5. 账户
 
-行为与旧 `server/identity.mjs` 一一对应，以便旧用户迁移后可以直接登录：
+安全机制沿用旧 `server/identity.mjs` 已验证的设计，用 Go 重新实现：
 
-- 密码哈希格式沿用 `scrypt-v1$salt$hash`，参数 N=131072、r=8、p=1、64 字节；旧哈希原样导入即可校验。同时进行的哈希计算最多 2 个。
-- 会话 cookie 为 `__Host-markr_session`，`HttpOnly`、`Secure`、`SameSite=Lax`。数据库只存 SHA-256 哈希，绝对有效期 7 天，空闲超时 24 小时。
+- 密码哈希格式沿用 `scrypt-v1$salt$hash`，参数 N=131072、r=8、p=1、64 字节，salt 为 16 字节随机数的 hex。同时进行的哈希计算最多 2 个，超出返回 503。
+- HTTPS 下会话 cookie 为 `__Host-markr_session`（`HttpOnly`、`Secure`、`SameSite=Lax`、`Path=/`）。`MARKR_DEV=1` 时 cookie 名为 `markr_dev_session`，不设 `Secure`（localhost HTTP 无法使用 `__Host-` 前缀）。数据库只存 SHA-256 哈希，绝对有效期 7 天，空闲超时 24 小时。
 - 所有写请求都检查：Origin 精确匹配、`Sec-Fetch-Site` 不是 `cross-site`、`X-CSRF-Token` 与会话值做常量时间比较。
-- 限流规则（键名与次数）沿用旧实现，计数持久化。
-- 接口：`GET /api/auth/session`、`POST /api/auth/register|verify|login|logout|logout-all`，请求和响应结构与旧服务保持一致。
+- 限流：15 分钟窗口，计数持久化。`register-ip` 5、`register-email` 3、`verify-ip` 10、`auth-ip` 10、`account` 10、匿名会话 `bootstrap` 60。
+- 接口：`GET /api/auth/session`、`POST /api/auth/register|verify|login|logout|logout-all`，密码长度 15 个字符到 256 字节；验证令牌 30 分钟有效、一次性。
 - 未知邮箱登录时用一个固定的假哈希做校验，避免通过响应时间判断邮箱是否存在。注册接口无论邮箱是否已存在都返回同样的 202。
 
 ## 6. 上传与媒体管线
@@ -147,7 +147,7 @@ jobs(id PK, kind, payload JSON, state CHECK IN ('queued','running','done','dead'
 3. 按 EXIF 方向转正，从嵌入的 ICC 转换到 sRGB（没有 ICC 时按 sRGB 处理），记录转正后的宽高。
 4. 直方图：在长边 512px 的缩略图上统计亮度（Rec.709 系数）和 R、G、B，各 64 档，保存到 `photo_histograms`。
 5. 衍生图：档位为 `w480 / w1280 / w2400 / w3840`，只缩小、不放大，长边小于档位宽度时以原尺寸输出该档；格式为 AVIF（q50）、WebP（q80）、JPEG（q85，渐进式）。所有输出都去除元数据，只嵌入 sRGB 标记。
-6. `derived_hash` = sha256(原图 sha256 + 管线版本 `MEDIA_PIPELINE_V1`)，取前 16 位。对象写到派生桶的 `d/{photoId}/{derived_hash}/{tier}.{ext}`，并设置 `Cache-Control: public, max-age=31536000, immutable`。
+6. `derived_hash` = sha256(原图 sha256 + 管线版本 `MEDIA_PIPELINE_V1` + `derived_salt`) 的十六进制前 16 位。新照片的 `derived_salt` 为空字符串。撤回公开后入队 `rotate_derived`：把 `derived_salt` 换成新的 16 字节 hex，按新哈希重写衍生对象，删除旧前缀，并对旧 CDN URL 前缀调用 purge。对象写到派生桶的 `d/{photoId}/{derived_hash}/{tier}.{ext}`，并设置 `Cache-Control: public, max-age=31536000, immutable`。
 7. 如果上传偏好开启了水印，生成 `w2400` 规格的带水印 JPEG 变体，写到 `d/{photoId}/{derived_hash}-wm{watermark_hash}/w2400.jpg`。水印配置为 `{text, position: br|bl|tr|tl|center, opacity 0.1–0.8, scale 0.02–0.08}`，按文字高度相对于短边的比例计算大小，字体使用随二进制嵌入的一款开源无衬线字体（具体字体在计划中选定）。
 8. 所有对象写入成功后，在一个事务里写入 EXIF、直方图、宽高和 `derived_hash`，并把状态置为 `ready`。
 9. 如果配置了副本，再入队 `replicate_original`。
@@ -201,35 +201,19 @@ jobs(id PK, kind, payload JSON, state CHECK IN ('queued','running','done','dead'
 **撤回**：合集从公开改为其他状态、被删除，或者某张照片被移出合集时，对**不再属于任何公开合集**的照片执行以下步骤：
 
 1. 入队 `rotate_derived`。
-2. 用新的 `derived_hash` 盐值重新生成衍生对象，并删除旧对象。
+2. 写入新的 `derived_salt`，按公式重算 `derived_hash`，重写衍生对象，删除旧前缀。
 3. 对旧的 URL 前缀调用 EO purge。
 
 在这个过程完成之前，旧 CDN URL 可能还能访问几分钟，这一点在发布清单和撤回提示中写明。
 
-## 8. 旧数据迁移
+## 8. Demo 种子
 
-`markr import-legacy --from <旧 data 目录> [--apply]`。不带 `--apply` 时只做演练：打印映射统计和冲突，不做任何写入。
-
-| 旧 | 新 |
-| --- | --- |
-| `identity_users` | `users`（哈希原样保留）；旧会话不迁移，用户需要重新登录 |
-| asset | photo：上传 `.original` 到 TOS，随后入队 `process_photo`。EXIF 从原图重新提取，`public_fields` 使用默认偏好（只公开曝光三要素和焦段） |
-| work（有图） | collection：每个素材对应一个 `full` 帧；如果有正文，作为第 1 帧，类型为 `text` |
-| work（纯文字） | 只含一个 `text` 帧的合集 |
-| collection | album：成员为由对应 work 迁移而来的合集 |
-| profile | profile：`layout` 中的 grid 和 column 都映射为 `salon`；`accent`、`modules` 和封面不再使用 |
-| `featuredRank`、`license`、`aiDeclaration`、`allowOriginal`、visibility、distribute、status | 对应字段原样迁移 |
-| work 的 `attributions` | 按照片写入 `attributions` |
-
-- 所有 ID 保持原值。导入可重复执行：已存在的 ID 跳过，最后打印「新增 / 跳过 / 失败」三项统计。
-- `tags` 字段目前没有 UI，也没有数据，不迁移，只在报告中列出数量。
-
-Demo：`markr seed-demo --manifest ops/demo/manifest.json [--apply]` 沿用现有清单格式和 sha256 校验，作者为不可登录的 `markr-demo` 用户（password 字段为不可能匹配的值）。
+`markr seed-demo --manifest ops/demo/manifest.json [--apply]` 沿用现有清单格式和 sha256 校验，作者为不可登录的 `markr-demo` 用户（password 字段为不可能匹配的值）。每张图片走与用户上传相同的 `process_photo` 管线，来源写入 `attributions`；每个清单里的 collection 成为一个合集，帧为满屏。可重复执行，已存在的照片（按 sha256）跳过。
 
 ## 9. 测试
 
 - **domain**：权限、公开字段合成、广场判定、作品集过滤，用表驱动测试覆盖全部组合。
-- **identity**：迁移旧 Node 测试用例的语义，包括 CSRF、Origin、限流、令牌重放、并发验证、旧哈希兼容（用旧实现生成的固定向量）。
+- **identity**：CSRF、Origin、限流、令牌重放、并发验证、会话过期与空闲超时、logout-all。
 - **media**：用真实 libvips 处理一组仓库内的合成测试图，覆盖：方向 1–8、带 Display P3 ICC、带 GPS、带完整 EXIF、全景、16 位 PNG、动画 WebP（必须被拒）、超像素（必须被拒）。断言包括：
   - 衍生图中**没有任何 EXIF 或 GPS**；
   - 尺寸已转正；
@@ -238,7 +222,6 @@ Demo：`markr seed-demo --manifest ops/demo/manifest.json [--apply]` 沿用现�
 - **storage**：用 `testcontainers` 或 CI service 启动的 MinIO 跑真实 S3 流程，包括预签名 PUT、checksum 不一致、HEAD、删除。
 - **端到端**：§1 完成标准中的整条链路，使用 MinIO、fake SMTP 和 fake CDN，并断言撤回时调用了 purge、新的匿名请求返回 404。
 - **隐私扫描**：一个辅助函数收集测试期间所有 JSON 响应，断言其中不出现 `latitude`、`longitude`、`gps` 等键，也不出现存储 key 前缀 `o/`。
-- **迁移**：用旧 Node 测试生成的 fixture 库（含组图、纯文字作品、作品集、私密和仅链接内容）执行导入，检查数量、权限和字段与预期一致。
 - **CI**：新增 Go job，内容为 `go vet`、`go test ./...`、安装 libvips、启动 MinIO service。原有 Node job 保留，直到子项目 2 删除旧前端为止。
 
 ## 10. 风险与取舍
