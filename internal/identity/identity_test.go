@@ -870,7 +870,8 @@ func TestNewRejectsHTTPOriginOutsideDev(t *testing.T) {
 	if _, err := identity.New(d, identity.Deps{Origin: "http://localhost:5173"}); err == nil {
 		t.Fatal("http origin without Dev must be refused")
 	}
-	for _, o := range []string{"", "ftp://x", "localhost"} {
+	for _, o := range []string{"", "ftp://x", "localhost", "HTTPS://markr.example", "https://markr.example/",
+		"https://markr.example/p", "https://u@markr.example", "https://Markr.example", "https://markr.example?x"} {
 		if _, err := identity.New(d, identity.Deps{Origin: o, Dev: true}); err == nil {
 			t.Errorf("origin %q must be refused", o)
 		}

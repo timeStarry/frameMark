@@ -145,6 +145,11 @@ func New(d *sql.DB, deps Deps) (*Service, error) {
 	if err != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") {
 		return nil, errors.New("identity: origin must be an absolute http(s) origin")
 	}
+	// Origin is compared byte-for-byte with the browser's Origin header, so it
+	// must already be canonical (config.Load produces this form).
+	if u.Scheme+"://"+u.Host != deps.Origin || u.User != nil || strings.ToLower(deps.Origin) != deps.Origin {
+		return nil, errors.New("identity: origin must be canonical scheme://host[:port]")
+	}
 	if u.Scheme == "http" && !deps.Dev {
 		return nil, errors.New("identity: http origin requires dev mode")
 	}
@@ -154,7 +159,7 @@ func New(d *sql.DB, deps Deps) (*Service, error) {
 	if isNil(deps.Mailer) {
 		deps.Mailer = nil
 	}
-	secure := strings.HasPrefix(deps.Origin, "https://")
+	secure := u.Scheme == "https"
 	name := cookieDev
 	if secure {
 		name = cookieHTTPS
