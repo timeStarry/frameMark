@@ -1,6 +1,7 @@
 package identity_test
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/timeStarry/frameMark/internal/db"
 	"github.com/timeStarry/frameMark/internal/identity"
@@ -48,8 +50,10 @@ type env struct {
 	now    atomic.Int64
 	deps   identity.Deps
 	h      http.Handler
+	svc    *identity.Service
 	mu     sync.Mutex
 	outbox []identity.Mail
+	sent   chan struct{} // one signal per delivered mail
 }
 
 func newEnv(t *testing.T, mod func(*identity.Deps)) *env {
@@ -62,7 +66,7 @@ func newEnv(t *testing.T, mod func(*identity.Deps)) *env {
 	if err := db.Migrate(d); err != nil {
 		t.Fatal(err)
 	}
-	e := &env{t: t, d: d}
+	e := &env{t: t, d: d, sent: make(chan struct{}, 1024)}
 	e.now.Store(t0)
 	e.deps = identity.Deps{
 		Origin:           origin,
@@ -73,19 +77,46 @@ func newEnv(t *testing.T, mod func(*identity.Deps)) *env {
 			e.mu.Lock()
 			defer e.mu.Unlock()
 			e.outbox = append(e.outbox, m)
+			e.sent <- struct{}{}
 			return nil
 		}),
 	}
 	if mod != nil {
 		mod(&e.deps)
 	}
-	e.h = identity.New(d, e.deps).Handler()
+	e.start()
+	// Registered after the DB cleanup, so it runs first (LIFO).
+	t.Cleanup(func() { e.svc.Close(context.Background()) })
 	return e
+}
+
+func (e *env) start() {
+	e.svc = identity.New(e.d, e.deps)
+	e.h = e.svc.Handler()
 }
 
 // restart builds a fresh Service on the same database (rate limits and
 // sessions must survive).
-func (e *env) restart() { e.h = identity.New(e.d, e.deps).Handler() }
+func (e *env) restart() {
+	if err := e.svc.Close(context.Background()); err != nil {
+		e.t.Fatal(err)
+	}
+	e.start()
+}
+
+// drain waits for every queued mail job to finish, then restarts so the
+// env stays usable.
+func (e *env) drain() { e.restart() }
+
+// awaitMail blocks until the fake mailer has delivered one more message.
+func (e *env) awaitMail() {
+	e.t.Helper()
+	select {
+	case <-e.sent:
+	case <-time.After(5 * time.Second):
+		e.t.Fatal("verification mail was not sent")
+	}
+}
 
 func (e *env) tick(ms int64) { e.now.Add(ms) }
 
@@ -203,8 +234,9 @@ func (c *client) register(email string) string {
 	if r.code != 202 {
 		c.e.t.Fatalf("register %s: %d %v", email, r.code, r.body)
 	}
+	c.e.awaitMail()
 	if c.e.mails() != before+1 {
-		c.e.t.Fatalf("register %s: no mail", email)
+		c.e.t.Fatalf("register %s: want exactly one new mail", email)
 	}
 	return c.e.lastToken()
 }
@@ -270,6 +302,9 @@ func TestRegisterRequiresOriginAndCSRF(t *testing.T) {
 		t.Fatal("mail sent despite CSRF failure")
 	}
 	r := c.post("/api/auth/register", body)
+	if r.code == 202 {
+		e.awaitMail()
+	}
 	if r.code != 202 || r.body["message"] != "如果该邮箱可以注册，验证邮件已发送。请在 30 分钟内打开链接并设置密码。" || e.mails() != 1 {
 		t.Fatalf("register: %d %v mails=%d", r.code, r.body, e.mails())
 	}
@@ -332,6 +367,7 @@ func TestVerificationIsOneTimeAndReplacesOlderLinks(t *testing.T) {
 	if r := c.post("/api/auth/register", `{"email":"pending@example.com"}`); r.code != 202 || r.body["message"] != "如果该邮箱可以注册，验证邮件已发送。请在 30 分钟内打开链接并设置密码。" {
 		t.Fatalf("existing register: %d %v", r.code, r.body)
 	}
+	e.drain()
 	if e.mails() != before || e.count("users") != 1 || e.count("pending_verifications") != 0 {
 		t.Fatal("existing email must not send mail or create rows")
 	}
@@ -698,7 +734,7 @@ func TestRegistrationClosedAndMailFailures(t *testing.T) {
 		{"no mailer", func(d *identity.Deps) { d.Mailer = nil }, 503, "验证邮件服务暂不可用。"},
 		{"mail fails", func(d *identity.Deps) {
 			d.Mailer = identity.MailerFunc(func(identity.Mail) error { return errors.New("secret smtp error") })
-		}, 503, "验证邮件暂时发送失败，请稍后重试。"},
+		}, 202, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -712,6 +748,7 @@ func TestRegistrationClosedAndMailFailures(t *testing.T) {
 			if r.code != tc.code || errMsg(r) != tc.msg {
 				t.Fatalf("%d %v", r.code, r.body)
 			}
+			e.drain() // the failed send deletes its pending row asynchronously
 			if strings.Contains(errMsg(r), "secret") || e.count("pending_verifications") != 0 {
 				t.Fatal("leak or pending row left")
 			}
@@ -753,6 +790,7 @@ func TestMiddlewareHeadersBodyLimitAndUser(t *testing.T) {
 	c.login("mw@example.com", password)
 
 	svc := identity.New(e.d, e.deps)
+	t.Cleanup(func() { svc.Close(context.Background()) })
 	var seen string
 	h := svc.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { seen = identity.User(r.Context()) }))
 	req := httptest.NewRequest("GET", "/api/anything", nil)

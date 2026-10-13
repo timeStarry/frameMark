@@ -188,14 +188,14 @@ type smtpSender struct{ s Settings }
 func NewSMTP(s Settings) Sender { return smtpSender{s: s} }
 
 func (x smtpSender) Send(m Message) error {
-	msg, err := buildMessage(x.s.From, m, time.Now())
-	if err != nil {
-		return err
+	if x.s.Port != 465 && x.s.Port != 587 {
+		return errors.New("smtp: unsupported port")
 	}
 	tlsCfg := &tls.Config{ServerName: x.s.Host, MinVersion: tls.VersionTLS12}
 	addr := net.JoinHostPort(x.s.Host, strconv.Itoa(x.s.Port))
 	dialer := &net.Dialer{Timeout: timeout}
 	var conn net.Conn
+	var err error
 	if x.s.Port == 465 {
 		conn, err = tls.DialWithDialer(dialer, "tcp", addr, tlsCfg)
 	} else {
@@ -210,16 +210,28 @@ func (x smtpSender) Send(m Message) error {
 		conn.Close()
 		return errors.New("smtp: greeting failed")
 	}
-	defer c.Close()
 	if x.s.Port == 587 {
 		if err := c.StartTLS(tlsCfg); err != nil {
+			c.Close()
 			return errors.New("smtp: STARTTLS failed")
 		}
 	}
-	if err := c.Auth(smtp.PlainAuth("", x.s.User, x.s.Password, x.s.Host)); err != nil {
+	return deliver(c, x.s, m)
+}
+
+// deliver runs AUTH, MAIL, RCPT and DATA on an established client and closes
+// it. Errors are fixed strings so server text never reaches callers or logs.
+// Once DATA is accepted the message is delivered; a failing QUIT is ignored.
+func deliver(c *smtp.Client, s Settings, m Message) error {
+	defer c.Close()
+	msg, err := buildMessage(s.From, m, time.Now())
+	if err != nil {
+		return err
+	}
+	if err := c.Auth(smtp.PlainAuth("", s.User, s.Password, s.Host)); err != nil {
 		return errors.New("smtp: authentication failed")
 	}
-	if err := c.Mail(x.s.From); err != nil {
+	if err := c.Mail(s.From); err != nil {
 		return errors.New("smtp: MAIL FROM rejected")
 	}
 	if err := c.Rcpt(m.To); err != nil {
@@ -236,5 +248,6 @@ func (x smtpSender) Send(m Message) error {
 	if err := w.Close(); err != nil {
 		return errors.New("smtp: message rejected")
 	}
-	return c.Quit()
+	_ = c.Quit()
+	return nil
 }

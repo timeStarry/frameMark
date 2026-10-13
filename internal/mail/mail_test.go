@@ -2,6 +2,9 @@ package mail
 
 import (
 	"encoding/base64"
+	"net"
+	"net/smtp"
+	"net/textproto"
 	"os"
 	"path/filepath"
 	"strings"
@@ -155,5 +158,86 @@ func TestSenderFunc(t *testing.T) {
 	}
 	if NewSMTP(Settings{Host: "smtp.example.com", Port: 465, User: "u", Password: "p", From: "a@b.co"}) == nil {
 		t.Fatal("NewSMTP returned nil")
+	}
+}
+
+// fakeSMTP speaks just enough SMTP over conn. replies overrides the response
+// for a command verb (e.g. "QUIT").
+func fakeSMTP(t *testing.T, conn net.Conn, replies map[string]string) {
+	t.Helper()
+	go func() {
+		defer conn.Close()
+		tp := textproto.NewConn(conn)
+		reply := func(verb, def string) bool {
+			if r, ok := replies[verb]; ok {
+				def = r
+			}
+			return tp.PrintfLine("%s", def) == nil
+		}
+		reply("GREETING", "220 localhost ESMTP")
+		for {
+			line, err := tp.ReadLine()
+			if err != nil {
+				return
+			}
+			verb := strings.ToUpper(strings.Fields(line + " x")[0])
+			switch verb {
+			case "EHLO":
+				reply(verb, "250-localhost\r\n250 AUTH PLAIN")
+			case "AUTH":
+				reply(verb, "235 ok")
+			case "MAIL", "RCPT":
+				reply(verb, "250 ok")
+			case "DATA":
+				if !reply(verb, "354 go") {
+					return
+				}
+				if _, err := tp.ReadDotBytes(); err != nil {
+					return
+				}
+				reply("END", "250 queued")
+			case "QUIT":
+				reply(verb, "221 bye")
+				return
+			default:
+				reply(verb, "502 no")
+			}
+		}
+	}()
+}
+
+func pipeClient(t *testing.T, replies map[string]string) *smtp.Client {
+	t.Helper()
+	server, client := net.Pipe()
+	fakeSMTP(t, server, replies)
+	c, err := smtp.NewClient(client, "localhost")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+var testSettings = Settings{Host: "localhost", Port: 587, User: "u", Password: "p", From: "markr@example.com"}
+
+func TestDeliverIgnoresQuitErrorAfterAcceptance(t *testing.T) {
+	c := pipeClient(t, map[string]string{"QUIT": "421 secret server text"})
+	if err := deliver(c, testSettings, Message{To: "a@b.co", URL: "https://x/login#verify=t"}); err != nil {
+		t.Fatalf("accepted message reported as failure: %v", err)
+	}
+}
+
+func TestDeliverRejectionHasNoServerText(t *testing.T) {
+	c := pipeClient(t, map[string]string{"RCPT": "550 secret server text"})
+	err := deliver(c, testSettings, Message{To: "a@b.co", URL: "https://x/login#verify=t"})
+	if err == nil || strings.Contains(err.Error(), "secret") || strings.Contains(err.Error(), "550") {
+		t.Fatalf("want sanitized error, got %v", err)
+	}
+}
+
+func TestSendRefusesUnsupportedPort(t *testing.T) {
+	s := testSettings
+	s.Port = 25
+	if err := NewSMTP(s).Send(Message{To: "a@b.co", URL: "u"}); err == nil {
+		t.Fatal("port 25 must be refused before dialing")
 	}
 }

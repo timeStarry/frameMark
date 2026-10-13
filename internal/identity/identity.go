@@ -17,11 +17,14 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	netmail "net/mail"
+	"reflect"
 	"regexp"
 	"strings"
+	"sync"
 	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
@@ -79,7 +82,6 @@ const (
 	msgPassword    = "密码至少 15 个字符，最多 256 字节。"
 	msgClosed      = "注册尚未开放。"
 	msgNoMailer    = "验证邮件服务暂不可用。"
-	msgMailFailed  = "验证邮件暂时发送失败，请稍后重试。"
 	msgTokenBad    = "验证链接无效或已过期。"
 	msgTokenUsed   = "验证链接无效或已使用。"
 	msgLogin       = "邮箱或密码不正确。"
@@ -105,20 +107,132 @@ type Service struct {
 	deps   Deps
 	secure bool
 	cookie string
-	slots  chan struct{} // bounds concurrent scrypt and mail work
+	slots  chan struct{} // bounds concurrent scrypt work only
+
+	// Verification mail is sent by background workers so that register's
+	// response never depends on SMTP state or on scrypt load (spec §5: the
+	// same 202 whether or not the email exists).
+	mailMu     sync.RWMutex // guards mailClosed and sends on mailq
+	mailClosed bool
+	mailq      chan mailJob
+	mailWG     sync.WaitGroup
+	mailDone   chan struct{}
+	mailOnce   sync.Once
 }
 
-// New builds a Service. It performs no I/O.
+const (
+	mailWorkers   = 2
+	mailQueueSize = 64
+)
+
+type mailJob struct {
+	msg  Mail
+	hash string // pending_verifications.hash to delete if the send fails
+}
+
+// New builds a Service and starts its mail workers. It performs no I/O.
+// Call Close on shutdown to drain queued mail.
 func New(d *sql.DB, deps Deps) *Service {
 	if deps.Now == nil {
 		deps.Now = clock.Now
+	}
+	if isNil(deps.Mailer) {
+		deps.Mailer = nil
 	}
 	secure := strings.HasPrefix(deps.Origin, "https://")
 	name := cookieDev
 	if secure {
 		name = cookieHTTPS
 	}
-	return &Service{db: d, deps: deps, secure: secure, cookie: name, slots: make(chan struct{}, maxHashing)}
+	s := &Service{db: d, deps: deps, secure: secure, cookie: name, slots: make(chan struct{}, maxHashing),
+		mailq: make(chan mailJob, mailQueueSize), mailDone: make(chan struct{})}
+	s.mailWG.Add(mailWorkers)
+	for i := 0; i < mailWorkers; i++ {
+		go s.mailWorker()
+	}
+	return s
+}
+
+// isNil reports whether m is nil or an interface holding a nil func/pointer.
+func isNil(m Mailer) bool {
+	if m == nil {
+		return true
+	}
+	v := reflect.ValueOf(m)
+	switch v.Kind() {
+	case reflect.Func, reflect.Pointer, reflect.Map, reflect.Chan, reflect.Slice, reflect.Interface:
+		return v.IsNil()
+	}
+	return false
+}
+
+// Close stops accepting mail jobs, lets the workers drain the queue, and
+// waits for them until ctx is done. It is safe to call more than once.
+func (s *Service) Close(ctx context.Context) error {
+	s.mailMu.Lock()
+	if !s.mailClosed {
+		s.mailClosed = true
+		close(s.mailq)
+	}
+	s.mailMu.Unlock()
+	s.mailOnce.Do(func() {
+		go func() { s.mailWG.Wait(); close(s.mailDone) }()
+	})
+	select {
+	case <-s.mailDone:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// enqueue offers job to the queue without blocking. False means the queue is
+// full or closed.
+func (s *Service) enqueue(job mailJob) bool {
+	s.mailMu.RLock()
+	defer s.mailMu.RUnlock()
+	if s.mailClosed {
+		return false
+	}
+	select {
+	case s.mailq <- job:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Service) mailWorker() {
+	defer s.mailWG.Done()
+	for job := range s.mailq {
+		if err := s.sendJob(job); err != nil {
+			// Fixed category only: no address, URL or server text.
+			log.Print("identity: verification mail send failed")
+			s.dropPending(job.hash)
+		}
+	}
+}
+
+func (s *Service) sendJob(job mailJob) (err error) {
+	defer func() {
+		if recover() != nil {
+			err = errors.New("mailer panicked")
+		}
+	}()
+	if s.deps.Mailer == nil {
+		return errors.New("no mailer")
+	}
+	return s.deps.Mailer.Send(job.msg)
+}
+
+// dropPending removes a pending row whose link can no longer be delivered.
+func (s *Service) dropPending(hash string) {
+	if hash == "" {
+		return
+	}
+	if _, err := s.db.Exec(`DELETE FROM pending_verifications WHERE hash=?`, hash); err != nil {
+		log.Print("identity: could not delete undeliverable pending verification")
+	}
 }
 
 // --- primitives ---
@@ -173,7 +287,8 @@ func VerifyPassword(pw, encoded string) bool {
 	return subtle.ConstantTimeCompare(got, want) == 1
 }
 
-// bounded runs fn if fewer than maxHashing operations are in flight, else 503.
+// bounded runs fn if fewer than maxHashing scrypt operations are in flight,
+// else 503. Mail never uses these slots.
 func (s *Service) bounded(fn func() error) error {
 	select {
 	case s.slots <- struct{}{}:
@@ -535,15 +650,13 @@ func (s *Service) register(w http.ResponseWriter, r *http.Request, st *state) (i
 			email, hash, s.deps.Now()+pendingMs); err != nil {
 			return 0, nil, err
 		}
-		msg := Mail{To: email, URL: s.deps.Origin + "/login#verify=" + value}
-		if err := s.bounded(func() error { return s.deps.Mailer.Send(msg) }); err != nil {
-			// The mailer error may carry server details; never surface it.
-			if _, derr := s.db.Exec(`DELETE FROM pending_verifications WHERE hash=?`, hash); derr != nil {
-				return 0, nil, derr
-			}
-			return 0, nil, httperr.Fail(http.StatusServiceUnavailable, msgMailFailed)
+		job := mailJob{msg: Mail{To: email, URL: s.deps.Origin + "/login#verify=" + value}, hash: hash}
+		if !s.enqueue(job) {
+			log.Print("identity: mail queue full")
+			s.dropPending(hash)
 		}
 	}
+	// Identical for existing and new emails and for any mail outcome.
 	return http.StatusAccepted, map[string]string{"message": msgRegistered}, nil
 }
 
