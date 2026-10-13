@@ -38,3 +38,5 @@ coverage/
 *.tmp
 *.temp 
 data/
+
+.superpowers/
