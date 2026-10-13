@@ -17,6 +17,7 @@ CREATE TABLE sessions (
     expires_at INTEGER NOT NULL,
     touched_at INTEGER NOT NULL
 ) STRICT;
+CREATE INDEX sessions_user_id ON sessions(user_id);
 
 CREATE TABLE pending_verifications (
     email      TEXT    NOT NULL PRIMARY KEY,

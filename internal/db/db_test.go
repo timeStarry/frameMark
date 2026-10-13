@@ -68,6 +68,7 @@ func TestMigrateCreatesSpecIndexes(t *testing.T) {
 		"photo_exif": {"camera_model", "lens_model", "focal_length_mm", "taken_at"},
 		"frames":     {"collection_id,position"},
 		"jobs":       {"state,run_after"},
+		"sessions":   {"user_id"},
 	}
 	for table, idxs := range want {
 		have := map[string]bool{}

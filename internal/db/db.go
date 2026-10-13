@@ -37,10 +37,10 @@ type migration struct {
 	name    string
 }
 
-// loadMigrations returns embedded migrations named NNNN_*.sql, sorted by
-// version. Duplicate or malformed versions are an error.
-func loadMigrations() ([]migration, error) {
-	entries, err := fs.ReadDir(migrationsFS, "migrations")
+// loadMigrations returns the migrations in fsys's migrations/ directory named
+// NNNN_*.sql, sorted by version. Duplicate or malformed versions are an error.
+func loadMigrations(fsys fs.FS) ([]migration, error) {
+	entries, err := fs.ReadDir(fsys, "migrations")
 	if err != nil {
 		return nil, err
 	}
@@ -72,8 +72,13 @@ func loadMigrations() ([]migration, error) {
 // Migrate applies every embedded migration whose version exceeds the current
 // PRAGMA user_version. Each migration and its user_version bump run in one
 // transaction, so a failed migration leaves the database at the prior version.
+// A database newer than the highest embedded migration is refused.
 func Migrate(d *sql.DB) error {
-	migrations, err := loadMigrations()
+	return migrate(d, migrationsFS)
+}
+
+func migrate(d *sql.DB, fsys fs.FS) error {
+	migrations, err := loadMigrations(fsys)
 	if err != nil {
 		return err
 	}
@@ -81,11 +86,18 @@ func Migrate(d *sql.DB) error {
 	if err := d.QueryRow(`PRAGMA user_version`).Scan(&current); err != nil {
 		return err
 	}
+	maxVersion := 0
+	if len(migrations) > 0 {
+		maxVersion = migrations[len(migrations)-1].version
+	}
+	if current > maxVersion {
+		return fmt.Errorf("database version %d is newer than this binary (max %d)", current, maxVersion)
+	}
 	for _, m := range migrations {
 		if m.version <= current {
 			continue
 		}
-		if err := apply(d, m); err != nil {
+		if err := apply(d, fsys, m); err != nil {
 			return err
 		}
 		current = m.version
@@ -93,8 +105,8 @@ func Migrate(d *sql.DB) error {
 	return nil
 }
 
-func apply(d *sql.DB, m migration) error {
-	body, err := migrationsFS.ReadFile("migrations/" + m.name)
+func apply(d *sql.DB, fsys fs.FS, m migration) error {
+	body, err := fs.ReadFile(fsys, "migrations/"+m.name)
 	if err != nil {
 		return err
 	}
