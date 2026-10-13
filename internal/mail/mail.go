@@ -68,11 +68,12 @@ func checkOwner(uid uint32) error {
 	return nil
 }
 
-// LoadSMTP opens path with O_NOFOLLOW, requires a regular file owned by the
+// LoadSMTP opens path with O_NOFOLLOW|O_NONBLOCK (a FIFO cannot stall
+// startup; the regular-file check then rejects it), requires a regular file owned by the
 // current user with no group/other permission bits, and parses the
 // SMTP_HOST/PORT/USER/PASSWORD/FROM fields. Other keys are ignored.
 func LoadSMTP(path string) (Settings, error) {
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0)
 	if err != nil {
 		return Settings{}, errUnsafe
 	}

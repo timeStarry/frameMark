@@ -21,10 +21,13 @@ import (
 	"net"
 	"net/http"
 	netmail "net/mail"
+	"net/netip"
+	"net/url"
 	"reflect"
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
@@ -60,17 +63,18 @@ type Deps struct {
 }
 
 const (
-	anonMs     = 15 * 60_000
-	sessionMs  = 7 * 24 * 3_600_000
-	idleMs     = 24 * 3_600_000
-	pendingMs  = 30 * 60_000
-	rateMs     = 15 * 60_000
-	maxBody    = 128 << 10
-	scryptN    = 131072
-	scryptR    = 8
-	scryptP    = 1
-	scryptLen  = 64
-	maxHashing = 2
+	anonMs       = 15 * 60_000
+	sessionMs    = 7 * 24 * 3_600_000
+	idleMs       = 24 * 3_600_000
+	pendingMs    = 30 * 60_000
+	rateMs       = 15 * 60_000
+	pruneEveryMs = 60_000
+	maxBody      = 128 << 10
+	scryptN      = 131072
+	scryptR      = 8
+	scryptP      = 1
+	scryptLen    = 64
+	maxHashing   = 2
 )
 
 const (
@@ -118,6 +122,8 @@ type Service struct {
 	mailWG     sync.WaitGroup
 	mailDone   chan struct{}
 	mailOnce   sync.Once
+
+	lastPrune atomic.Int64 // Deps.Now of the last prune; 0 = never
 }
 
 const (
@@ -131,8 +137,17 @@ type mailJob struct {
 }
 
 // New builds a Service and starts its mail workers. It performs no I/O.
-// Call Close on shutdown to drain queued mail.
-func New(d *sql.DB, deps Deps) *Service {
+// Call Close on shutdown to drain queued mail. Origin must be an https
+// origin, or http only when Dev is set; the cookie name and Secure flag
+// follow the scheme.
+func New(d *sql.DB, deps Deps) (*Service, error) {
+	u, err := url.Parse(deps.Origin)
+	if err != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") {
+		return nil, errors.New("identity: origin must be an absolute http(s) origin")
+	}
+	if u.Scheme == "http" && !deps.Dev {
+		return nil, errors.New("identity: http origin requires dev mode")
+	}
 	if deps.Now == nil {
 		deps.Now = clock.Now
 	}
@@ -150,7 +165,7 @@ func New(d *sql.DB, deps Deps) *Service {
 	for i := 0; i < mailWorkers; i++ {
 		go s.mailWorker()
 	}
-	return s
+	return s, nil
 }
 
 // isNil reports whether m is nil or an interface holding a nil func/pointer.
@@ -340,19 +355,42 @@ func validPassword(v any) (string, error) {
 	return pw, nil
 }
 
-func clientIP(r *http.Request) string {
-	if h, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
-		return h
+func clientIP(r *http.Request) string { return rateIP(r.RemoteAddr) }
+
+// rateIP turns a RemoteAddr into a rate-limit bucket: IPv4 (including
+// IPv4-mapped IPv6) by full address, IPv6 by its /64, since one subscriber
+// normally holds a whole /64.
+func rateIP(remote string) string {
+	host := remote
+	if h, _, err := net.SplitHostPort(remote); err == nil {
+		host = h
 	}
-	return r.RemoteAddr
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return host
+	}
+	addr = addr.WithZone("").Unmap()
+	if addr.Is4() {
+		return addr.String()
+	}
+	p, err := addr.Prefix(64)
+	if err != nil {
+		return addr.String()
+	}
+	return p.String()
 }
 
-// rate counts one hit for key in a fixed 15-minute window (the window starts
-// at the first hit; prune removes the row once it expires).
+// rate counts one hit for key in a fixed 15-minute window that starts at the
+// first hit. An expired row restarts at 1, so correctness never depends on
+// prune having run.
 func (s *Service) rate(key string, limit int) error {
+	now := s.deps.Now()
 	var n int
-	err := s.db.QueryRow(`INSERT INTO rate_limits(key,count,expires_at) VALUES(?,1,?)
-		ON CONFLICT(key) DO UPDATE SET count=count+1 RETURNING count`, digest(key), s.deps.Now()+rateMs).Scan(&n)
+	err := s.db.QueryRow(`INSERT INTO rate_limits(key,count,expires_at) VALUES(?1,1,?3)
+		ON CONFLICT(key) DO UPDATE SET
+			count      = CASE WHEN expires_at <= ?2 THEN 1 ELSE count+1 END,
+			expires_at = CASE WHEN expires_at <= ?2 THEN ?3 ELSE expires_at END
+		RETURNING count`, digest(key), now, now+rateMs).Scan(&n)
 	if err != nil {
 		return err
 	}
@@ -384,6 +422,19 @@ func User(ctx context.Context) string {
 		return st.viewer
 	}
 	return ""
+}
+
+// maybePrune runs prune at most once per pruneEveryMs. Lookups and rate
+// limits check expiry themselves, so pruning only bounds table size.
+func (s *Service) maybePrune(now int64) error {
+	last := s.lastPrune.Load()
+	if last != 0 && now-last < pruneEveryMs {
+		return nil
+	}
+	if !s.lastPrune.CompareAndSwap(last, now) {
+		return nil // another request is pruning
+	}
+	return s.prune(now)
 }
 
 func (s *Service) prune(now int64) error {
@@ -477,7 +528,7 @@ func (s *Service) Middleware(next http.Handler) http.Handler {
 		st := &state{}
 		if s.deps.Enabled {
 			now := s.deps.Now()
-			if err := s.prune(now); err != nil {
+			if err := s.maybePrune(now); err != nil {
 				httperr.Write(w, err)
 				return
 			}
@@ -508,7 +559,8 @@ func (s *Service) Middleware(next http.Handler) http.Handler {
 
 func (s *Service) checkWrite(r *http.Request, sess *session) error {
 	origins := r.Header.Values("Origin")
-	if len(origins) != 1 || origins[0] != s.deps.Origin || r.Header.Get("Sec-Fetch-Site") == "cross-site" {
+	sites := r.Header.Values("Sec-Fetch-Site")
+	if len(origins) != 1 || origins[0] != s.deps.Origin || len(sites) > 1 || (len(sites) == 1 && sites[0] == "cross-site") {
 		return httperr.Fail(http.StatusForbidden, msgOrigin)
 	}
 	tokens := r.Header.Values("X-CSRF-Token")
@@ -571,10 +623,23 @@ type input struct {
 
 func decode(r *http.Request) (input, error) {
 	var in input
-	err := json.NewDecoder(r.Body).Decode(&in)
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	err := dec.Decode(&in)
+	if err == nil {
+		// Exactly one JSON value: anything after it but whitespace is refused.
+		if extra := dec.Decode(&struct{}{}); !errors.Is(extra, io.EOF) {
+			err = extra
+			if err == nil {
+				err = errors.New("trailing data")
+			}
+		}
+	} else if errors.Is(err, io.EOF) {
+		return in, nil // empty body is {}
+	}
 	var tooBig *http.MaxBytesError
 	switch {
-	case err == nil, errors.Is(err, io.EOF):
+	case err == nil:
 		return in, nil
 	case errors.As(err, &tooBig):
 		return in, httperr.Fail(http.StatusRequestEntityTooLarge, msgBodyTooBig)

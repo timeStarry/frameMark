@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -91,8 +92,11 @@ func newEnv(t *testing.T, mod func(*identity.Deps)) *env {
 }
 
 func (e *env) start() {
-	e.svc = identity.New(e.d, e.deps)
-	e.h = e.svc.Handler()
+	svc, err := identity.New(e.d, e.deps)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	e.svc, e.h = svc, svc.Handler()
 }
 
 // restart builds a fresh Service on the same database (rate limits and
@@ -217,6 +221,22 @@ func (c *client) do(method, path, body string, hdr map[string]string) resp {
 	if tok, ok := out.body["csrfToken"].(string); ok {
 		c.csrf = tok
 	}
+	return out
+}
+
+// doRaw sends a write with valid Origin/CSRF/cookie and lets edit add raw
+// (possibly repeated) headers.
+func (c *client) doRaw(method, path string, edit func(http.Header)) resp {
+	r := httptest.NewRequest(method, path, nil)
+	r.RemoteAddr = c.ip
+	r.Header.Set("Origin", origin)
+	r.Header.Set("X-CSRF-Token", c.csrf)
+	r.Header.Set("Cookie", c.name+"="+c.cookie)
+	edit(r.Header)
+	w := httptest.NewRecorder()
+	c.e.h.ServeHTTP(w, r)
+	out := resp{code: w.Code, header: w.Header()}
+	_ = json.Unmarshal(w.Body.Bytes(), &out.body)
 	return out
 }
 
@@ -651,6 +671,39 @@ func TestCSRFFailuresAre403(t *testing.T) {
 	if c.viewer() != "u1" {
 		t.Fatal("rejected writes must not log out")
 	}
+	// Duplicate Sec-Fetch-Site values fail closed.
+	if r := c.doRaw("POST", "/api/auth/logout", func(h http.Header) {
+		h.Add("Sec-Fetch-Site", "same-origin")
+		h.Add("Sec-Fetch-Site", "cross-site")
+	}); r.code != 403 || errMsg(r) != origin403 {
+		t.Errorf("duplicate Sec-Fetch-Site: %d %v", r.code, r.body)
+	}
+	// Origin: null and lowercase methods are rejected.
+	if r := c.do("POST", "/api/auth/logout", "", map[string]string{"Origin": "null"}); r.code != 403 || errMsg(r) != origin403 {
+		t.Errorf("Origin null: %d %v", r.code, r.body)
+	}
+	for _, m := range []string{"post", "get"} {
+		if r := c.do(m, "/api/auth/logout", "", map[string]string{"Origin": "https://evil.example", "X-CSRF-Token": "<delete>"}); r.code != 403 {
+			t.Errorf("lowercase %s must require CSRF: %d", m, r.code)
+		}
+	}
+	// Safe methods pass the middleware without a token (no handler: 405).
+	for _, m := range []string{"HEAD", "OPTIONS"} {
+		if r := c.do(m, "/api/auth/session", "", map[string]string{"Origin": "<delete>", "X-CSRF-Token": "<delete>"}); r.code == 403 {
+			t.Errorf("%s must not be CSRF-checked: %d", m, r.code)
+		}
+	}
+	if c.viewer() != "u1" {
+		t.Fatal("rejected writes must not log out")
+	}
+	// Missing Sec-Fetch-Site with a valid Origin is accepted.
+	if r := c.do("POST", "/api/auth/logout", "", map[string]string{"Sec-Fetch-Site": "<delete>"}); r.code != 200 {
+		t.Fatalf("no fetch metadata rejected: %d %v", r.code, r.body)
+	}
+	c.bootstrap() // logged out above; get a fresh anonymous session
+	if r := c.login("csrf@example.com", password); r.code != 200 {
+		t.Fatalf("re-login: %d %v", r.code, r.body)
+	}
 	// Same-origin and same-site fetch metadata are accepted.
 	if r := c.do("POST", "/api/auth/logout", "", map[string]string{"Sec-Fetch-Site": "same-origin"}); r.code != 200 {
 		t.Fatalf("valid write rejected: %d %v", r.code, r.body)
@@ -789,7 +842,10 @@ func TestMiddlewareHeadersBodyLimitAndUser(t *testing.T) {
 	}
 	c.login("mw@example.com", password)
 
-	svc := identity.New(e.d, e.deps)
+	svc, err := identity.New(e.d, e.deps)
+	if err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() { svc.Close(context.Background()) })
 	var seen string
 	h := svc.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { seen = identity.User(r.Context()) }))
@@ -802,5 +858,92 @@ func TestMiddlewareHeadersBodyLimitAndUser(t *testing.T) {
 	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/api/anything", nil))
 	if seen != "" {
 		t.Fatalf("anonymous User(ctx) = %q", seen)
+	}
+}
+
+func TestNewRejectsHTTPOriginOutsideDev(t *testing.T) {
+	d, err := db.Open(filepath.Join(t.TempDir(), "n.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if _, err := identity.New(d, identity.Deps{Origin: "http://localhost:5173"}); err == nil {
+		t.Fatal("http origin without Dev must be refused")
+	}
+	for _, o := range []string{"", "ftp://x", "localhost"} {
+		if _, err := identity.New(d, identity.Deps{Origin: o, Dev: true}); err == nil {
+			t.Errorf("origin %q must be refused", o)
+		}
+	}
+	s, err := identity.New(d, identity.Deps{Origin: "https://markr.example", Dev: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Close(context.Background())
+}
+
+func TestStrictJSONOverHTTP(t *testing.T) {
+	e := newEnv(t, nil)
+	c := e.client()
+	c.bootstrap()
+	for _, body := range []string{`{"email":"a@b.co"}{"email":"c@d.co"}`, `{"email":"a@b.co"} x`, `{"email":"a@b.co","admin":true}`} {
+		if r := c.post("/api/auth/register", body); r.code != 400 || errMsg(r) != "请求格式无效。" {
+			t.Errorf("%s: %d %v", body, r.code, r.body)
+		}
+	}
+	e.drain()
+	if e.mails() != 0 || e.count("pending_verifications") != 0 {
+		t.Fatal("rejected body must not register")
+	}
+}
+
+func TestAbsoluteExpiryBoundaryIsExclusive(t *testing.T) {
+	e := newEnv(t, nil)
+	e.insertUser("u1", "edge@example.com")
+	c := e.client()
+	c.login("edge@example.com", password)
+	e.tick(7*day - 1)
+	// keep it from idling out: touch was at login, so refresh it via direct SQL
+	if _, err := e.d.Exec("UPDATE sessions SET touched_at=?", e.now.Load()); err != nil {
+		t.Fatal(err)
+	}
+	if c.viewer() != "u1" {
+		t.Fatal("session ended before expires_at")
+	}
+	e.tick(1) // now == expires_at
+	if c.viewer() != nil {
+		t.Fatal("expires_at == now must be no session")
+	}
+}
+
+func TestPendingSurvivesVerifyRollback(t *testing.T) {
+	e := newEnv(t, nil)
+	c := e.client()
+	tok := c.register("rollback@example.com")
+	e.insertUser("u-taken", "rollback@example.com")
+	if r := c.verify(tok); r.code != 400 {
+		t.Fatalf("verify: %d", r.code)
+	}
+	var n int
+	if err := e.d.QueryRow("SELECT count(*) FROM pending_verifications WHERE email='rollback@example.com'").Scan(&n); err != nil || n != 1 {
+		t.Fatalf("pending row must survive rollback: n=%d err=%v", n, err)
+	}
+}
+
+func TestIPv6RateLimitIsPer64(t *testing.T) {
+	e := newEnv(t, nil)
+	for i := 0; i < 10; i++ {
+		c := e.client()
+		c.ip = fmt.Sprintf("[2001:db8:1:2::%x]:443", i+1)
+		c.bootstrap()
+		if r := c.login("v6@example.com", "short"); r.code != 400 {
+			t.Fatalf("attempt %d: %d", i+1, r.code)
+		}
+	}
+	c := e.client()
+	c.ip = "[2001:db8:1:2:ffff::1]:443"
+	c.bootstrap()
+	if r := c.login("v6@example.com", "short"); r.code != 429 {
+		t.Fatalf("same /64 must share auth-ip bucket: %d", r.code)
 	}
 }

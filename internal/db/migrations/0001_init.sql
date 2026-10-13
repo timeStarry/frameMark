@@ -18,18 +18,23 @@ CREATE TABLE sessions (
     touched_at INTEGER NOT NULL
 ) STRICT;
 CREATE INDEX sessions_user_id ON sessions(user_id);
+-- expiry indexes keep identity pruning off full table scans
+CREATE INDEX sessions_expires_at ON sessions(expires_at);
+CREATE INDEX sessions_touched_at ON sessions(touched_at);
 
 CREATE TABLE pending_verifications (
     email      TEXT    NOT NULL PRIMARY KEY,
     hash       TEXT    NOT NULL UNIQUE,
     expires_at INTEGER NOT NULL
 ) STRICT;
+CREATE INDEX pending_verifications_expires_at ON pending_verifications(expires_at);
 
 CREATE TABLE rate_limits (
     key        TEXT    NOT NULL PRIMARY KEY,
     count      INTEGER NOT NULL DEFAULT 0,
     expires_at INTEGER NOT NULL
 ) STRICT;
+CREATE INDEX rate_limits_expires_at ON rate_limits(expires_at);
 
 CREATE TABLE profiles (
     user_id     TEXT    NOT NULL PRIMARY KEY REFERENCES users(id),

@@ -267,5 +267,9 @@ func TestTypedNilMailerIsNoMailer(t *testing.T) {
 // newTestService adapts to New's signature.
 func newTestService(t *testing.T, d *sql.DB, deps Deps) *Service {
 	t.Helper()
-	return New(d, deps)
+	s, err := New(d, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
 }

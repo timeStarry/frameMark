@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -239,5 +240,22 @@ func TestSendRefusesUnsupportedPort(t *testing.T) {
 	s.Port = 25
 	if err := NewSMTP(s).Send(Message{To: "a@b.co", URL: "u"}); err == nil {
 		t.Fatal("port 25 must be refused before dialing")
+	}
+}
+
+func TestLoadSMTPRejectsFIFOWithoutBlocking(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "smtp.fifo")
+	if err := syscall.Mkfifo(p, 0o600); err != nil {
+		t.Skipf("mkfifo unsupported: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { _, err := LoadSMTP(p); done <- err }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("FIFO must be rejected")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("LoadSMTP blocked opening a FIFO")
 	}
 }

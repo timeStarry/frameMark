@@ -68,7 +68,10 @@ func TestMigrateCreatesSpecIndexes(t *testing.T) {
 		"photo_exif": {"camera_model", "lens_model", "focal_length_mm", "taken_at"},
 		"frames":     {"collection_id,position"},
 		"jobs":       {"state,run_after"},
-		"sessions":   {"user_id"},
+		"sessions":   {"user_id", "expires_at", "touched_at"},
+		// expiry indexes keep identity pruning off full scans
+		"rate_limits":           {"expires_at"},
+		"pending_verifications": {"expires_at"},
 	}
 	for table, idxs := range want {
 		have := map[string]bool{}
