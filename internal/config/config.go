@@ -39,27 +39,40 @@ func Load(environ []string) (Config, error) {
 		}
 	}
 	cfg := Config{
-		Origin:  env["MARKR_ORIGIN"],
 		DataDir: env["MARKR_DATA_DIR"],
 		Listen:  defaultStr(env["MARKR_LISTEN"], "127.0.0.1:18150"),
 		Dev:     env["MARKR_DEV"] == "1",
 	}
-	if cfg.Origin == "" {
+	if cfg.DataDir == "" {
+		return cfg, fmt.Errorf("MARKR_DATA_DIR is required")
+	}
+
+	// Validate and canonicalize MARKR_ORIGIN
+	originStr := env["MARKR_ORIGIN"]
+	if originStr == "" {
 		return cfg, fmt.Errorf("MARKR_ORIGIN is required")
 	}
-	u, perr := url.Parse(cfg.Origin)
-	if perr != nil || u.Host == "" {
+	u, err := url.Parse(originStr)
+	if err != nil || u.Hostname() == "" {
 		return cfg, fmt.Errorf("MARKR_ORIGIN invalid")
 	}
+
+	// Reject non-origins: userinfo, path, query, fragment, ForceQuery, Opaque
+	if u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" || u.ForceQuery || u.Opaque != "" {
+		return cfg, fmt.Errorf("MARKR_ORIGIN must be an exact origin")
+	}
+
+	// Validate scheme and dev exception
 	if u.Scheme != "https" {
-		allowed := cfg.Dev && (u.Hostname() == "localhost" || u.Hostname() == "127.0.0.1")
+		allowed := cfg.Dev && u.Scheme == "http" && (u.Hostname() == "localhost" || u.Hostname() == "127.0.0.1")
 		if !allowed {
 			return cfg, fmt.Errorf("MARKR_ORIGIN must use https (dev localhost http allowed with MARKR_DEV=1)")
 		}
 	}
-	if cfg.DataDir == "" {
-		return cfg, fmt.Errorf("MARKR_DATA_DIR is required")
-	}
+
+	// Store canonical form: scheme://lowercase-host[:port]
+	cfg.Origin = strings.ToLower(u.Scheme) + "://" + strings.ToLower(u.Host)
+
 	cfg.IdentityOn = env["MARKR_IDENTITY_ENABLED"] == "true"
 	cfg.RegOpen = env["MARKR_REGISTRATION_OPEN"] == "true"
 	cfg.SMTPConfigFile = env["MARKR_SMTP_CONFIG_FILE"]
@@ -71,31 +84,32 @@ func Load(environ []string) (Config, error) {
 	cfg.ReplicaBucket = env["MARKR_REPLICA_BUCKET"]
 	cfg.CDNBase = strings.TrimRight(env["MARKR_CDN_BASE"], "/")
 	cfg.EOSecretID, cfg.EOSecretKey, cfg.EOZoneID = env["MARKR_EO_SECRET_ID"], env["MARKR_EO_SECRET_KEY"], env["MARKR_EO_ZONE_ID"]
-	var err error
-	if cfg.Workers, err = intOr(env["MARKR_WORKERS"], 2); err != nil {
-		return cfg, err
+
+	var intErr error
+	if cfg.Workers, intErr = intOr(env["MARKR_WORKERS"], "MARKR_WORKERS", 2); intErr != nil {
+		return cfg, intErr
 	}
-	if cfg.UploadMaxMB, err = intOr(env["MARKR_UPLOAD_MAX_MB"], 60); err != nil {
-		return cfg, err
+	if cfg.UploadMaxMB, intErr = intOr(env["MARKR_UPLOAD_MAX_MB"], "MARKR_UPLOAD_MAX_MB", 60); intErr != nil {
+		return cfg, intErr
 	}
-	if cfg.QuotaPhotos, err = intOr(env["MARKR_QUOTA_PHOTOS"], 2000); err != nil {
-		return cfg, err
+	if cfg.QuotaPhotos, intErr = intOr(env["MARKR_QUOTA_PHOTOS"], "MARKR_QUOTA_PHOTOS", 2000); intErr != nil {
+		return cfg, intErr
 	}
-	mp, err := intOr(env["MARKR_MAX_PIXELS"], 100_000_000)
-	if err != nil {
-		return cfg, err
+	mp, intErr := intOr(env["MARKR_MAX_PIXELS"], "MARKR_MAX_PIXELS", 100_000_000)
+	if intErr != nil {
+		return cfg, intErr
 	}
 	cfg.MaxPixels = int64(mp)
 	return cfg, nil
 }
 
-func intOr(v string, d int) (int, error) {
+func intOr(v string, key string, d int) (int, error) {
 	if v == "" {
 		return d, nil
 	}
 	n, err := strconv.Atoi(v)
 	if err != nil || n <= 0 {
-		return 0, fmt.Errorf("invalid positive integer %q", v)
+		return 0, fmt.Errorf("%s: invalid positive integer %q", key, v)
 	}
 	return n, nil
 }
