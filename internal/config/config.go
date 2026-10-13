@@ -18,7 +18,7 @@ type Config struct {
 	SMTPConfigFile string
 
 	S3Endpoint, S3Region, S3AccessKey, S3SecretKey string
-	BucketOriginals, BucketDerived                  string
+	BucketOriginals, BucketDerived                 string
 
 	ReplicaEndpoint, ReplicaRegion, ReplicaAccessKey, ReplicaSecretKey, ReplicaBucket string
 
@@ -70,8 +70,21 @@ func Load(environ []string) (Config, error) {
 		}
 	}
 
-	// Store canonical form: scheme://lowercase-host[:port]
-	cfg.Origin = strings.ToLower(u.Scheme) + "://" + strings.ToLower(u.Host)
+	// Store canonical form: scheme://lowercase-host[:port], matching what a
+	// browser sends in the Origin header (no empty or default port).
+	scheme := strings.ToLower(u.Scheme)
+	host := strings.ToLower(u.Hostname())
+	port := u.Port()
+	if strings.HasSuffix(u.Host, ":") && port == "" {
+		return cfg, fmt.Errorf("MARKR_ORIGIN has an empty port")
+	}
+	if (scheme == "https" && port == "443") || (scheme == "http" && port == "80") {
+		port = ""
+	}
+	cfg.Origin = scheme + "://" + host
+	if port != "" {
+		cfg.Origin += ":" + port
+	}
 
 	cfg.IdentityOn = env["MARKR_IDENTITY_ENABLED"] == "true"
 	cfg.RegOpen = env["MARKR_REGISTRATION_OPEN"] == "true"

@@ -21,6 +21,9 @@ func TestLoad_OriginValidation(t *testing.T) {
 		{"https canonical", "HTTPS://Example.com", false, false, "https://example.com"},
 		{"http dev localhost", "http://localhost:18150", true, false, "http://localhost:18150"},
 		{"http dev 127.0.0.1", "http://127.0.0.1:18150", true, false, "http://127.0.0.1:18150"},
+		{"https default port dropped", "https://example.com:443", false, false, "https://example.com"},
+		{"http dev default port dropped", "http://localhost:80", true, false, "http://localhost"},
+		{"empty port rejected", "https://example.com:", false, true, ""},
 
 		// Rejected: trailing slash
 		{"trailing slash", "https://example.com/", false, true, ""},
