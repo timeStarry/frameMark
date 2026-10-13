@@ -200,3 +200,55 @@ func TestDeleteCollectionCascadesFrames(t *testing.T) {
 		t.Fatalf("frames after cascade = %d err=%v, want 0", n, err)
 	}
 }
+
+// seedGraph creates one of each row so every cascade case can delete a parent.
+func seedGraph(t *testing.T, d *sql.DB) {
+	t.Helper()
+	mustExec(t, d, `INSERT INTO users(id, email, password, created_at) VALUES ('u1','a@example.com','p',1)`)
+	mustExec(t, d, `INSERT INTO users(id, email, password, created_at) VALUES ('u2','b@example.com','p',1)`)
+	// Photo owned by u2 so deleting u1 is not blocked by photos.owner_id.
+	mustExec(t, d, `INSERT INTO photos(id, owner_id, status, original_key, original_sha256, original_bytes, format,
+		public_fields, histogram_public, original_download, created_at, updated_at)
+		VALUES ('p1','u2','ready','o/u2/p1','abc',1,'jpeg','[]',0,0,1,1)`)
+	mustExec(t, d, `INSERT INTO photo_histograms(photo_id, bins) VALUES ('p1', x'00')`)
+	mustExec(t, d, `INSERT INTO attributions(photo_id, source) VALUES ('p1', '{}')`)
+	mustExec(t, d, `INSERT INTO collections(id, owner_id, title, intro, status, visibility, wall_rank, created_at, updated_at)
+		VALUES ('c1','u1','t','','draft','private',0,1,1)`)
+	mustExec(t, d, `INSERT INTO frames(id, collection_id, position, layout) VALUES ('f1','c1',0,'full')`)
+	mustExec(t, d, `INSERT INTO frame_photos(frame_id, slot, photo_id) VALUES ('f1',0,'p1')`)
+	mustExec(t, d, `INSERT INTO photo_overrides(collection_id, photo_id) VALUES ('c1','p1')`)
+	mustExec(t, d, `INSERT INTO albums(id, owner_id, title, intro, visibility, created_at, updated_at)
+		VALUES ('a1','u1','t','','private',1,1)`)
+	mustExec(t, d, `INSERT INTO album_items(album_id, position, collection_id) VALUES ('a1',0,'c1')`)
+}
+
+func TestForeignKeysCascade(t *testing.T) {
+	cases := []struct {
+		name, deleteSQL, child string
+	}{
+		{"photo_histograms.photo_id", `DELETE FROM photos WHERE id='p1'`, "photo_histograms"},
+		{"attributions.photo_id", `DELETE FROM photos WHERE id='p1'`, "attributions"},
+		{"frame_photos.photo_id", `DELETE FROM photos WHERE id='p1'`, "frame_photos"},
+		{"photo_overrides.photo_id", `DELETE FROM photos WHERE id='p1'`, "photo_overrides"},
+		{"photo_overrides.collection_id", `DELETE FROM collections WHERE id='c1'`, "photo_overrides"},
+		{"album_items.album_id", `DELETE FROM albums WHERE id='a1'`, "album_items"},
+		{"album_items.collection_id", `DELETE FROM collections WHERE id='c1'`, "album_items"},
+		{"collections.owner_id", `DELETE FROM users WHERE id='u1'`, "collections"},
+		{"albums.owner_id", `DELETE FROM users WHERE id='u1'`, "albums"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := openMigrated(t)
+			seedGraph(t, d)
+			var before int
+			if err := d.QueryRow(`SELECT COUNT(*) FROM ` + tc.child).Scan(&before); err != nil || before != 1 {
+				t.Fatalf("%s before delete = %d err=%v, want 1", tc.child, before, err)
+			}
+			mustExec(t, d, tc.deleteSQL)
+			var after int
+			if err := d.QueryRow(`SELECT COUNT(*) FROM ` + tc.child).Scan(&after); err != nil || after != 0 {
+				t.Fatalf("%s after delete = %d err=%v, want 0", tc.child, after, err)
+			}
+		})
+	}
+}

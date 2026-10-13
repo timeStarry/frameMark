@@ -97,13 +97,13 @@ CREATE INDEX photo_exif_taken_at ON photo_exif(taken_at);
 
 -- bins: 4x64 uint16 (luma, R, G, B), normalised to 0-65535 by max.
 CREATE TABLE photo_histograms (
-    photo_id TEXT NOT NULL PRIMARY KEY,
+    photo_id TEXT NOT NULL PRIMARY KEY REFERENCES photos(id) ON DELETE CASCADE,
     bins     BLOB NOT NULL
 ) STRICT;
 
 CREATE TABLE collections (
     id                TEXT    NOT NULL PRIMARY KEY,
-    owner_id          TEXT    NOT NULL,
+    owner_id          TEXT    NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     title             TEXT    NOT NULL DEFAULT '',
     intro             TEXT    NOT NULL DEFAULT '',
     status            TEXT    NOT NULL CHECK (status IN ('draft', 'published')),
@@ -130,18 +130,19 @@ CREATE TABLE frames (
     UNIQUE (collection_id, position)
 ) STRICT;
 
--- full/matted: 1 photo, pair: 2-3 photos, text: 0 photos.
+-- full/matted: 1 photo, pair: 2-3 photos, text: 0 photos. Deleting a photo
+-- cascades its slots; the app layer cleans up frames left with too few slots.
 CREATE TABLE frame_photos (
     frame_id TEXT    NOT NULL REFERENCES frames(id) ON DELETE CASCADE,
     slot     INTEGER NOT NULL CHECK (slot BETWEEN 0 AND 2),
-    photo_id TEXT    NOT NULL REFERENCES photos(id),
+    photo_id TEXT    NOT NULL REFERENCES photos(id) ON DELETE CASCADE,
     PRIMARY KEY (frame_id, slot)
 ) STRICT;
 
 -- Per-collection overrides of a photo's snapshot ("edit in collection").
 CREATE TABLE photo_overrides (
-    collection_id    TEXT    NOT NULL,
-    photo_id         TEXT    NOT NULL,
+    collection_id    TEXT    NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+    photo_id         TEXT    NOT NULL REFERENCES photos(id) ON DELETE CASCADE,
     public_fields    TEXT    NULL CHECK (public_fields IS NULL OR json_valid(public_fields)),
     histogram_public INTEGER NULL CHECK (histogram_public IS NULL OR histogram_public IN (0, 1)),
     PRIMARY KEY (collection_id, photo_id)
@@ -149,7 +150,7 @@ CREATE TABLE photo_overrides (
 
 CREATE TABLE albums (
     id         TEXT    NOT NULL PRIMARY KEY,
-    owner_id   TEXT    NOT NULL,
+    owner_id   TEXT    NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     title      TEXT    NOT NULL DEFAULT '',
     intro      TEXT    NOT NULL DEFAULT '',
     visibility TEXT    NOT NULL CHECK (visibility IN ('private', 'unlisted', 'public')),
@@ -158,15 +159,15 @@ CREATE TABLE albums (
 ) STRICT;
 
 CREATE TABLE album_items (
-    album_id      TEXT    NOT NULL,
+    album_id      TEXT    NOT NULL REFERENCES albums(id) ON DELETE CASCADE,
     position      INTEGER NOT NULL,
-    collection_id TEXT    NOT NULL,
+    collection_id TEXT    NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
     PRIMARY KEY (album_id, position)
 ) STRICT;
 
 -- Third-party source and licence (e.g. demo seed).
 CREATE TABLE attributions (
-    photo_id TEXT NOT NULL PRIMARY KEY,
+    photo_id TEXT NOT NULL PRIMARY KEY REFERENCES photos(id) ON DELETE CASCADE,
     source   TEXT NOT NULL CHECK (json_valid(source))
 ) STRICT;
 
