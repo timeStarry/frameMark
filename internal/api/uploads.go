@@ -1,0 +1,519 @@
+package api
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"strings"
+	"time"
+	"unicode"
+	"unicode/utf8"
+
+	"github.com/google/uuid"
+
+	"github.com/timeStarry/frameMark/internal/domain"
+	"github.com/timeStarry/frameMark/internal/httperr"
+	"github.com/timeStarry/frameMark/internal/storage"
+)
+
+const (
+	presignTTL    = 15 * time.Minute
+	maxFilename   = 255 // bytes
+	maxTitleRunes = 120
+
+	statusUploading  = "uploading"
+	statusProcessing = "processing"
+	statusReady      = "ready"
+	statusFailed     = "failed"
+
+	jobProcessPhoto = "process_photo"
+
+	msgContentType = "仅支持 JPEG、PNG、WebP 图片。"
+	msgBytes       = "文件大小无效或超过上限。"
+	msgSHA256      = "文件校验值无效。"
+	msgFilename    = "文件名无效。"
+	msgQuota       = "素材数量已达上限。"
+	msgIncomplete  = "上传未完成。"
+	msgVerifyFail  = "上传校验失败，请重新上传。"
+	msgConflict    = "同一文件正在上传，请稍后重试。"
+)
+
+// contentTypes maps the accepted upload content types to photos.format.
+var contentTypes = map[string]string{
+	"image/jpeg": "jpeg",
+	"image/png":  "png",
+	"image/webp": "webp",
+}
+
+// defaultPublicFields is the upload_prefs snapshot used when a user has no prefs row.
+var defaultPublicFields = []string{"aperture", "shutter", "iso", "focal_length"}
+
+// --- response shapes ---
+
+type uploadView struct {
+	URL     string            `json:"url"`
+	Method  string            `json:"method"`
+	Headers map[string]string `json:"headers"`
+}
+
+type initiateView struct {
+	PhotoID   string     `json:"photoId"`
+	Upload    uploadView `json:"upload"`
+	ExpiresAt int64      `json:"expiresAt"`
+}
+
+// exifView is the owner view of photo_exif; absent values are omitted.
+type exifView struct {
+	Camera          *string  `json:"camera,omitempty"`
+	Lens            *string  `json:"lens,omitempty"`
+	FocalLength     *float64 `json:"focalLength,omitempty"`
+	FocalLength35mm *float64 `json:"focalLength35mm,omitempty"`
+	Aperture        *float64 `json:"aperture,omitempty"`
+	Shutter         *string  `json:"shutter,omitempty"`
+	ExposureSeconds *float64 `json:"exposureSeconds,omitempty"`
+	ISO             *int64   `json:"iso,omitempty"`
+	ExposureBias    *float64 `json:"exposureBias,omitempty"`
+	TakenAt         *int64   `json:"takenAt,omitempty"`
+}
+
+// photoView is the owner view of a photo. It never carries location or the
+// original object key.
+type photoView struct {
+	ID               string    `json:"id"`
+	Status           string    `json:"status"`
+	Error            *string   `json:"error"`
+	Title            string    `json:"title"`
+	Caption          string    `json:"caption"`
+	Width            *int64    `json:"width"`
+	Height           *int64    `json:"height"`
+	Format           string    `json:"format"`
+	CreatedAt        int64     `json:"createdAt"`
+	PublicFields     []string  `json:"publicFields"`
+	HistogramPublic  bool      `json:"histogramPublic"`
+	OriginalDownload bool      `json:"originalDownload"`
+	EXIF             *exifView `json:"exif"`
+	// Media stays null here; the media URL builder (Task 13) fills it for ready photos.
+	Media any `json:"media"`
+}
+
+// --- POST /api/uploads ---
+
+type createInput struct {
+	Filename    string `json:"filename"`
+	Bytes       int64  `json:"bytes"`
+	SHA256      string `json:"sha256"`
+	ContentType string `json:"contentType"`
+}
+
+func (s *server) createUpload(w http.ResponseWriter, r *http.Request) (int, any, error) {
+	owner, err := requireUser(r)
+	if err != nil {
+		return 0, nil, err
+	}
+	var in createInput
+	if err := decodeJSON(r, &in); err != nil {
+		return 0, nil, err
+	}
+	format, ok := contentTypes[in.ContentType]
+	if !ok {
+		return 0, nil, httperr.Fail(http.StatusBadRequest, msgContentType)
+	}
+	if in.Bytes < 1 || in.Bytes > int64(s.cfg.UploadMaxMB)<<20 {
+		return 0, nil, httperr.Fail(http.StatusBadRequest, msgBytes)
+	}
+	if !isLowerHex64(in.SHA256) {
+		return 0, nil, httperr.Fail(http.StatusBadRequest, msgSHA256)
+	}
+	if !validFilename(in.Filename) {
+		return 0, nil, httperr.Fail(http.StatusBadRequest, msgFilename)
+	}
+	title := titleFromFilename(in.Filename)
+	ctx := r.Context()
+	now := s.now()
+
+	id, dup, err := s.reserve(ctx, owner, in, format, title, now)
+	if err != nil {
+		return 0, nil, err
+	}
+	if dup {
+		p, err := s.loadPhoto(ctx, owner, id)
+		if err != nil {
+			return 0, nil, err
+		}
+		return http.StatusOK, p, nil
+	}
+	// Presign after commit so no network call holds the single DB connection.
+	// If it fails the row stays uploading and a retry re-presigns it.
+	req, err := s.store.PresignPut(ctx, s.cfg.BucketOriginals, originalKey(owner, id), in.ContentType, in.SHA256, presignTTL)
+	if err != nil {
+		return 0, nil, err
+	}
+	return http.StatusCreated, initiateView{
+		PhotoID:   id,
+		Upload:    uploadView{URL: req.URL, Method: req.Method, Headers: req.Headers},
+		ExpiresAt: now + presignTTL.Milliseconds(),
+	}, nil
+}
+
+// reserve finds or creates the photo row for an upload in one transaction.
+// dup is true when an existing ready/processing photo should be returned
+// instead. A failed or uploading row with the same hash is reused (same id,
+// same object key) and reset to uploading.
+func (s *server) reserve(ctx context.Context, owner string, in createInput, format, title string, now int64) (id string, dup bool, err error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", false, err
+	}
+	defer tx.Rollback()
+
+	var status string
+	err = tx.QueryRowContext(ctx, `SELECT id,status FROM photos WHERE owner_id=? AND original_sha256=?`, owner, in.SHA256).Scan(&id, &status)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		id = ""
+	case err != nil:
+		return "", false, err
+	case status == statusReady || status == statusProcessing:
+		return id, true, nil
+	}
+
+	// An uploading row already counts toward the quota; a new or failed one would add one.
+	if id == "" || status == statusFailed {
+		var n int
+		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM photos WHERE owner_id=? AND status!='failed'`, owner).Scan(&n); err != nil {
+			return "", false, err
+		}
+		if n >= s.cfg.QuotaPhotos {
+			return "", false, httperr.Fail(http.StatusConflict, msgQuota)
+		}
+	}
+
+	if id != "" {
+		res, err := tx.ExecContext(ctx, `UPDATE photos SET status='uploading',error=NULL,original_bytes=?,format=?,title=?,updated_at=?
+			WHERE id=? AND status=?`, in.Bytes, format, title, now, id, status)
+		if err != nil {
+			return "", false, err
+		}
+		if n, _ := res.RowsAffected(); n != 1 {
+			return "", false, httperr.Fail(http.StatusConflict, msgConflict)
+		}
+	} else {
+		fields, hist, orig, err := prefsSnapshot(ctx, tx, owner)
+		if err != nil {
+			return "", false, err
+		}
+		u, err := uuid.NewV7()
+		if err != nil {
+			return "", false, err
+		}
+		id = u.String()
+		_, err = tx.ExecContext(ctx, `INSERT INTO photos(id,owner_id,status,original_key,original_sha256,original_bytes,format,
+			title,public_fields,histogram_public,original_download,created_at,updated_at)
+			VALUES(?,?,'uploading',?,?,?,?,?,?,?,?,?,?)`,
+			id, owner, originalKey(owner, id), in.SHA256, in.Bytes, format, title, fields, hist, orig, now, now)
+		if isUniqueViolation(err) {
+			return "", false, httperr.Fail(http.StatusConflict, msgConflict)
+		}
+		if err != nil {
+			return "", false, err
+		}
+	}
+	return id, false, tx.Commit()
+}
+
+// prefsSnapshot returns the owner's upload_prefs values to copy onto a new
+// photo, or the defaults when there is no prefs row.
+func prefsSnapshot(ctx context.Context, tx *sql.Tx, owner string) (fields string, hist, orig int, err error) {
+	err = tx.QueryRowContext(ctx, `SELECT public_fields,histogram_public,original_download FROM upload_prefs WHERE user_id=?`, owner).
+		Scan(&fields, &hist, &orig)
+	if errors.Is(err, sql.ErrNoRows) {
+		b, _ := json.Marshal(defaultPublicFields)
+		return string(b), 1, 0, nil
+	}
+	return fields, hist, orig, err
+}
+
+// --- POST /api/uploads/{id}/complete ---
+
+func (s *server) completeUpload(w http.ResponseWriter, r *http.Request) (int, any, error) {
+	owner, err := requireUser(r)
+	if err != nil {
+		return 0, nil, err
+	}
+	id, err := pathID(r)
+	if err != nil {
+		return 0, nil, err
+	}
+	// The body is optional; when present it must be {}.
+	if err := decodeJSON(r, &struct{}{}); err != nil && err != errEmptyBody {
+		return 0, nil, err
+	}
+	ctx := r.Context()
+
+	var status, sha string
+	var declared int64
+	err = s.db.QueryRowContext(ctx, `SELECT status,original_sha256,original_bytes FROM photos WHERE id=? AND owner_id=?`, id, owner).
+		Scan(&status, &sha, &declared)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil, httperr.Fail(http.StatusNotFound, msgPhotoAbsent)
+	}
+	if err != nil {
+		return 0, nil, err
+	}
+	switch status {
+	case statusProcessing, statusReady:
+		return s.photoResponse(ctx, http.StatusOK, owner, id)
+	case statusUploading:
+	default:
+		return 0, nil, httperr.Fail(http.StatusConflict, msgIncomplete)
+	}
+
+	key := originalKey(owner, id)
+	obj, err := s.store.Head(ctx, s.cfg.BucketOriginals, key)
+	if errors.Is(err, storage.ErrNotFound) {
+		return 0, nil, httperr.Fail(http.StatusConflict, msgIncomplete)
+	}
+	if err != nil {
+		return 0, nil, err
+	}
+
+	// An empty stored checksum is unverified and fails ChecksumMatches.
+	if obj.Size != declared || !obj.ChecksumMatches(sha) {
+		// Delete first: if it fails the photo stays uploading and the client
+		// can retry complete, so a failed row never points at a live object.
+		if err := s.store.Delete(ctx, s.cfg.BucketOriginals, key); err != nil {
+			return 0, nil, err
+		}
+		if _, err := s.db.ExecContext(ctx, `UPDATE photos SET status='failed',error=?,updated_at=? WHERE id=? AND status='uploading'`,
+			msgVerifyFail, s.now(), id); err != nil {
+			return 0, nil, err
+		}
+		return 0, nil, httperr.Fail(http.StatusUnprocessableEntity, msgVerifyFail)
+	}
+
+	started, err := s.startProcessing(ctx, id)
+	if err != nil {
+		return 0, nil, err
+	}
+	code := http.StatusAccepted
+	if !started {
+		code = http.StatusOK // a concurrent complete won the race
+	}
+	return s.photoResponse(ctx, code, owner, id)
+}
+
+// startProcessing moves an uploading photo to processing and enqueues its
+// process_photo job atomically. It reports false when the photo was no longer
+// uploading.
+func (s *server) startProcessing(ctx context.Context, id string) (bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, `UPDATE photos SET status='processing',error=NULL,updated_at=? WHERE id=? AND status='uploading'`, s.now(), id)
+	if err != nil {
+		return false, err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return false, nil
+	}
+	if _, err := s.q.EnqueueTx(ctx, tx, jobProcessPhoto, map[string]string{"photoId": id}); err != nil {
+		return false, err
+	}
+	return true, tx.Commit()
+}
+
+// --- GET /api/photos/{id} ---
+
+func (s *server) getPhoto(w http.ResponseWriter, r *http.Request) (int, any, error) {
+	owner, err := requireUser(r)
+	if err != nil {
+		return 0, nil, err
+	}
+	id, err := pathID(r)
+	if err != nil {
+		return 0, nil, err
+	}
+	return s.photoResponse(r.Context(), http.StatusOK, owner, id)
+}
+
+func (s *server) photoResponse(ctx context.Context, code int, owner, id string) (int, any, error) {
+	p, err := s.loadPhoto(ctx, owner, id)
+	if err != nil {
+		return 0, nil, err
+	}
+	return code, p, nil
+}
+
+// loadPhoto returns the owner view of a photo, or 404 when it does not exist
+// or belongs to someone else. EXIF is included only once the photo is ready.
+func (s *server) loadPhoto(ctx context.Context, owner, id string) (*photoView, error) {
+	var (
+		p                        photoView
+		errMsg                   sql.NullString
+		width, height            sql.NullInt64
+		fields                   string
+		hist, orig               int
+		exifRow                  sql.NullString
+		mk, model, lens, shutter sql.NullString
+		focal, focal35, ap, secs sql.NullFloat64
+		bias                     sql.NullFloat64
+		iso, taken               sql.NullInt64
+	)
+	err := s.db.QueryRowContext(ctx, `SELECT p.id,p.status,p.error,p.title,p.caption,p.width,p.height,p.format,p.created_at,
+			p.public_fields,p.histogram_public,p.original_download,
+			e.photo_id,e.camera_make,e.camera_model,e.lens_model,e.focal_length_mm,e.focal_length_35mm,e.aperture,
+			e.exposure_time,e.exposure_seconds,e.iso,e.exposure_bias,e.taken_at
+		FROM photos p LEFT JOIN photo_exif e ON e.photo_id=p.id
+		WHERE p.id=? AND p.owner_id=?`, id, owner).Scan(
+		&p.ID, &p.Status, &errMsg, &p.Title, &p.Caption, &width, &height, &p.Format, &p.CreatedAt,
+		&fields, &hist, &orig,
+		&exifRow, &mk, &model, &lens, &focal, &focal35, &ap, &shutter, &secs, &iso, &bias, &taken)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, httperr.Fail(http.StatusNotFound, msgPhotoAbsent)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if errMsg.Valid {
+		p.Error = &errMsg.String
+	}
+	if width.Valid {
+		p.Width = &width.Int64
+	}
+	if height.Valid {
+		p.Height = &height.Int64
+	}
+	p.PublicFields = parsePublicFields(fields)
+	p.HistogramPublic, p.OriginalDownload = hist == 1, orig == 1
+	if exifRow.Valid && p.Status == statusReady {
+		p.EXIF = &exifView{
+			Camera:          cameraName(mk.String, model.String),
+			Lens:            nonEmpty(lens),
+			FocalLength:     floatPtr(focal),
+			FocalLength35mm: floatPtr(focal35),
+			Aperture:        floatPtr(ap),
+			Shutter:         nonEmpty(shutter),
+			ExposureSeconds: floatPtr(secs),
+			ISO:             intPtr(iso),
+			ExposureBias:    floatPtr(bias),
+			TakenAt:         intPtr(taken),
+		}
+	}
+	return &p, nil
+}
+
+// --- helpers ---
+
+func originalKey(owner, id string) string { return "o/" + owner + "/" + id }
+
+func isLowerHex64(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// validFilename: 1–255 bytes of valid UTF-8, no control characters, no path
+// separators. U+FFFD is refused too: encoding/json substitutes it for
+// invalid input, so it signals a mangled name.
+func validFilename(name string) bool {
+	if name == "" || len(name) > maxFilename || !utf8.ValidString(name) {
+		return false
+	}
+	for _, r := range name {
+		if r == '/' || r == '\\' || r == utf8.RuneError || unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
+}
+
+// titleFromFilename derives the default title: the name without its last
+// extension (a leading dot is not an extension), with format characters
+// (bidi controls, zero-width) removed, trimmed, at most 120 runes.
+func titleFromFilename(name string) string {
+	if i := strings.LastIndexByte(name, '.'); i > 0 {
+		name = name[:i]
+	}
+	name = strings.Map(func(r rune) rune {
+		if unicode.Is(unicode.Cf, r) || unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, name)
+	name = strings.TrimSpace(name)
+	if utf8.RuneCountInString(name) > maxTitleRunes {
+		name = string([]rune(name)[:maxTitleRunes])
+		name = strings.TrimSpace(name)
+	}
+	return name
+}
+
+// parsePublicFields decodes a stored public_fields array, keeping only valid keys.
+func parsePublicFields(raw string) []string {
+	var in []string
+	_ = json.Unmarshal([]byte(raw), &in)
+	out := make([]string, 0, len(in))
+	for _, f := range in {
+		if domain.ValidPublicField(f) {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// cameraName joins make and model, using the model alone when it already
+// starts with the make (e.g. "Canon" + "Canon EOS R5").
+func cameraName(mk, model string) *string {
+	mk, model = strings.TrimSpace(mk), strings.TrimSpace(model)
+	var s string
+	switch {
+	case mk == "":
+		s = model
+	case model == "":
+		s = mk
+	case strings.HasPrefix(strings.ToLower(model), strings.ToLower(mk)):
+		s = model
+	default:
+		s = mk + " " + model
+	}
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
+func nonEmpty(v sql.NullString) *string {
+	if !v.Valid || v.String == "" {
+		return nil
+	}
+	return &v.String
+}
+
+func floatPtr(v sql.NullFloat64) *float64 {
+	if !v.Valid {
+		return nil
+	}
+	return &v.Float64
+}
+
+func intPtr(v sql.NullInt64) *int64 {
+	if !v.Valid {
+		return nil
+	}
+	return &v.Int64
+}
+
+func isUniqueViolation(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
+}
