@@ -1,9 +1,15 @@
 #!/bin/sh
-# Regenerates the committed pipeline fixtures. Requires ImageMagick 7 and
-# macOS (for the system Display P3 ICC profile). Outputs are committed so
-# tests run anywhere.
+# Regenerates the committed pipeline fixtures (anim.webp, display-p3.jpg).
 #
-#   go generate ./internal/media
+# Requirements: macOS (it reads the system "Display P3.icc" from
+# /System/Library/ColorSync/Profiles) and ImageMagick 7 (`magick`).
+#
+# The outputs are COMMITTED and tests only read them; nothing regenerates
+# them during `go test`. Rerunning this script on another ImageMagick or
+# libjpeg version produces different bytes, so commit a regeneration only
+# when the fixtures themselves must change. Do not run it on Linux CI.
+#
+#   sh internal/media/testdata/gen.sh   (or: go generate ./internal/media)
 set -eu
 cd "$(dirname "$0")"
 # 16x16 flat rgb(200,100,50) tagged with an embedded Display P3 profile.

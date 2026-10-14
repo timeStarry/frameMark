@@ -106,8 +106,8 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.UploadMaxMB != 60 {
 		t.Fatalf("want default UploadMaxMB=60, got %d", cfg.UploadMaxMB)
 	}
-	if cfg.MaxPixels != 100_000_000 {
-		t.Fatalf("want default MaxPixels=100000000, got %d", cfg.MaxPixels)
+	if cfg.MaxPixels != 60_000_000 {
+		t.Fatalf("want default MaxPixels=60000000, got %d", cfg.MaxPixels)
 	}
 	if cfg.QuotaPhotos != 2000 {
 		t.Fatalf("want default QuotaPhotos=2000, got %d", cfg.QuotaPhotos)

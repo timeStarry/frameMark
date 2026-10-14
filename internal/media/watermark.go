@@ -32,10 +32,18 @@ func (w Watermark) Validate() error {
 	if n < 1 || n > maxWatermarkRunes {
 		return ErrInvalidWatermark
 	}
+	visible := false
 	for _, r := range w.Text {
-		if unicode.IsControl(r) {
+		if unicode.IsControl(r) || isBidiControl(r) {
 			return ErrInvalidWatermark
 		}
+		if !invisible(r) {
+			visible = true
+		}
+	}
+	// Text that renders no glyph makes libvips produce an empty image.
+	if !visible {
+		return ErrInvalidWatermark
 	}
 	switch w.Position {
 	case "br", "bl", "tr", "tl", "center":
@@ -47,6 +55,18 @@ func (w Watermark) Validate() error {
 		return ErrInvalidWatermark
 	}
 	return nil
+}
+
+// isBidiControl reports the embedding/override (U+202A–202E) and isolate
+// (U+2066–2069) controls, which could visually reorder the rendered text.
+func isBidiControl(r rune) bool {
+	return (r >= 0x202A && r <= 0x202E) || (r >= 0x2066 && r <= 0x2069)
+}
+
+// invisible reports runes that render no glyph: whitespace, format (Cf)
+// and separator (Zs, Zl, Zp) characters.
+func invisible(r rune) bool {
+	return unicode.IsSpace(r) || unicode.In(r, unicode.Cf, unicode.Zs, unicode.Zl, unicode.Zp)
 }
 
 // WatermarkHash is sha256 of the canonical JSON (keys sorted, no
@@ -97,17 +117,17 @@ func renderWatermark(base *vips.ImageRef, w Watermark) (*Output, error) {
 		if text != nil {
 			text.Close()
 		}
-		return nil, fail(ErrInternal, err)
+		return nil, fail(ErrWatermark, err)
 	}
 	defer text.Close()
-	if text.Bands() != 4 {
-		return nil, fail(ErrInternal, fmt.Errorf("media: watermark text has %d bands", text.Bands()))
+	if text.Bands() != 4 || text.Width() < 1 || text.Height() < 1 {
+		return nil, fail(ErrWatermark, fmt.Errorf("media: watermark text is %dx%d with %d bands", text.Width(), text.Height(), text.Bands()))
 	}
 	if err := text.Linear([]float64{1, 1, 1, w.Opacity}, []float64{0, 0, 0, 0}); err != nil {
-		return nil, fail(ErrInternal, err)
+		return nil, fail(ErrWatermark, err)
 	}
 	if err := text.Cast(vips.BandFormatUchar); err != nil {
-		return nil, fail(ErrInternal, err)
+		return nil, fail(ErrWatermark, err)
 	}
 
 	tw, th := text.Width(), text.Height()
@@ -127,7 +147,7 @@ func renderWatermark(base *vips.ImageRef, w Watermark) (*Output, error) {
 	left, top = max(0, left), max(0, top)
 
 	if err := img.Composite(text, vips.BlendModeOver, left, top); err != nil {
-		return nil, fail(ErrInternal, err)
+		return nil, fail(ErrWatermark, err)
 	}
 	if img.HasAlpha() {
 		if err := img.Flatten(&vips.Color{}); err != nil {

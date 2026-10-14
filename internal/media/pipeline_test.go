@@ -295,6 +295,48 @@ func TestValidateWatermark(t *testing.T) {
 	if err := w.Validate(); err != nil {
 		t.Errorf("64 runes should pass: %v", err)
 	}
+	// No visible glyph, or bidi controls anywhere.
+	for _, txt := range []string{" ", "\u3000", "\u200b", "\u202e", " \u200b\u3000", "\u2028", "\u2029", "\u00a0",
+		"abc\u202e", "a\u2066b", "\u202ax", "x\u2069"} {
+		w := ok
+		w.Text = txt
+		if err := w.Validate(); !errors.Is(err, ErrInvalidWatermark) {
+			t.Errorf("%q: err = %v", txt, err)
+		}
+	}
+	for _, txt := range []string{"© 林", "a b", " x "} {
+		w := ok
+		w.Text = txt
+		if err := w.Validate(); err != nil {
+			t.Errorf("%q should pass: %v", txt, err)
+		}
+	}
+}
+
+func TestErrWatermarkDistinct(t *testing.T) {
+	if ErrWatermark == nil || errors.Is(ErrWatermark, ErrInternal) || errors.Is(ErrWatermark, ErrInvalidWatermark) {
+		t.Fatal("ErrWatermark must be its own sentinel")
+	}
+}
+
+func TestDefaultMaxPixels(t *testing.T) {
+	if DefaultMaxPixels != 60_000_000 {
+		t.Fatalf("DefaultMaxPixels = %d", DefaultMaxPixels)
+	}
+}
+
+func TestMetadataFieldNames(t *testing.T) {
+	for _, f := range []string{"exif-data", "exif-ifd0-Make", "xmp-data", "iptc-data", "gps-latitude",
+		"png-comment-0-Comment", "jpeg-comment", "Comment"} {
+		if !isMetadataField(f) {
+			t.Errorf("%q must be flagged", f)
+		}
+	}
+	for _, f := range []string{"width", "height", "bands", "icc-profile-data", "interpretation", "n-pages", "heif-primary", "bits-per-sample"} {
+		if isMetadataField(f) {
+			t.Errorf("%q must not be flagged", f)
+		}
+	}
 }
 
 func TestProcessRejects(t *testing.T) {
@@ -652,26 +694,41 @@ func TestProcessWatermark(t *testing.T) {
 }
 
 func TestProcessConcurrent(t *testing.T) {
-	in := quadrantsJPEG(t, 200, 120)
+	// Distinct inputs so swapped or corrupted outputs are detectable.
+	ins := make([][]byte, 4)
+	refs := make([]*Result, 4)
+	opts := Options{Watermark: &Watermark{Text: "c", Position: "tl", Opacity: 0.5, Scale: 0.04}}
+	for i := range ins {
+		ins[i] = quadrantsJPEG(t, 200+8*i, 120)
+		refs[i] = mustProcess(t, ins[i], opts)
+	}
 	before := vips.OpenImageRefs()
+	got := make([]*Result, 4)
+	errs := make([]error, 4)
 	var wg sync.WaitGroup
-	errs := make(chan error, 4)
-	for i := 0; i < 4; i++ {
+	for i := range ins {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			r, err := Process(in, Options{Watermark: &Watermark{Text: "c", Position: "tl", Opacity: 0.5, Scale: 0.04}})
-			if err == nil && (r.Width != 200 || len(r.Outputs) != 12) {
-				err = errors.New("bad result")
-			}
-			errs <- err
+			got[i], errs[i] = Process(ins[i], opts)
 		}()
 	}
 	wg.Wait()
-	close(errs)
-	for err := range errs {
-		if err != nil {
-			t.Error(err)
+	for i := range ins {
+		if errs[i] != nil {
+			t.Fatalf("goroutine %d: %v", i, errs[i])
+		}
+		if got[i].Width != 200+8*i || got[i].DerivedHash != refs[i].DerivedHash || got[i].Histogram != refs[i].Histogram {
+			t.Errorf("goroutine %d: result differs from sequential reference", i)
+		}
+		a, b := allOutputs(got[i]), allOutputs(refs[i])
+		if len(a) != len(b) {
+			t.Fatalf("goroutine %d: %d outputs, want %d", i, len(a), len(b))
+		}
+		for j := range a {
+			if a[j].Key != b[j].Key || !bytes.Equal(a[j].Bytes, b[j].Bytes) {
+				t.Errorf("goroutine %d: output %s differs from sequential reference", i, a[j].Key)
+			}
 		}
 	}
 	if after := vips.OpenImageRefs(); after != before {

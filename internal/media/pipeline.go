@@ -17,8 +17,9 @@ import (
 // changes so every photo gets fresh object keys.
 const PipelineVersion = "MEDIA_PIPELINE_V1"
 
-// DefaultMaxPixels applies when Options.MaxPixels is not positive.
-const DefaultMaxPixels = 100_000_000
+// DefaultMaxPixels applies when Options.MaxPixels is not positive. See
+// Options for the memory budget it implies.
+const DefaultMaxPixels = 60_000_000
 
 // Permanent failures: the input itself is unacceptable, so retrying cannot
 // help. Their Error() strings are fixed and never carry libvips text.
@@ -29,6 +30,11 @@ var (
 	ErrDecode        = errors.New("media: decode failed")
 	// ErrInvalidWatermark means the watermark settings are out of range.
 	ErrInvalidWatermark = errors.New("media: invalid watermark")
+	// ErrWatermark means valid-looking watermark settings could not be
+	// rendered. It is permanent and a property of the settings, not of
+	// the photo: the caller should retry Process without the watermark
+	// and publish the photo without the watermarked variant.
+	ErrWatermark = errors.New("media: watermark could not be rendered")
 	// ErrInternal is a processing fault after a successful decode,
 	// including a failed metadata audit. No output is returned with it.
 	ErrInternal = errors.New("media: processing failed")
@@ -52,6 +58,14 @@ func fail(kind, cause error) error {
 }
 
 // Options control one Process call.
+//
+// Memory budget per concurrent Process call (one per worker): the decoded
+// original plus one in-memory 3-band 8-bit copy of the normalised image,
+// about 3 bytes per pixel each, so roughly 180 MB apiece at the 60 MP
+// default and up to ~3x that transiently while the copy is made (16-bit
+// or alpha originals decode larger). The original is released once the
+// copy exists; tiers are each a fraction of it. Budget MARKR_WORKERS
+// accordingly.
 type Options struct {
 	// LocationMode is LocationOff (default when empty) or LocationArchive.
 	LocationMode string
@@ -63,7 +77,10 @@ type Options struct {
 	Watermark *Watermark
 }
 
-// Output is one encoded, metadata-free derived object. Key is the suffix
+// Output is one encoded, metadata-free derived object. Pixels are sRGB and
+// the file carries no metadata at all, ICC included (StripMetadata), so
+// it is untagged sRGB, which browsers interpret as sRGB.
+// Key is the suffix
 // "{tier}.{ext}"; the caller prefixes "d/{photoId}/{hash}/".
 type Output struct {
 	Key         string
@@ -219,34 +236,58 @@ func Process(orig []byte, opts Options) (*Result, error) {
 	if err := normalize(img); err != nil {
 		return nil, fail(ErrInternal, err)
 	}
-	res.Width, res.Height = img.Width(), img.Height()
+	// Run the decode/rotate/ICC/flatten chain exactly once: render it to
+	// a plain memory image and drop the original decode.
+	base, err := materialize(img)
+	img.Close()
+	if err != nil {
+		return nil, fail(ErrInternal, err)
+	}
+	defer base.Close()
+	res.Width, res.Height = base.Width(), base.Height()
 
-	if res.Histogram, err = histogramOf(img); err != nil {
+	if res.Histogram, err = histogramOf(base); err != nil {
 		return nil, fail(ErrInternal, err)
 	}
 
+	// Largest tier first, each derived from the previous materialised
+	// tier, so every resize reads a smaller in-memory source.
 	var wmBase *vips.ImageRef
+	perTier := make([][]Output, len(tiers))
+	prev := base
 	defer func() {
+		if prev != base {
+			prev.Close()
+		}
 		if wmBase != nil {
 			wmBase.Close()
 		}
 	}()
-	for _, t := range tiers {
-		scaled, err := img.Copy()
+	for i := len(tiers) - 1; i >= 0; i-- {
+		t := tiers[i]
+		cur, err := scaledTier(prev, t)
 		if err != nil {
-			return nil, fail(ErrInternal, err)
-		}
-		outs, err := encodeTier(scaled, t)
-		if err != nil {
-			scaled.Close()
 			return nil, err
 		}
-		res.Outputs = append(res.Outputs, outs...)
-		if t.name == watermarkTier && opts.Watermark != nil {
-			wmBase = scaled
-		} else {
-			scaled.Close()
+		outs, err := encodeTier(cur, t)
+		if err != nil {
+			cur.Close()
+			return nil, err
 		}
+		perTier[i] = outs
+		if t.name == watermarkTier && opts.Watermark != nil {
+			if wmBase, err = cur.Copy(); err != nil {
+				cur.Close()
+				return nil, fail(ErrInternal, err)
+			}
+		}
+		if prev != base {
+			prev.Close()
+		}
+		prev = cur
+	}
+	for _, outs := range perTier {
+		res.Outputs = append(res.Outputs, outs...)
 	}
 
 	if opts.Watermark != nil {
@@ -356,12 +397,40 @@ func histogramOf(img *vips.ImageRef) ([4][64]uint16, error) {
 	return NormalizeHistogram(h), nil
 }
 
-// encodeTier downsizes img in place to the tier's long edge and encodes
-// AVIF, WebP and JPEG, auditing each.
-func encodeTier(img *vips.ImageRef, t tier) ([]Output, error) {
-	if err := img.ThumbnailWithSize(t.edge, t.edge, vips.InterestingNone, vips.SizeDown); err != nil {
+// materialize renders img's lazy pipeline into a new 3-band uchar sRGB
+// memory image. The copy carries no metadata.
+func materialize(img *vips.ImageRef) (*vips.ImageRef, error) {
+	if img.Bands() != 3 || img.BandFormat() != vips.BandFormatUchar {
+		return nil, fmt.Errorf("media: cannot materialise %d-band format %v", img.Bands(), img.BandFormat())
+	}
+	px, err := img.ToBytes()
+	if err != nil {
+		return nil, err
+	}
+	return vips.NewImageFromMemory(px, img.Width(), img.Height(), 3, vips.BandFormatUchar, vips.InterpretationSRGB)
+}
+
+// scaledTier returns a new materialised image of src fitted (downscale
+// only) to the tier's long edge. src is left untouched.
+func scaledTier(src *vips.ImageRef, t tier) (*vips.ImageRef, error) {
+	c, err := src.Copy()
+	if err != nil {
 		return nil, fail(ErrInternal, err)
 	}
+	defer c.Close()
+	if err := c.ThumbnailWithSize(t.edge, t.edge, vips.InterestingNone, vips.SizeDown); err != nil {
+		return nil, fail(ErrInternal, err)
+	}
+	m, err := materialize(c)
+	if err != nil {
+		return nil, fail(ErrInternal, err)
+	}
+	return m, nil
+}
+
+// encodeTier encodes an already-sized tier image as AVIF, WebP and JPEG,
+// auditing each.
+func encodeTier(img *vips.ImageRef, t tier) ([]Output, error) {
 	type enc struct {
 		ext, ct string
 		fn      func() ([]byte, *vips.ImageMetadata, error)
@@ -414,11 +483,18 @@ func auditClean(b []byte) error {
 	}
 	defer img.Close()
 	for _, f := range img.ImageFields() {
-		lf := strings.ToLower(f)
-		if strings.HasPrefix(lf, "exif") || strings.HasPrefix(lf, "xmp") ||
-			strings.HasPrefix(lf, "iptc") || strings.Contains(lf, "gps") {
+		if isMetadataField(f) {
 			return fmt.Errorf("media: metadata field %q survived export", f)
 		}
 	}
 	return nil
+}
+
+// isMetadataField reports whether a libvips field name carries EXIF, XMP,
+// IPTC, GPS or comment metadata.
+func isMetadataField(f string) bool {
+	lf := strings.ToLower(f)
+	return strings.HasPrefix(lf, "exif") || strings.HasPrefix(lf, "xmp") ||
+		strings.HasPrefix(lf, "iptc") || strings.Contains(lf, "gps") ||
+		strings.Contains(lf, "comment")
 }

@@ -26,7 +26,7 @@ type Config struct {
 	EOSecretID, EOSecretKey, EOZoneID string
 
 	UploadMaxMB int   // 默认 60
-	MaxPixels   int64 // 默认 100_000_000
+	MaxPixels   int64 // 默认 60_000_000
 	QuotaPhotos int   // 默认 2000
 	Workers     int   // 默认 2
 }
@@ -108,7 +108,7 @@ func Load(environ []string) (Config, error) {
 	if cfg.QuotaPhotos, intErr = intOr(env["MARKR_QUOTA_PHOTOS"], "MARKR_QUOTA_PHOTOS", 2000); intErr != nil {
 		return cfg, intErr
 	}
-	mp, intErr := intOr(env["MARKR_MAX_PIXELS"], "MARKR_MAX_PIXELS", 100_000_000)
+	mp, intErr := intOr(env["MARKR_MAX_PIXELS"], "MARKR_MAX_PIXELS", 60_000_000)
 	if intErr != nil {
 		return cfg, intErr
 	}
