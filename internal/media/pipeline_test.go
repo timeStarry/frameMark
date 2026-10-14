@@ -297,6 +297,7 @@ func TestValidateWatermark(t *testing.T) {
 	}
 	// No visible glyph, or bidi controls anywhere.
 	for _, txt := range []string{" ", "\u3000", "\u200b", "\u202e", " \u200b\u3000", "\u2028", "\u2029", "\u00a0",
+		"\u115f", "\u1160", "\u3164", "\uffa0", "\u2800", "\u3164 \u2800",
 		"abc\u202e", "a\u2066b", "\u202ax", "x\u2069"} {
 		w := ok
 		w.Text = txt
@@ -309,6 +310,35 @@ func TestValidateWatermark(t *testing.T) {
 		w.Text = txt
 		if err := w.Validate(); err != nil {
 			t.Errorf("%q should pass: %v", txt, err)
+		}
+	}
+}
+
+// TestNoFullSizeMaterialise guards the memory budget: only tier-sized
+// images (long edge <= 3840) may be copied into memory, never the
+// full-resolution normalised original.
+func TestNoFullSizeMaterialise(t *testing.T) {
+	var mu sync.Mutex
+	var edges []int
+	materializeHook = func(w, h int) {
+		mu.Lock()
+		edges = append(edges, max(w, h))
+		mu.Unlock()
+	}
+	defer func() { materializeHook = nil }()
+	img := solid(t, 4800, 4000, rgb{90, 90, 90})
+	in := encJPEG(t, img)
+	img.Close()
+	r := mustProcess(t, in, Options{Watermark: &Watermark{Text: "x", Position: "br", Opacity: 0.5, Scale: 0.04}})
+	if r.Width != 4800 || r.Height != 4000 {
+		t.Fatalf("result %dx%d", r.Width, r.Height)
+	}
+	if len(edges) != len(tiers) {
+		t.Errorf("materialize called %d times, want %d (one per tier)", len(edges), len(tiers))
+	}
+	for _, e := range edges {
+		if e > 3840 {
+			t.Errorf("materialised an image with long edge %d", e)
 		}
 	}
 }

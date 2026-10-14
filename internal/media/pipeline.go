@@ -59,13 +59,13 @@ func fail(kind, cause error) error {
 
 // Options control one Process call.
 //
-// Memory budget per concurrent Process call (one per worker): the decoded
-// original plus one in-memory 3-band 8-bit copy of the normalised image,
-// about 3 bytes per pixel each, so roughly 180 MB apiece at the 60 MP
-// default and up to ~3x that transiently while the copy is made (16-bit
-// or alpha originals decode larger). The original is released once the
-// copy exists; tiers are each a fraction of it. Budget MARKR_WORKERS
-// accordingly.
+// Memory budget per concurrent Process call (one per worker): about 2.5x
+// the decoded size of the original, i.e. roughly 450 MB at the 60 MP
+// default for 8-bit RGB (measured peak). The decoded original (3 B/px for
+// 8-bit RGB; 16-bit and alpha originals decode larger) dominates; the
+// full-size normalised image is never copied, only tier-sized images
+// (long edge <= 3840) are materialised, and the original is released once
+// the w3840 tier exists. Budget MARKR_WORKERS accordingly.
 type Options struct {
 	// LocationMode is LocationOff (default when empty) or LocationArchive.
 	LocationMode string
@@ -236,29 +236,17 @@ func Process(orig []byte, opts Options) (*Result, error) {
 	if err := normalize(img); err != nil {
 		return nil, fail(ErrInternal, err)
 	}
-	// Run the decode/rotate/ICC/flatten chain exactly once: render it to
-	// a plain memory image and drop the original decode.
-	base, err := materialize(img)
-	img.Close()
-	if err != nil {
-		return nil, fail(ErrInternal, err)
-	}
-	defer base.Close()
-	res.Width, res.Height = base.Width(), base.Height()
-
-	if res.Histogram, err = histogramOf(base); err != nil {
-		return nil, fail(ErrInternal, err)
-	}
+	res.Width, res.Height = img.Width(), img.Height()
 
 	// Largest tier first, each derived from the previous materialised
-	// tier, so every resize reads a smaller in-memory source.
+	// tier. Only w3840 reads the lazy decode/rotate/ICC/flatten chain, so
+	// that chain runs exactly once and is never copied at full size. The
+	// decoded original is released as soon as w3840 exists.
 	var wmBase *vips.ImageRef
 	perTier := make([][]Output, len(tiers))
-	prev := base
+	prev := img
 	defer func() {
-		if prev != base {
-			prev.Close()
-		}
+		prev.Close() // idempotent; may be img
 		if wmBase != nil {
 			wmBase.Close()
 		}
@@ -269,22 +257,25 @@ func Process(orig []byte, opts Options) (*Result, error) {
 		if err != nil {
 			return nil, err
 		}
+		prev.Close()
+		prev = cur
+		if i == len(tiers)-1 {
+			// The histogram comes from the largest tier (<= 3840 px long
+			// edge) rather than a second full-resolution pass.
+			if res.Histogram, err = histogramOf(cur); err != nil {
+				return nil, fail(ErrInternal, err)
+			}
+		}
 		outs, err := encodeTier(cur, t)
 		if err != nil {
-			cur.Close()
 			return nil, err
 		}
 		perTier[i] = outs
 		if t.name == watermarkTier && opts.Watermark != nil {
 			if wmBase, err = cur.Copy(); err != nil {
-				cur.Close()
 				return nil, fail(ErrInternal, err)
 			}
 		}
-		if prev != base {
-			prev.Close()
-		}
-		prev = cur
 	}
 	for _, outs := range perTier {
 		res.Outputs = append(res.Outputs, outs...)
@@ -397,11 +388,17 @@ func histogramOf(img *vips.ImageRef) ([4][64]uint16, error) {
 	return NormalizeHistogram(h), nil
 }
 
+// materializeHook, when set by a test, observes every materialize call.
+var materializeHook func(w, h int)
+
 // materialize renders img's lazy pipeline into a new 3-band uchar sRGB
 // memory image. The copy carries no metadata.
 func materialize(img *vips.ImageRef) (*vips.ImageRef, error) {
 	if img.Bands() != 3 || img.BandFormat() != vips.BandFormatUchar {
 		return nil, fmt.Errorf("media: cannot materialise %d-band format %v", img.Bands(), img.BandFormat())
+	}
+	if materializeHook != nil {
+		materializeHook(img.Width(), img.Height())
 	}
 	px, err := img.ToBytes()
 	if err != nil {

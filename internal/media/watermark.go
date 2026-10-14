@@ -64,8 +64,13 @@ func isBidiControl(r rune) bool {
 }
 
 // invisible reports runes that render no glyph: whitespace, format (Cf)
-// and separator (Zs, Zl, Zp) characters.
+// and separator (Zs, Zl, Zp) characters, plus the Hangul and Braille
+// fillers, which are letters/symbols by category but draw nothing.
 func invisible(r rune) bool {
+	switch r {
+	case 0x115F, 0x1160, 0x3164, 0xFFA0, 0x2800:
+		return true
+	}
 	return unicode.IsSpace(r) || unicode.In(r, unicode.Cf, unicode.Zs, unicode.Zl, unicode.Zp)
 }
 
