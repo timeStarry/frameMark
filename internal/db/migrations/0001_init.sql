@@ -185,7 +185,12 @@ CREATE TABLE jobs (
     attempts    INTEGER NOT NULL DEFAULT 0,
     run_after   INTEGER NOT NULL,
     lease_until INTEGER NULL,
+    lease_token TEXT    NULL,  -- random per claim; fences a stale worker out of Heartbeat/Done/Fail
     last_error  TEXT    NULL,
     created_at  INTEGER NOT NULL
 ) STRICT;
 CREATE INDEX jobs_state_run_after ON jobs(state, run_after);
+-- Claim's expired-lease branch (state='running' AND lease_until<=now) is an OR
+-- term; with this index SQLite can serve each OR branch from its own index
+-- instead of scanning every row.
+CREATE INDEX jobs_state_lease_until ON jobs(state, lease_until);
