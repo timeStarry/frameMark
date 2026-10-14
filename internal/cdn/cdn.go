@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"sync"
 
@@ -56,27 +57,69 @@ type Options struct {
 	Base string
 }
 
-// New returns an EO-backed Purger, or a noop Purger (with one warning via
-// logf) when EO is not fully configured. logf may be nil.
-func New(opts Options, logf func(format string, args ...any)) Purger {
+// ErrInvalidBase is returned by New when EO credentials are set but Base is
+// not an https origin (scheme + host only, optional single trailing "/").
+var ErrInvalidBase = errors.New("cdn: invalid CDN base")
+
+// New returns an EO-backed Purger. It returns a noop Purger (with one
+// secret-free warning via logf) when any EO credential is missing, or when
+// credentials are set but Base is empty (no CDN in front of public images,
+// so nothing to purge). With credentials set, a non-empty Base that is not
+// a plain https origin is an error wrapping ErrInvalidBase. logf may be nil.
+func New(opts Options, logf func(format string, args ...any)) (Purger, error) {
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
 	if opts.SecretID == "" || opts.SecretKey == "" || opts.ZoneID == "" {
 		logf("cdn: EO purge not configured (MARKR_EO_* incomplete); using noop purger, withdrawn public images stay cached until CDN expiry")
-		return noop{}
+		return noop{}, nil
+	}
+	if opts.Base == "" {
+		logf("cdn: EO credentials set but MARKR_CDN_BASE is empty; using noop purger")
+		return noop{}, nil
+	}
+	base, err := parseBase(opts.Base)
+	if err != nil {
+		return nil, err
 	}
 	cpf := profile.NewClientProfile()
 	cpf.HttpProfile.Endpoint = eoEndpoint
 	cpf.HttpProfile.ReqTimeout = eoTimeoutSeconds
 	client, err := teo.NewClient(common.NewCredential(opts.SecretID, opts.SecretKey), eoRegion, cpf)
 	if err != nil {
-		// Not expected with static credentials; fail loudly on every purge
-		// rather than silently skipping withdrawal purges.
-		logf("cdn: EO client init failed; purges will error")
-		return errPurger{err: errors.New("cdn: EO client init failed")}
+		// The SDK error is not wrapped: keep secrets out of the message.
+		return nil, errors.New("cdn: EO client init failed")
 	}
-	return newEO(client, opts.ZoneID, opts.Base, []string{opts.SecretID, opts.SecretKey})
+	return newEO(client, opts.ZoneID, base, []string{opts.SecretID, opts.SecretKey}), nil
+}
+
+// parseBase validates base as "https://host[:port]" with an optional single
+// trailing "/", and returns it without the trailing "/". Error messages
+// never echo the input, which could carry userinfo credentials.
+func parseBase(base string) (string, error) {
+	invalid := func(why string) (string, error) {
+		return "", fmt.Errorf("%w: %s", ErrInvalidBase, why)
+	}
+	if strings.ContainsAny(base, "?#") {
+		return invalid("query or fragment not allowed")
+	}
+	u, err := url.Parse(base)
+	if err != nil {
+		return invalid("not a valid URL")
+	}
+	switch {
+	case u.Scheme != "https":
+		return invalid("scheme must be https")
+	case u.User != nil:
+		return invalid("userinfo not allowed")
+	case u.Opaque != "" || u.Hostname() == "":
+		return invalid("host is required")
+	case u.Path != "" && u.Path != "/":
+		return invalid("path not allowed")
+	case u.RawQuery != "" || u.ForceQuery || u.Fragment != "":
+		return invalid("query or fragment not allowed")
+	}
+	return u.Scheme + "://" + u.Host, nil
 }
 
 // purgeAPI is the subset of the EO client used here; tests inject a fake.
@@ -106,10 +149,16 @@ func (p *eoPurger) PurgePrefixes(ctx context.Context, prefixes []string) error {
 	if err != nil {
 		return err
 	}
-	for start := 0; start < len(clean); start += BatchSize {
-		end := min(start+BatchSize, len(clean))
+	total := len(clean)
+	batches := (total + BatchSize - 1) / BatchSize
+	for i, start := 0, 0; start < total; i, start = i+1, start+BatchSize {
+		// start is also the number of targets already accepted by EO.
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("cdn: purge stopped before batch %d/%d (%d of %d targets purged): %w", i+1, batches, start, total, err)
+		}
+		end := min(start+BatchSize, total)
 		if err := p.purgeBatch(ctx, clean[start:end]); err != nil {
-			return err
+			return fmt.Errorf("cdn: purge batch %d/%d failed (%d of %d targets purged): %w", i+1, batches, start, total, err)
 		}
 	}
 	return nil
@@ -143,6 +192,10 @@ func (p *eoPurger) purgeBatch(ctx context.Context, prefixes []string) error {
 			if first == "" && f.Reason != nil {
 				first = *f.Reason
 			}
+		}
+		if failed == 0 {
+			// EO gave reasons without listing targets; treat the batch as failed.
+			failed = len(prefixes)
 		}
 		return fmt.Errorf("cdn: EO purge failed for %d targets: %s", failed, p.redact(first))
 	}
@@ -231,10 +284,6 @@ func (noop) PurgePrefixes(_ context.Context, prefixes []string) error {
 	_, err := normalize(prefixes)
 	return err
 }
-
-type errPurger struct{ err error }
-
-func (e errPurger) PurgePrefixes(context.Context, []string) error { return e.err }
 
 // Fake is an in-memory Purger for tests. It validates input like the real
 // purger, records purged prefixes in call order, and can be told to fail.

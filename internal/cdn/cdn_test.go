@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 
+	sdkerrors "github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/common/errors"
 	teo "github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/teo/v20220901"
 )
 
@@ -63,7 +64,10 @@ func TestNewNoopWhenUnconfigured(t *testing.T) {
 	for i, opts := range cases {
 		t.Run(fmt.Sprint(i), func(t *testing.T) {
 			rec := &logRecorder{}
-			p := New(opts, rec.logf)
+			p, err := New(opts, rec.logf)
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
 			if _, ok := p.(noop); !ok {
 				t.Fatalf("expected noop purger, got %T", p)
 			}
@@ -89,7 +93,10 @@ func TestNewNoopWhenUnconfigured(t *testing.T) {
 
 func TestNewConfiguredReturnsEO(t *testing.T) {
 	rec := &logRecorder{}
-	p := New(Options{SecretID: "id", SecretKey: "key", ZoneID: "zone-1", Base: testBase + "/"}, rec.logf)
+	p, err := New(Options{SecretID: "id", SecretKey: "key", ZoneID: "zone-1", Base: testBase + "/"}, rec.logf)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
 	eo, ok := p.(*eoPurger)
 	if !ok {
 		t.Fatalf("expected *eoPurger, got %T", p)
@@ -145,6 +152,16 @@ func TestPurgeValidation(t *testing.T) {
 		"d/../secret/",
 		"d/p1 h1/",
 		"d/p1/h1/?x=1/",
+		"d/p1/h1#frag/",
+		"d/p1/#/",
+		"d/p1\r\nX-Injected: 1/",
+		"d/p1\n/",
+		"d/p1\r/",
+		"d/p1\t/",
+		"d/./h1/",
+		"d/p1/./",
+		"d//h1/",
+		"d/pé/h1/",
 	}
 	for _, prefix := range bad {
 		t.Run(prefix, func(t *testing.T) {
@@ -162,7 +179,10 @@ func TestPurgeValidation(t *testing.T) {
 }
 
 func TestNoopAlsoValidates(t *testing.T) {
-	p := New(Options{}, func(string, ...any) {})
+	p, err := New(Options{}, func(string, ...any) {})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
 	if err := p.PurgePrefixes(context.Background(), []string{"/d/x/"}); !errors.Is(err, ErrInvalidPrefix) {
 		t.Fatalf("expected ErrInvalidPrefix, got %v", err)
 	}
@@ -312,5 +332,216 @@ func TestFakeRecordsAndFails(t *testing.T) {
 	wg.Wait()
 	if len(f.Prefixes()) != 23 {
 		t.Fatalf("concurrent recording lost entries: %d", len(f.Prefixes()))
+	}
+}
+
+func TestNewBaseValidation(t *testing.T) {
+	creds := Options{SecretID: "AKIDsecret", SecretKey: "sk-secret", ZoneID: "zone-1"}
+
+	good := map[string]string{
+		"https://img.example.test":      "https://img.example.test",
+		"https://img.example.test/":     "https://img.example.test",
+		"https://img.example.test:8443": "https://img.example.test:8443",
+	}
+	for in, want := range good {
+		t.Run("ok "+in, func(t *testing.T) {
+			o := creds
+			o.Base = in
+			p, err := New(o, func(string, ...any) {})
+			if err != nil {
+				t.Fatalf("New(%q): %v", in, err)
+			}
+			eo, ok := p.(*eoPurger)
+			if !ok {
+				t.Fatalf("expected *eoPurger, got %T", p)
+			}
+			if eo.base != want {
+				t.Fatalf("base = %q, want %q", eo.base, want)
+			}
+		})
+	}
+
+	bad := []string{
+		"img.example.test",
+		"http://img.example.test",
+		"ftp://img.example.test",
+		"https://",
+		"https:///d",
+		"https://img.example.test/sub",
+		"https://img.example.test/sub/",
+		"https://img.example.test//",
+		"https://img.example.test?x=1",
+		"https://img.example.test/?",
+		"https://img.example.test#frag",
+		"https://user:pass@img.example.test",
+		"https://user@img.example.test",
+		"//img.example.test",
+		"https://img.example.test\r\n",
+		" https://img.example.test",
+		"://bad",
+	}
+	for _, in := range bad {
+		t.Run("bad "+in, func(t *testing.T) {
+			o := creds
+			o.Base = in
+			rec := &logRecorder{}
+			p, err := New(o, rec.logf)
+			if !errors.Is(err, ErrInvalidBase) {
+				t.Fatalf("New(%q) err = %v, want ErrInvalidBase", in, err)
+			}
+			if p != nil {
+				t.Fatalf("expected nil purger on error, got %T", p)
+			}
+			msg := err.Error()
+			if strings.Contains(msg, "AKIDsecret") || strings.Contains(msg, "sk-secret") || strings.Contains(msg, "pass") {
+				t.Fatalf("error leaks secret: %q", msg)
+			}
+		})
+	}
+}
+
+func TestNewEmptyBaseWithCredsIsNoop(t *testing.T) {
+	rec := &logRecorder{}
+	p, err := New(Options{SecretID: "AKIDsecret", SecretKey: "sk-secret", ZoneID: "zone-1"}, rec.logf)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, ok := p.(noop); !ok {
+		t.Fatalf("expected noop, got %T", p)
+	}
+	if len(rec.lines) != 1 {
+		t.Fatalf("expected one warning, got %v", rec.lines)
+	}
+	if strings.Contains(rec.lines[0], "AKIDsecret") || strings.Contains(rec.lines[0], "sk-secret") {
+		t.Fatalf("warning leaks secret: %q", rec.lines[0])
+	}
+}
+
+// scriptedAPI returns per-call results and can cancel a context mid-run.
+type scriptedAPI struct {
+	calls   int
+	errs    map[int]error
+	fails   map[int][]*teo.FailReason
+	onCall  func(n int)
+	targets [][]string
+}
+
+func (s *scriptedAPI) CreatePurgeTaskWithContext(ctx context.Context, req *teo.CreatePurgeTaskRequest) (*teo.CreatePurgeTaskResponse, error) {
+	n := s.calls
+	s.calls++
+	s.targets = append(s.targets, targets(req))
+	if s.onCall != nil {
+		s.onCall(n)
+	}
+	if err := s.errs[n]; err != nil {
+		return nil, err
+	}
+	resp := teo.NewCreatePurgeTaskResponse()
+	resp.Response = &teo.CreatePurgeTaskResponseParams{JobId: strp("job"), FailedList: s.fails[n]}
+	return resp, nil
+}
+
+func manyPrefixes(n int) []string {
+	in := make([]string, n)
+	for i := range in {
+		in[i] = fmt.Sprintf("d/p%03d/h/", i)
+	}
+	return in
+}
+
+func TestPurgeChecksContextBetweenBatches(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	api := &scriptedAPI{onCall: func(n int) {
+		if n == 0 {
+			cancel()
+		}
+	}}
+	p := newEO(api, "zone-1", testBase, nil)
+	err := p.PurgePrefixes(ctx, manyPrefixes(250))
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+	if api.calls != 1 {
+		t.Fatalf("expected 1 call before cancellation was noticed, got %d", api.calls)
+	}
+	if !strings.Contains(err.Error(), "100 of 250") {
+		t.Fatalf("error should report progress: %q", err.Error())
+	}
+}
+
+func TestPurgeCanceledBeforeStartMakesNoCall(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	api := &scriptedAPI{}
+	p := newEO(api, "zone-1", testBase, nil)
+	if err := p.PurgePrefixes(ctx, []string{"d/a/1/"}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+	if api.calls != 0 {
+		t.Fatalf("expected no calls, got %d", api.calls)
+	}
+}
+
+func TestPurgePartialFailureReportsProgress(t *testing.T) {
+	api := &scriptedAPI{errs: map[int]error{1: errors.New("network down")}}
+	p := newEO(api, "zone-1", testBase, nil)
+	err := p.PurgePrefixes(context.Background(), manyPrefixes(250))
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "batch 2/3") || !strings.Contains(msg, "100 of 250") {
+		t.Fatalf("error should report batch and succeeded count: %q", msg)
+	}
+	if api.calls != 2 {
+		t.Fatalf("expected stop after failing batch, got %d calls", api.calls)
+	}
+}
+
+func TestPurgePartialFailedListReportsProgress(t *testing.T) {
+	api := &scriptedAPI{fails: map[int][]*teo.FailReason{2: {{Reason: strp("quota"), Targets: []*string{strp("x")}}}}}
+	p := newEO(api, "zone-1", testBase, nil)
+	err := p.PurgePrefixes(context.Background(), manyPrefixes(250))
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "batch 3/3") || !strings.Contains(msg, "200 of 250") || !strings.Contains(msg, "quota") {
+		t.Fatalf("unexpected message: %q", msg)
+	}
+}
+
+func TestPurgeFailedListWithoutTargetsCountsBatch(t *testing.T) {
+	api := &fakeAPI{failList: []*teo.FailReason{{Reason: strp("internal error")}}}
+	p := newEO(api, "zone-1", testBase, nil)
+	err := p.PurgePrefixes(context.Background(), []string{"d/a/1/", "d/b/2/"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "failed for 0 targets") {
+		t.Fatalf("misleading zero count: %q", msg)
+	}
+	if !strings.Contains(msg, "failed for 2 targets") || !strings.Contains(msg, "internal error") {
+		t.Fatalf("unexpected message: %q", msg)
+	}
+}
+
+func TestPurgeSDKErrorFormat(t *testing.T) {
+	api := &fakeAPI{err: sdkerrors.NewTencentCloudSDKError("AuthFailure.SignatureFailure", "bad sig for AKIDsecret", "req-123")}
+	p := newEO(api, "zone-1", testBase, []string{"AKIDsecret", "sk-secret"})
+	err := p.PurgePrefixes(context.Background(), []string{"d/a/1/"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	msg := err.Error()
+	for _, want := range []string{"AuthFailure.SignatureFailure", "req-123"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("error lacks %q: %q", want, msg)
+		}
+	}
+	if strings.Contains(msg, "AKIDsecret") {
+		t.Fatalf("error leaks secret: %q", msg)
 	}
 }
