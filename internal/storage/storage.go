@@ -6,11 +6,14 @@ package storage
 import (
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	"math"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -34,6 +37,15 @@ var (
 // deleteBatch is the S3 DeleteObjects per-request maximum.
 const deleteBatch = 1000
 
+// maxPresignTTL is the SigV4 presign limit.
+const maxPresignTTL = 7 * 24 * time.Hour
+
+// Delete modes for Options.DeleteMode.
+const (
+	DeleteModeBatch  = "batch"
+	DeleteModeSingle = "single"
+)
+
 // Options configures a Client.
 type Options struct {
 	Endpoint  string
@@ -44,15 +56,35 @@ type Options struct {
 	// style, so leave it false there.
 	PathStyle bool
 	// PublicEndpoint, when set, is the base endpoint used for presigned URLs
-	// handed to browsers. Empty means Endpoint.
+	// handed to browsers. Empty means Endpoint. It is a service base
+	// endpoint, not a bucket-bound domain: with PathStyle=false the bucket is
+	// prepended as a subdomain (https://{bucket}.{PublicEndpoint host}/{key}).
 	PublicEndpoint string
+	// DeleteMode selects how DeletePrefix removes keys: "batch" (default when
+	// empty) uses DeleteObjects; "single" issues one DeleteObject per key for
+	// services that reject DeleteObjects without Content-MD5.
+	DeleteMode string
 }
 
 // Object is the metadata returned by Head.
 type Object struct {
-	Size              int64
-	ContentType       string
+	Size        int64
+	ContentType string
+	// ChecksumSHA256Hex is the stored full-object SHA-256 in lowercase hex.
+	// Empty means the service reported no verifiable SHA-256 (not stored, not
+	// echoed, or a multipart composite): the upload is UNVERIFIED and callers
+	// must treat it as a mismatch. Use ChecksumMatches rather than comparing
+	// directly.
 	ChecksumSHA256Hex string
+}
+
+// ChecksumMatches reports whether the stored SHA-256 equals wantHex. It
+// returns false when either value is empty and compares in constant time.
+func (o Object) ChecksumMatches(wantHex string) bool {
+	if o.ChecksumSHA256Hex == "" || wantHex == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(o.ChecksumSHA256Hex), []byte(wantHex)) == 1
 }
 
 // PresignedRequest is a presigned request a browser must replay exactly:
@@ -65,8 +97,21 @@ type PresignedRequest struct {
 
 // Client is an S3 client plus a presigner.
 type Client struct {
-	s3        *s3.Client
-	presigner *s3.PresignClient
+	s3           *s3.Client
+	presigner    *s3.PresignClient
+	singleDelete bool
+}
+
+// newHTTPClient bounds dial, TLS handshake and time-to-first-response-byte so
+// a stalled connection fails instead of hanging a worker. Body transfer is
+// still bounded by the caller's ctx.
+func newHTTPClient() *http.Client {
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.DialContext = (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext
+	tr.TLSHandshakeTimeout = 10 * time.Second
+	tr.ResponseHeaderTimeout = 30 * time.Second
+	tr.ExpectContinueTimeout = 1 * time.Second
+	return &http.Client{Transport: tr}
 }
 
 // New builds a Client. It performs no network I/O.
@@ -81,12 +126,19 @@ func New(ctx context.Context, opts Options) (*Client, error) {
 	if opts.AccessKey == "" || opts.SecretKey == "" {
 		return nil, errors.New("storage: access key and secret key are required")
 	}
+	switch opts.DeleteMode {
+	case "", DeleteModeBatch, DeleteModeSingle:
+	default:
+		return nil, fmt.Errorf("storage: unknown delete mode %q (want %q or %q)", opts.DeleteMode, DeleteModeBatch, DeleteModeSingle)
+	}
+	httpClient := newHTTPClient()
 	build := func(endpoint string) *s3.Client {
 		return s3.New(s3.Options{
 			Region:       opts.Region,
 			Credentials:  credentials.NewStaticCredentialsProvider(opts.AccessKey, opts.SecretKey, ""),
 			BaseEndpoint: aws.String(endpoint),
 			UsePathStyle: opts.PathStyle,
+			HTTPClient:   httpClient,
 			// Only add checksums the operation requires (e.g. DeleteObjects);
 			// presigned PUTs carry the caller-declared SHA-256 explicitly.
 			RequestChecksumCalculation: aws.RequestChecksumCalculationWhenRequired,
@@ -98,7 +150,11 @@ func New(ctx context.Context, opts Options) (*Client, error) {
 	if opts.PublicEndpoint != "" {
 		presignBase = build(opts.PublicEndpoint)
 	}
-	return &Client{s3: main, presigner: s3.NewPresignClient(presignBase)}, nil
+	return &Client{
+		s3:           main,
+		presigner:    s3.NewPresignClient(presignBase),
+		singleDelete: opts.DeleteMode == DeleteModeSingle,
+	}, nil
 }
 
 // Put uploads body. cacheControl may be empty.
@@ -134,7 +190,11 @@ func (c *Client) Get(ctx context.Context, bucket, key string, maxBytes int64) ([
 	if out.ContentLength != nil && *out.ContentLength > maxBytes {
 		return nil, ErrTooLarge
 	}
-	data, err := io.ReadAll(io.LimitReader(out.Body, maxBytes+1))
+	limit := maxBytes
+	if limit < math.MaxInt64 {
+		limit++ // read one extra byte to detect overflow of the cap
+	}
+	data, err := io.ReadAll(io.LimitReader(out.Body, limit))
 	if err != nil {
 		return nil, wrap("get", bucket, key, err)
 	}
@@ -145,7 +205,10 @@ func (c *Client) Get(ctx context.Context, bucket, key string, maxBytes int64) ([
 }
 
 // Head returns object metadata including the stored SHA-256 checksum (hex),
-// which is empty when the object has no full-object SHA-256 checksum.
+// which is empty when the object has no full-object SHA-256 checksum (see
+// Object.ChecksumSHA256Hex: empty means unverified). A missing bucket also
+// yields ErrNotFound, because HEAD 404 responses have no body to distinguish
+// NoSuchBucket; verify buckets at startup.
 func (c *Client) Head(ctx context.Context, bucket, key string) (Object, error) {
 	out, err := c.s3.HeadObject(ctx, &s3.HeadObjectInput{
 		Bucket:       aws.String(bucket),
@@ -166,7 +229,9 @@ func (c *Client) Head(ctx context.Context, bucket, key string) (Object, error) {
 	return obj, nil
 }
 
-// Delete removes an object. A missing key is not an error.
+// Delete removes an object. A missing key is not an error. Note that a
+// missing bucket is indistinguishable here (HEAD/DELETE 404s carry no error
+// body), so callers should verify buckets at startup (e.g. HeadBucket).
 func (c *Client) Delete(ctx context.Context, bucket, key string) error {
 	_, err := c.s3.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: aws.String(bucket), Key: aws.String(key)})
 	if err != nil {
@@ -195,6 +260,15 @@ func (c *Client) DeletePrefix(ctx context.Context, bucket, prefix string) (int, 
 		page, err := p.NextPage(ctx)
 		if err != nil {
 			return deleted, wrap("list", bucket, prefix, err)
+		}
+		if c.singleDelete {
+			for _, o := range page.Contents {
+				if _, err := c.s3.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: aws.String(bucket), Key: o.Key}); err != nil && !isNotFound(err) {
+					return deleted, wrap("delete-prefix", bucket, prefix, err)
+				}
+				deleted++
+			}
+			continue
 		}
 		ids := make([]types.ObjectIdentifier, 0, len(page.Contents))
 		for _, o := range page.Contents {
@@ -226,6 +300,8 @@ func (c *Client) Copy(ctx context.Context, srcBucket, srcKey, dstBucket, dstKey 
 		Bucket:     aws.String(dstBucket),
 		Key:        aws.String(dstKey),
 		CopySource: aws.String(escapePath(srcBucket + "/" + srcKey)),
+		// Recompute SHA-256 on the copy so Head can verify replicas.
+		ChecksumAlgorithm: types.ChecksumAlgorithmSha256,
 	})
 	if err != nil {
 		return wrap("copy", srcBucket, srcKey, err)
@@ -242,8 +318,8 @@ func (c *Client) PresignPut(ctx context.Context, bucket, key, contentType, sha25
 	if contentType == "" {
 		return PresignedRequest{}, errors.New("storage: content type is required")
 	}
-	if ttl <= 0 {
-		return PresignedRequest{}, errors.New("storage: ttl must be positive")
+	if ttl <= 0 || ttl > maxPresignTTL {
+		return PresignedRequest{}, errors.New("storage: ttl must be in (0, 7d]")
 	}
 	raw, _ := hex.DecodeString(sha256Hex)
 	req, err := c.presigner.PresignPutObject(ctx, &s3.PutObjectInput{
@@ -268,8 +344,8 @@ func (c *Client) PresignPut(ctx context.Context, bucket, key, contentType, sha25
 // PresignGet presigns a GET. A non-empty downloadName forces an attachment
 // Content-Disposition with an RFC 5987 encoded filename.
 func (c *Client) PresignGet(ctx context.Context, bucket, key string, ttl time.Duration, downloadName string) (string, error) {
-	if ttl <= 0 {
-		return "", errors.New("storage: ttl must be positive")
+	if ttl <= 0 || ttl > maxPresignTTL {
+		return "", errors.New("storage: ttl must be in (0, 7d]")
 	}
 	in := &s3.GetObjectInput{Bucket: aws.String(bucket), Key: aws.String(key)}
 	if downloadName != "" {
@@ -282,12 +358,61 @@ func (c *Client) PresignGet(ctx context.Context, bucket, key string, ttl time.Du
 	return req.URL, nil
 }
 
+// opError is a storage error whose message names only the operation, bucket,
+// key and a coarse category. The SDK error (which may embed the endpoint host,
+// request URL and query string) stays reachable via Unwrap.
+type opError struct {
+	msg string
+	err error
+}
+
+func (e *opError) Error() string { return e.msg }
+func (e *opError) Unwrap() error { return e.err }
+
 func wrap(op, bucket, key string, err error) error {
+	prefix := fmt.Sprintf("storage: %s %s/%s: ", op, bucket, key)
 	if isNotFound(err) {
-		return fmt.Errorf("storage: %s %s/%s: %w", op, bucket, key, ErrNotFound)
+		return &opError{msg: prefix + ErrNotFound.Error(), err: notFoundError{err}}
 	}
-	// SDK errors carry operation, status and request IDs, never credentials.
-	return fmt.Errorf("storage: %s %s/%s: %w", op, bucket, key, err)
+	return &opError{msg: prefix + category(err), err: err}
+}
+
+// notFoundError makes errors.Is(err, ErrNotFound) true while keeping the SDK
+// error reachable.
+type notFoundError struct{ err error }
+
+func (e notFoundError) Error() string   { return ErrNotFound.Error() }
+func (e notFoundError) Unwrap() []error { return []error{ErrNotFound, e.err} }
+
+func category(err error) string {
+	switch {
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	}
+	var api smithy.APIError
+	if errors.As(err, &api) {
+		code := api.ErrorCode()
+		var re *smithyhttp.ResponseError
+		if errors.As(err, &re) {
+			return fmt.Sprintf("service error %d %s", re.HTTPStatusCode(), code)
+		}
+		return "service error " + code
+	}
+	var re *smithyhttp.ResponseError
+	if errors.As(err, &re) {
+		return fmt.Sprintf("service error %d", re.HTTPStatusCode())
+	}
+	var ne net.Error
+	if errors.As(err, &ne) && ne.Timeout() {
+		return "transport timeout"
+	}
+	var oe *net.OpError
+	if errors.As(err, &oe) {
+		return "transport error"
+	}
+	return "request failed"
 }
 
 func isNotFound(err error) bool {

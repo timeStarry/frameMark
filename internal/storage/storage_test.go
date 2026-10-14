@@ -5,6 +5,9 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
+	"net"
+	"net/http"
 	"net/url"
 	"strings"
 	"testing"
@@ -172,4 +175,119 @@ func contains(xs []string, s string) bool {
 		}
 	}
 	return false
+}
+
+func TestChecksumMatches(t *testing.T) {
+	sum := hexSum([]byte("a"))
+	other := hexSum([]byte("b"))
+	cases := []struct {
+		stored, want string
+		ok           bool
+	}{
+		{sum, sum, true},
+		{sum, other, false},
+		{"", "", false},
+		{"", sum, false},
+		{sum, "", false},
+		{sum, sum[:10], false},
+	}
+	for _, tc := range cases {
+		if got := (Object{ChecksumSHA256Hex: tc.stored}).ChecksumMatches(tc.want); got != tc.ok {
+			t.Fatalf("ChecksumMatches(%q vs %q) = %v, want %v", tc.stored, tc.want, got, tc.ok)
+		}
+	}
+}
+
+func TestNewDeleteMode(t *testing.T) {
+	base := Options{Endpoint: "http://127.0.0.1:1", Region: "us-east-1", AccessKey: "a", SecretKey: "s"}
+	for _, m := range []string{"", "batch", "single"} {
+		o := base
+		o.DeleteMode = m
+		if _, err := New(context.Background(), o); err != nil {
+			t.Fatalf("mode %q: %v", m, err)
+		}
+	}
+	o := base
+	o.DeleteMode = "bulk"
+	if _, err := New(context.Background(), o); err == nil {
+		t.Fatal("expected error for unknown delete mode")
+	}
+}
+
+func TestHTTPClientTimeouts(t *testing.T) {
+	c := newOfflineClient(t, "")
+	hc, ok := c.s3.Options().HTTPClient.(*http.Client)
+	if !ok {
+		t.Fatalf("HTTPClient is %T", c.s3.Options().HTTPClient)
+	}
+	tr, ok := hc.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport is %T", hc.Transport)
+	}
+	if tr.ResponseHeaderTimeout != 30*time.Second || tr.TLSHandshakeTimeout <= 0 || tr.DialContext == nil {
+		t.Fatalf("transport timeouts: header=%v tls=%v", tr.ResponseHeaderTimeout, tr.TLSHandshakeTimeout)
+	}
+}
+
+func TestTransportErrorSanitized(t *testing.T) {
+	c := newOfflineClient(t, "")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, err := c.Get(ctx, "bkt", "o/owner/photo", 10)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	msg := err.Error()
+	for _, bad := range []string{"127.0.0.1", "X-Amz", "http://", "dial"} {
+		if strings.Contains(msg, bad) {
+			t.Fatalf("error leaks %q: %s", bad, msg)
+		}
+	}
+	if !strings.HasPrefix(msg, "storage: get bkt/o/owner/photo: ") {
+		t.Fatalf("error format: %s", msg)
+	}
+	if errors.Unwrap(err) == nil {
+		t.Fatal("original error not reachable via errors.Unwrap")
+	}
+	var opErr *net.OpError
+	if !errors.As(err, &opErr) {
+		t.Fatalf("net.OpError not reachable: %v", err)
+	}
+
+	if _, err := c.Get(canceledCtx(), "bkt", "k", 10); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled err = %v", err)
+	}
+}
+
+func TestPresignVirtualHostPublicEndpoint(t *testing.T) {
+	c, err := New(context.Background(), Options{
+		Endpoint: "https://tos-s3-cn-beijing.volces.com", Region: "cn-beijing",
+		AccessKey: "a", SecretKey: "s", PublicEndpoint: "https://upload.example.com",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := c.PresignGet(context.Background(), "bkt", "k", time.Minute, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u, _ := url.Parse(s); u.Host != "bkt.upload.example.com" || u.Path != "/k" {
+		t.Fatalf("virtual-host presign = %s", s)
+	}
+}
+
+func canceledCtx() context.Context {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	return ctx
+}
+
+func TestPresignRejectsTTLOver7Days(t *testing.T) {
+	c := newOfflineClient(t, "")
+	if _, err := c.PresignPut(context.Background(), "b", "k", "image/jpeg", hexSum(nil), 8*24*time.Hour); err == nil {
+		t.Fatal("PresignPut accepted ttl > 7d")
+	}
+	if _, err := c.PresignGet(context.Background(), "b", "k", 8*24*time.Hour, ""); err == nil {
+		t.Fatal("PresignGet accepted ttl > 7d")
+	}
 }

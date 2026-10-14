@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"os"
 	"sync"
@@ -25,16 +26,22 @@ var noProxyHTTP = &http.Client{Transport: &http.Transport{Proxy: nil}, Timeout: 
 // emptied and removed when the test ends.
 func integration(t *testing.T) (*Client, string) {
 	t.Helper()
+	return integrationMode(t, "")
+}
+
+func integrationMode(t *testing.T, deleteMode string) (*Client, string) {
+	t.Helper()
 	endpoint := os.Getenv("MARKR_TEST_S3_ENDPOINT")
 	if endpoint == "" {
 		t.Skip("MARKR_TEST_S3_ENDPOINT not set")
 	}
 	c, err := New(context.Background(), Options{
-		Endpoint:  endpoint,
-		Region:    "us-east-1",
-		AccessKey: os.Getenv("MARKR_TEST_S3_ACCESS_KEY"),
-		SecretKey: os.Getenv("MARKR_TEST_S3_SECRET_KEY"),
-		PathStyle: true,
+		Endpoint:   endpoint,
+		Region:     "us-east-1",
+		AccessKey:  os.Getenv("MARKR_TEST_S3_ACCESS_KEY"),
+		SecretKey:  os.Getenv("MARKR_TEST_S3_SECRET_KEY"),
+		PathStyle:  true,
+		DeleteMode: deleteMode,
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -88,6 +95,9 @@ func TestIntegrationPutGetHead(t *testing.T) {
 	}
 	if _, err := c.Get(ctx, bucket, key, int64(len(body))-1); !errors.Is(err, ErrTooLarge) {
 		t.Fatalf("Get over cap err = %v, want ErrTooLarge", err)
+	}
+	if got, err := c.Get(ctx, bucket, key, math.MaxInt64); err != nil || !bytes.Equal(got, body) {
+		t.Fatalf("Get with MaxInt64 cap = %q, %v", got, err)
 	}
 	out, err := c.s3.HeadObject(ctx, &s3.HeadObjectInput{Bucket: aws.String(bucket), Key: aws.String(key)})
 	if err != nil || aws.ToString(out.CacheControl) != "public, max-age=31536000, immutable" {
@@ -187,7 +197,13 @@ func TestIntegrationPresignedGet(t *testing.T) {
 }
 
 func TestIntegrationDeletePrefixAndCopy(t *testing.T) {
-	c, bucket := integration(t)
+	for _, mode := range []string{"batch", "single"} {
+		t.Run(mode, func(t *testing.T) { testDeletePrefixAndCopy(t, mode) })
+	}
+}
+
+func testDeletePrefixAndCopy(t *testing.T, mode string) {
+	c, bucket := integrationMode(t, mode)
 	ctx := context.Background()
 	const n = 1005
 	sem := make(chan struct{}, 32)
@@ -221,6 +237,9 @@ func TestIntegrationDeletePrefixAndCopy(t *testing.T) {
 	}
 	if got, err := c.Get(ctx, bucket, "replica/d/p10/h/keep copy", 100); err != nil || string(got) != "keep" {
 		t.Fatalf("Get copy = %q, %v", got, err)
+	}
+	if obj, err := c.Head(ctx, bucket, "replica/d/p10/h/keep copy"); err != nil || !obj.ChecksumMatches(hexSum([]byte("keep"))) {
+		t.Fatalf("Head copy = %+v, %v; want sha256 preserved", obj, err)
 	}
 
 	deleted, err := c.DeletePrefix(ctx, bucket, "d/p1/")
