@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
@@ -29,6 +30,9 @@ const (
 	BaseBackoffMillis = int64(30 * 1000)
 
 	maxErrorBytes = 500
+
+	leaseExpiredReason = "lease expired at max attempts"
+	leaseExpiredSuffix = " (" + leaseExpiredReason + ")"
 )
 
 var (
@@ -50,15 +54,47 @@ type Job struct {
 	LeaseToken string
 }
 
+// DeadHook is called once for every job that becomes dead. See Queue.OnDead.
+type DeadHook func(ctx context.Context, j Job)
+
 // Queue is the job queue. It is safe for concurrent use.
 type Queue struct {
-	db  *sql.DB
-	now func() int64
+	db     *sql.DB
+	now    func() int64
+	onDead atomic.Pointer[DeadHook]
 }
 
 // New returns a Queue over d using now (Unix ms) as its clock.
 func New(d *sql.DB, now func() int64) *Queue {
 	return &Queue{db: d, now: now}
+}
+
+// OnDead registers fn to run exactly once for each job that becomes dead,
+// whether by a permanent Fail, a Fail on the last attempt, or a lease that
+// expired on the last attempt (a crashed worker, swept up by any later Claim
+// regardless of its kind filter). This lets an owner react, e.g. setting a
+// photo to failed (spec §6.2). Passing nil removes the hook.
+//
+// fn runs after the statement that killed the job has finished, on the
+// goroutine that called Fail or Claim, with that call's ctx. It may use the
+// database. A panic in fn is recovered and does not affect the caller. The job
+// is already dead and committed when fn runs, so fn should be idempotent with
+// respect to its own side effects but will not be retried by the queue.
+func (q *Queue) OnDead(fn DeadHook) {
+	if fn == nil {
+		q.onDead.Store(nil)
+		return
+	}
+	q.onDead.Store(&fn)
+}
+
+func (q *Queue) fireDead(ctx context.Context, j Job) {
+	p := q.onDead.Load()
+	if p == nil {
+		return
+	}
+	defer func() { _ = recover() }()
+	(*p)(ctx, j)
 }
 
 // Enqueue adds a job that is ready immediately.
@@ -95,11 +131,8 @@ func (q *Queue) EnqueueAt(ctx context.Context, kind string, payload any, runAfte
 // its MaxAttempts-th claim is marked dead instead of being run again.
 func (q *Queue) Claim(ctx context.Context, kinds []string) (*Job, error) {
 	now := q.now()
-	if _, err := q.db.ExecContext(ctx,
-		`UPDATE jobs SET state='dead', lease_until=NULL, lease_token=NULL, last_error=?
-		 WHERE state='running' AND lease_until<=? AND attempts>=?`,
-		fmt.Sprintf("lease expired on attempt %d of %d", MaxAttempts, MaxAttempts), now, MaxAttempts); err != nil {
-		return nil, fmt.Errorf("jobs: expire leases: %w", err)
+	if err := q.sweepExpired(ctx, now); err != nil {
+		return nil, err
 	}
 
 	token, err := newToken()
@@ -137,40 +170,108 @@ func (q *Queue) Claim(ctx context.Context, kinds []string) (*Job, error) {
 	return &j, nil
 }
 
+// sweepExpired marks dead every running job whose lease expired on its last
+// attempt, keeping its previous last_error with a suffix, and fires OnDead
+// once per job. Each job is killed by its own conditional UPDATE ... RETURNING,
+// so a concurrent sweeper or a late Fail by the stale worker makes the UPDATE
+// match nothing and no second hook call happens. Candidate rows are fully read
+// and closed before any write, keeping the single pooled connection free.
+func (q *Queue) sweepExpired(ctx context.Context, now int64) error {
+	type cand struct {
+		id      string
+		lastErr sql.NullString
+	}
+	rows, err := q.db.QueryContext(ctx,
+		`SELECT id, last_error FROM jobs WHERE state='running' AND lease_until<=? AND attempts>=?`,
+		now, MaxAttempts)
+	if err != nil {
+		return fmt.Errorf("jobs: find expired: %w", err)
+	}
+	var cands []cand
+	for rows.Next() {
+		var c cand
+		if err := rows.Scan(&c.id, &c.lastErr); err != nil {
+			rows.Close()
+			return fmt.Errorf("jobs: find expired: %w", err)
+		}
+		cands = append(cands, c)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("jobs: find expired: %w", err)
+	}
+
+	for _, c := range cands {
+		msg := leaseExpiredReason
+		if c.lastErr.Valid && c.lastErr.String != "" {
+			msg = truncate(c.lastErr.String, maxErrorBytes-len(leaseExpiredSuffix)) + leaseExpiredSuffix
+		}
+		var (
+			j       Job
+			payload string
+		)
+		err := q.db.QueryRowContext(ctx,
+			`UPDATE jobs SET state='dead', lease_until=NULL, lease_token=NULL, last_error=?, finished_at=?
+			 WHERE id=? AND state='running' AND lease_until<=? AND attempts>=?
+			 RETURNING id, kind, payload, attempts`,
+			msg, now, c.id, now, MaxAttempts).Scan(&j.ID, &j.Kind, &payload, &j.Attempts)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue // someone else finished or killed it first
+		}
+		if err != nil {
+			return fmt.Errorf("jobs: expire lease: %w", err)
+		}
+		j.Payload = json.RawMessage(payload)
+		q.fireDead(ctx, j)
+	}
+	return nil
+}
+
 // Heartbeat extends j's lease to now + LeaseMillis.
 func (q *Queue) Heartbeat(ctx context.Context, j *Job) error {
-	return q.fenced(ctx, "heartbeat", j, `UPDATE jobs SET lease_until=?`, q.now()+LeaseMillis)
+	_, err := q.fenced(ctx, "heartbeat", j, `UPDATE jobs SET lease_until=?`, q.now()+LeaseMillis)
+	return err
 }
 
 // Done marks j finished.
 func (q *Queue) Done(ctx context.Context, j *Job) error {
-	return q.fenced(ctx, "done", j, `UPDATE jobs SET state='done', lease_until=NULL, lease_token=NULL`)
+	_, err := q.fenced(ctx, "done", j,
+		`UPDATE jobs SET state='done', lease_until=NULL, lease_token=NULL, finished_at=?`, q.now())
+	return err
 }
 
 // Fail records cause on j. A permanent failure, or a failure on the
 // MaxAttempts-th attempt, makes the job dead; otherwise it is requeued after
-// 30s × 2^(attempts-1).
+// 30s × 2^(attempts-1). Going dead fires the OnDead hook once.
 func (q *Queue) Fail(ctx context.Context, j *Job, permanent bool, cause error) error {
 	msg := "unknown error"
 	if cause != nil {
 		msg = cause.Error()
 	}
 	msg = truncate(msg, maxErrorBytes)
+	now := q.now()
 	if permanent || j.Attempts >= MaxAttempts {
-		return q.fenced(ctx, "fail", j,
-			`UPDATE jobs SET state='dead', lease_until=NULL, lease_token=NULL, last_error=?`, msg)
+		dead, err := q.fenced(ctx, "fail", j,
+			`UPDATE jobs SET state='dead', lease_until=NULL, lease_token=NULL, last_error=?, finished_at=?`,
+			msg, now)
+		if err != nil {
+			return err
+		}
+		q.fireDead(ctx, dead)
+		return nil
 	}
 	delay := BaseBackoffMillis << (max(j.Attempts, 1) - 1)
-	return q.fenced(ctx, "fail", j,
+	_, err := q.fenced(ctx, "fail", j,
 		`UPDATE jobs SET state='queued', run_after=?, lease_until=NULL, lease_token=NULL, last_error=?`,
-		q.now()+delay, msg)
+		now+delay, msg)
+	return err
 }
 
-// PurgeDone deletes done and dead jobs created before olderThan (Unix ms) and
-// returns how many were removed.
+// PurgeDone deletes done and dead jobs that finished before olderThan (Unix ms)
+// and returns how many were removed.
 func (q *Queue) PurgeDone(ctx context.Context, olderThan int64) (int, error) {
 	res, err := q.db.ExecContext(ctx,
-		`DELETE FROM jobs WHERE state IN ('done', 'dead') AND created_at < ?`, olderThan)
+		`DELETE FROM jobs WHERE state IN ('done', 'dead') AND finished_at < ?`, olderThan)
 	if err != nil {
 		return 0, fmt.Errorf("jobs: purge: %w", err)
 	}
@@ -179,21 +280,24 @@ func (q *Queue) PurgeDone(ctx context.Context, olderThan int64) (int, error) {
 }
 
 // fenced runs set (an "UPDATE jobs SET ..." prefix) only while j is still
-// running under its lease token, returning ErrLeaseLost otherwise.
-func (q *Queue) fenced(ctx context.Context, op string, j *Job, set string, args ...any) error {
-	res, err := q.db.ExecContext(ctx, set+` WHERE id=? AND lease_token=? AND state='running'`,
-		append(args, j.ID, j.LeaseToken)...)
+// running under its lease token, returning the updated row, or ErrLeaseLost
+// if no row matched.
+func (q *Queue) fenced(ctx context.Context, op string, j *Job, set string, args ...any) (Job, error) {
+	var (
+		out     Job
+		payload string
+	)
+	err := q.db.QueryRowContext(ctx,
+		set+` WHERE id=? AND lease_token=? AND state='running' RETURNING id, kind, payload, attempts`,
+		append(args, j.ID, j.LeaseToken)...).Scan(&out.ID, &out.Kind, &payload, &out.Attempts)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Job{}, ErrLeaseLost
+	}
 	if err != nil {
-		return fmt.Errorf("jobs: %s: %w", op, err)
+		return Job{}, fmt.Errorf("jobs: %s: %w", op, err)
 	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("jobs: %s: %w", op, err)
-	}
-	if n == 0 {
-		return ErrLeaseLost
-	}
-	return nil
+	out.Payload = json.RawMessage(payload)
+	return out, nil
 }
 
 func newToken() (string, error) {
@@ -204,14 +308,16 @@ func newToken() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-// truncate cuts s to at most n bytes without splitting a UTF-8 sequence.
+// truncate replaces invalid UTF-8 with U+FFFD, then cuts s to at most n
+// bytes at a rune boundary.
 func truncate(s string, n int) string {
+	s = strings.ToValidUTF8(s, "\uFFFD")
 	if len(s) <= n {
 		return s
 	}
-	s = s[:n]
-	for len(s) > 0 && !utf8.ValidString(s) {
-		s = s[:len(s)-1]
+	i := n
+	for i > 0 && !utf8.RuneStart(s[i]) {
+		i--
 	}
-	return s
+	return s[:i]
 }

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/timeStarry/frameMark/internal/db"
@@ -363,7 +364,9 @@ func TestBadKindRejected(t *testing.T) {
 		t.Error("unmarshalable payload accepted")
 	}
 	var n int
-	d.QueryRow(`SELECT COUNT(*) FROM jobs`).Scan(&n)
+	if err := d.QueryRow(`SELECT COUNT(*) FROM jobs`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
 	if n != 1 {
 		t.Fatalf("rows=%d want 1", n)
 	}
@@ -395,7 +398,7 @@ func TestLastErrorTruncated(t *testing.T) {
 	}
 }
 
-func TestPurgeDone(t *testing.T) {
+func TestPurgeDoneUsesFinishTime(t *testing.T) {
 	q, d, c := setup(t)
 	ctx := context.Background()
 	oldDone, _ := q.Enqueue(ctx, "a", nil)
@@ -404,12 +407,25 @@ func TestPurgeDone(t *testing.T) {
 	if err := q.Fail(ctx, mustClaim(t, q, "b"), true, errors.New("x")); err != nil {
 		t.Fatal(err)
 	}
-	oldQueued, _ := q.Enqueue(ctx, "c", nil)
-	oldRunning, _ := q.Enqueue(ctx, "e", nil)
+	queued, _ := q.Enqueue(ctx, "c", nil)
+	running, _ := q.Enqueue(ctx, "e", nil)
 	mustClaim(t, q, "e")
+	// Created long ago, but only finishes after the cutoff: must survive.
+	lateDone, _ := q.Enqueue(ctx, "f", nil)
+	lateDead, _ := q.Enqueue(ctx, "g", nil)
 	c.advance(10 * sec)
-	recentDone, _ := q.Enqueue(ctx, "f", nil)
 	mustDone(t, q, "f")
+	if err := q.Fail(ctx, mustClaim(t, q, "g"), true, errors.New("y")); err != nil {
+		t.Fatal(err)
+	}
+
+	var fin sql.NullInt64
+	if err := d.QueryRow(`SELECT finished_at FROM jobs WHERE id=?`, lateDone).Scan(&fin); err != nil {
+		t.Fatal(err)
+	}
+	if fin.Int64 != t0+10*sec {
+		t.Fatalf("finished_at=%v want %d", fin, t0+10*sec)
+	}
 
 	n, err := q.PurgeDone(ctx, t0+1)
 	if err != nil {
@@ -428,8 +444,10 @@ func TestPurgeDone(t *testing.T) {
 	if exists(oldDone) || exists(oldDead) {
 		t.Fatal("old done/dead rows not purged")
 	}
-	if !exists(oldQueued) || !exists(oldRunning) || !exists(recentDone) {
-		t.Fatal("purged a row it should have kept")
+	for _, id := range []string{queued, running, lateDone, lateDead} {
+		if !exists(id) {
+			t.Fatalf("purged %s, which it should have kept", id)
+		}
 	}
 }
 
@@ -437,5 +455,232 @@ func mustDone(t *testing.T, q *jobs.Queue, kinds ...string) {
 	t.Helper()
 	if err := q.Done(context.Background(), mustClaim(t, q, kinds...)); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestLastErrorInvalidUTF8(t *testing.T) {
+	q, d, _ := setup(t)
+	ctx := context.Background()
+	for _, pos := range []int{0, 10} {
+		id, _ := q.Enqueue(ctx, "bin", nil)
+		j := mustClaim(t, q)
+		raw := strings.Repeat("a", pos) + "\xff" + strings.Repeat("b", 1000)
+		if err := q.Fail(ctx, j, true, errors.New(raw)); err != nil {
+			t.Fatal(err)
+		}
+		le := getRow(t, d, id).lastError.String
+		if !utf8.ValidString(le) || len(le) > 500 || len(le) < 490 {
+			t.Fatalf("pos %d: valid=%v len=%d", pos, utf8.ValidString(le), len(le))
+		}
+		if !strings.HasPrefix(le, strings.Repeat("a", pos)+"\uFFFDbbb") {
+			t.Fatalf("pos %d: prefix %q", pos, le[:min(len(le), 20)])
+		}
+	}
+	// Short message with an invalid byte is sanitised too.
+	id, _ := q.Enqueue(ctx, "bin", nil)
+	if err := q.Fail(ctx, mustClaim(t, q), true, errors.New("x\xffy")); err != nil {
+		t.Fatal(err)
+	}
+	if le := getRow(t, d, id).lastError.String; le != "x\uFFFDy" {
+		t.Fatalf("got %q", le)
+	}
+}
+
+type deadRec struct {
+	mu   sync.Mutex
+	jobs []jobs.Job
+}
+
+func (r *deadRec) hook(_ context.Context, j jobs.Job) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.jobs = append(r.jobs, j)
+}
+
+func (r *deadRec) got() []jobs.Job {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]jobs.Job(nil), r.jobs...)
+}
+
+func assertOneDead(t *testing.T, r *deadRec, id, kind string, attempts int, payload string) {
+	t.Helper()
+	got := r.got()
+	if len(got) != 1 {
+		t.Fatalf("OnDead called %d times, want 1: %+v", len(got), got)
+	}
+	g := got[0]
+	if g.ID != id || g.Kind != kind || g.Attempts != attempts || string(g.Payload) != payload {
+		t.Fatalf("OnDead got %+v (payload %s)", g, g.Payload)
+	}
+}
+
+func TestOnDeadPermanentFail(t *testing.T) {
+	q, _, _ := setup(t)
+	r := &deadRec{}
+	q.OnDead(r.hook)
+	ctx := context.Background()
+	id, _ := q.Enqueue(ctx, "decode", map[string]string{"photoId": "p1"})
+	j := mustClaim(t, q)
+	if err := q.Fail(ctx, j, true, errors.New("bad")); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.Fail(ctx, j, true, errors.New("bad")); !errors.Is(err, jobs.ErrLeaseLost) {
+		t.Fatalf("repeat Fail: %v", err)
+	}
+	mustNone(t, q)
+	assertOneDead(t, r, id, "decode", 1, `{"photoId":"p1"}`)
+}
+
+func TestOnDeadRetriesExhausted(t *testing.T) {
+	q, _, c := setup(t)
+	r := &deadRec{}
+	q.OnDead(r.hook)
+	ctx := context.Background()
+	id, _ := q.Enqueue(ctx, "flaky", 7)
+	for i := 1; i <= jobs.MaxAttempts; i++ {
+		j := mustClaim(t, q)
+		if err := q.Fail(ctx, j, false, errors.New("503")); err != nil {
+			t.Fatal(err)
+		}
+		if i < jobs.MaxAttempts && len(r.got()) != 0 {
+			t.Fatalf("OnDead fired on retryable attempt %d", i)
+		}
+		c.advance(10 * 60 * sec)
+	}
+	mustNone(t, q)
+	assertOneDead(t, r, id, "flaky", jobs.MaxAttempts, `7`)
+}
+
+func TestOnDeadLeaseExpiryAtMaxAttempts(t *testing.T) {
+	q, d, c := setup(t)
+	r := &deadRec{}
+	q.OnDead(r.hook)
+	ctx := context.Background()
+	id, _ := q.Enqueue(ctx, "crashy", "p")
+	for i := 1; i <= jobs.MaxAttempts; i++ {
+		j := mustClaim(t, q)
+		if i < jobs.MaxAttempts {
+			// Record a real failure first so the crash path must keep it.
+			if err := q.Fail(ctx, j, false, errors.New("TOS 503")); err != nil {
+				t.Fatal(err)
+			}
+			c.advance(10 * 60 * sec)
+			continue
+		}
+		c.advance(jobs.LeaseMillis) // worker crashed on the last attempt
+	}
+	if len(r.got()) != 0 {
+		t.Fatal("OnDead fired before the expired lease was noticed")
+	}
+	mustNone(t, q)
+	mustNone(t, q) // a second sweep must not fire again
+	assertOneDead(t, r, id, "crashy", jobs.MaxAttempts, `"p"`)
+	row := getRow(t, d, id)
+	if row.state != "dead" || row.lastError.String != "TOS 503 (lease expired at max attempts)" {
+		t.Fatalf("%+v", row)
+	}
+	var fin sql.NullInt64
+	if err := d.QueryRow(`SELECT finished_at FROM jobs WHERE id=?`, id).Scan(&fin); err != nil || fin.Int64 != c.now() {
+		t.Fatalf("finished_at=%v err=%v want %d", fin, err, c.now())
+	}
+}
+
+func TestLeaseExpirySuffixWithinCap(t *testing.T) {
+	q, d, c := setup(t)
+	ctx := context.Background()
+	id, _ := q.Enqueue(ctx, "crashy", nil)
+	long := strings.Repeat("错", 400)
+	for i := 1; i <= jobs.MaxAttempts; i++ {
+		j := mustClaim(t, q)
+		if i < jobs.MaxAttempts {
+			if err := q.Fail(ctx, j, false, errors.New(long)); err != nil {
+				t.Fatal(err)
+			}
+			c.advance(10 * 60 * sec)
+			continue
+		}
+		c.advance(jobs.LeaseMillis)
+	}
+	mustNone(t, q)
+	le := getRow(t, d, id).lastError.String
+	if len(le) > 500 || !utf8.ValidString(le) || !strings.HasSuffix(le, " (lease expired at max attempts)") || !strings.HasPrefix(le, "错错") {
+		t.Fatalf("len=%d valid=%v tail=%q", len(le), utf8.ValidString(le), le[max(0, len(le)-40):])
+	}
+
+	// A crash with no previous error records just the reason.
+	id2, _ := q.Enqueue(ctx, "crashy", nil)
+	for i := 1; i <= jobs.MaxAttempts; i++ {
+		mustClaim(t, q)
+		c.advance(jobs.LeaseMillis)
+	}
+	mustNone(t, q)
+	if le := getRow(t, d, id2).lastError.String; le != "lease expired at max attempts" {
+		t.Fatalf("got %q", le)
+	}
+}
+
+func TestOnDeadPanicDoesNotBreakClaim(t *testing.T) {
+	q, d, c := setup(t)
+	calls := 0
+	q.OnDead(func(context.Context, jobs.Job) {
+		calls++
+		panic("boom")
+	})
+	ctx := context.Background()
+	a, _ := q.Enqueue(ctx, "crashy", nil)
+	b, _ := q.Enqueue(ctx, "crashy", nil)
+	for i := 1; i <= jobs.MaxAttempts; i++ {
+		mustClaim(t, q)
+		mustClaim(t, q)
+		c.advance(jobs.LeaseMillis)
+	}
+	next, _ := q.Enqueue(ctx, "other", nil)
+	j := mustClaim(t, q) // sweeps both dead jobs, hook panics twice, still claims
+	if j.ID != next {
+		t.Fatalf("claimed %s want %s", j.ID, next)
+	}
+	if calls != 2 {
+		t.Fatalf("hook calls=%d want 2", calls)
+	}
+	for _, id := range []string{a, b} {
+		if getRow(t, d, id).state != "dead" {
+			t.Fatalf("%s not dead", id)
+		}
+	}
+	// Fail's dead path also survives a panicking hook.
+	if err := q.Fail(ctx, j, true, errors.New("x")); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 3 {
+		t.Fatalf("hook calls=%d want 3", calls)
+	}
+}
+
+func TestOnDeadHookCanUseDB(t *testing.T) {
+	// The hook runs after the dead-mark statement has finished, so it can use
+	// the (single-connection) pool without deadlocking.
+	q, d, c := setup(t)
+	var state string
+	q.OnDead(func(ctx context.Context, j jobs.Job) {
+		if err := d.QueryRowContext(ctx, `SELECT state FROM jobs WHERE id=?`, j.ID).Scan(&state); err != nil {
+			t.Errorf("hook query: %v", err)
+		}
+	})
+	ctx := context.Background()
+	q.Enqueue(ctx, "crashy", nil)
+	for i := 1; i <= jobs.MaxAttempts; i++ {
+		mustClaim(t, q)
+		c.advance(jobs.LeaseMillis)
+	}
+	done := make(chan struct{})
+	go func() { defer close(done); mustNone(t, q) }()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Claim deadlocked calling OnDead")
+	}
+	if state != "dead" {
+		t.Fatalf("hook saw state %q", state)
 	}
 }

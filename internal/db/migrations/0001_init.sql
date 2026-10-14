@@ -187,7 +187,8 @@ CREATE TABLE jobs (
     lease_until INTEGER NULL,
     lease_token TEXT    NULL,  -- random per claim; fences a stale worker out of Heartbeat/Done/Fail
     last_error  TEXT    NULL,
-    created_at  INTEGER NOT NULL
+    created_at  INTEGER NOT NULL,
+    finished_at INTEGER NULL   -- set when the job reaches done or dead; PurgeDone ages by it
 ) STRICT;
 CREATE INDEX jobs_state_run_after ON jobs(state, run_after);
 -- Claim's expired-lease branch (state='running' AND lease_until<=now) is an OR
