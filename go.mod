@@ -9,6 +9,8 @@ require (
 	github.com/aws/smithy-go v1.28.5
 	github.com/go-chi/chi/v5 v5.4.0
 	github.com/google/uuid v1.6.0
+	github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/common v1.3.186
+	github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/teo v1.3.186
 	golang.org/x/crypto v0.58.0
 	golang.org/x/net v0.61.0
 	golang.org/x/text v0.43.0
