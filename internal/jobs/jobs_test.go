@@ -835,3 +835,39 @@ func TestDeadSince(t *testing.T) {
 		t.Fatalf("future cutoff: %v %v", none, err)
 	}
 }
+
+func TestEnqueueTxCommitsAndRollsBackWithCaller(t *testing.T) {
+	q, d, _ := setup(t)
+	ctx := context.Background()
+
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := q.EnqueueTx(ctx, tx, "process_photo", map[string]string{"photoId": "a"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	mustNone(t, q)
+
+	tx, err = d.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := q.EnqueueTx(ctx, tx, "process_photo", map[string]string{"photoId": "b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := q.EnqueueTx(ctx, tx, "Bad Kind", nil); !errors.Is(err, jobs.ErrBadKind) {
+		t.Fatalf("want ErrBadKind, got %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	j := mustClaim(t, q)
+	if j.ID != id || j.Kind != "process_photo" || string(j.Payload) != `{"photoId":"b"}` {
+		t.Fatalf("unexpected job %+v", j)
+	}
+}

@@ -3,6 +3,7 @@
 //
 // db.Open caps the pool at one connection, so every method here runs single
 // statements and never holds a transaction or open rows across work.
+// EnqueueTx is the exception: it writes through the caller's transaction.
 package jobs
 
 import (
@@ -121,6 +122,20 @@ func (q *Queue) Enqueue(ctx context.Context, kind string, payload any) (string, 
 
 // EnqueueAt adds a job that becomes claimable at runAfter (Unix ms).
 func (q *Queue) EnqueueAt(ctx context.Context, kind string, payload any, runAfter int64) (string, error) {
+	return q.insert(ctx, q.db, kind, payload, runAfter)
+}
+
+// EnqueueTx adds a ready job inside the caller's transaction, so the job
+// exists exactly when the caller's other writes commit. The caller owns tx.
+func (q *Queue) EnqueueTx(ctx context.Context, tx *sql.Tx, kind string, payload any) (string, error) {
+	return q.insert(ctx, tx, kind, payload, q.now())
+}
+
+type execer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+func (q *Queue) insert(ctx context.Context, x execer, kind string, payload any, runAfter int64) (string, error) {
 	if !kindRE.MatchString(kind) {
 		return "", fmt.Errorf("%w: %q", ErrBadKind, kind)
 	}
@@ -133,7 +148,7 @@ func (q *Queue) EnqueueAt(ctx context.Context, kind string, payload any, runAfte
 		return "", err
 	}
 	id := u.String()
-	_, err = q.db.ExecContext(ctx,
+	_, err = x.ExecContext(ctx,
 		`INSERT INTO jobs (id, kind, payload, state, attempts, run_after, created_at) VALUES (?, ?, ?, 'queued', 0, ?, ?)`,
 		id, kind, string(body), runAfter, q.now())
 	if err != nil {
