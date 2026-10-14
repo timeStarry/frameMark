@@ -48,6 +48,12 @@ const (
 	maxIFDEntries  = 512
 	maxIFDDepth    = 2
 	maxStringBytes = 128
+	// maxASCIIBytes is how much of an ASCII value is decoded before
+	// sanitize cuts it to maxStringBytes.
+	maxASCIIBytes = 256
+	// maxDecodedBytes caps the value bytes decoded over a whole parse, so
+	// many entries sharing one huge out-of-line block cannot amplify work.
+	maxDecodedBytes = 64 << 10
 )
 
 // TIFF field types.
@@ -100,6 +106,7 @@ type parser struct {
 	b       []byte
 	o       binary.ByteOrder
 	visited map[uint32]bool
+	decoded int // value bytes decoded so far, against maxDecodedBytes
 }
 
 // ExtractEXIF parses a raw EXIF blob: a TIFF header ("II*\0" or "MM\0*"),
@@ -142,11 +149,18 @@ func ExtractEXIF(blob []byte, locationMode string) (EXIF, error) {
 	var exifOff, gpsOff uint32
 	var haveExif, haveGPS bool
 	for _, e := range ifd0 {
+		if p.decoded >= maxDecodedBytes {
+			break
+		}
 		switch e.tag {
 		case tagMake:
-			out.CameraMake, _ = p.str(e)
+			if out.CameraMake == "" {
+				out.CameraMake, _ = p.str(e)
+			}
 		case tagModel:
-			out.CameraModel, _ = p.str(e)
+			if out.CameraModel == "" {
+				out.CameraModel, _ = p.str(e)
+			}
 		case tagExifIFD:
 			exifOff, haveExif = p.pointer(e)
 		case tagGPSIFD:
@@ -215,35 +229,59 @@ func typeSize(t uint16) uint64 {
 	return 0
 }
 
-// data returns the bytes of an entry's value, inline or at its offset, or
-// false when the type is unknown, the count is zero or the value does not
-// fit in the blob. All size math is done in uint64 so it cannot wrap.
-func (p *parser) data(e entry) ([]byte, bool) {
+// data returns the bytes of the first min(count, max) values of an entry,
+// inline or at its offset. It fails when the type is unknown, the count is
+// zero, the full declared value does not fit in the blob, or the parse-wide
+// decode budget would be exceeded. Size math is uint64 so it cannot wrap.
+func (p *parser) data(e entry, max int) ([]byte, bool) {
 	sz := typeSize(e.typ)
-	if sz == 0 || e.count == 0 {
+	if sz == 0 || e.count == 0 || max <= 0 {
 		return nil, false
 	}
 	size := uint64(e.count) * sz
-	if size <= 4 {
-		return e.val[:size], true
+	n := uint64(e.count)
+	if n > uint64(max) {
+		n = uint64(max)
 	}
-	off := uint64(p.o.Uint32(e.val))
-	if off+size > uint64(len(p.b)) {
+	want := n * sz
+	if uint64(p.decoded)+want > maxDecodedBytes {
 		return nil, false
 	}
-	return p.b[off : off+size], true
+	var d []byte
+	if size <= 4 {
+		d = e.val[:want]
+	} else {
+		off := uint64(p.o.Uint32(e.val))
+		if off+size > uint64(len(p.b)) {
+			return nil, false
+		}
+		d = p.b[off : off+want]
+	}
+	p.decoded += int(want)
+	return d, true
 }
 
 func (p *parser) pointer(e entry) (uint32, bool) {
 	if e.count != 1 || (e.typ != typeLong && e.typ != typeShort) {
 		return 0, false
 	}
-	return p.uint(e)
+	// IFD pointers are 4-byte inline values; they are not payload and
+	// must not consume the decode budget.
+	switch e.typ {
+	case typeShort:
+		return uint32(p.o.Uint16(e.val)), true
+	case typeLong:
+		return p.o.Uint32(e.val), true
+	}
+	return 0, false
 }
 
 // uint returns the first value of a SHORT or LONG entry.
 func (p *parser) uint(e entry) (uint32, bool) {
-	d, ok := p.data(e)
+	if e.typ != typeShort && e.typ != typeLong {
+		return 0, false
+	}
+	d, ok := p.data(e, 1)
 	if !ok {
 		return 0, false
 	}
@@ -256,16 +294,17 @@ func (p *parser) uint(e entry) (uint32, bool) {
 	return 0, false
 }
 
-// rationals returns all num/den pairs of a RATIONAL or SRATIONAL entry.
-func (p *parser) rationals(e entry) ([][2]int64, bool) {
+// rationals returns the first min(count, max) num/den pairs of a RATIONAL
+// or SRATIONAL entry.
+func (p *parser) rationals(e entry, max int) ([][2]int64, bool) {
 	if e.typ != typeRational && e.typ != typeSRational {
 		return nil, false
 	}
-	d, ok := p.data(e)
+	d, ok := p.data(e, max)
 	if !ok {
 		return nil, false
 	}
-	out := make([][2]int64, 0, e.count)
+	out := make([][2]int64, 0, len(d)/8)
 	for i := 0; i+8 <= len(d); i += 8 {
 		n, m := p.o.Uint32(d[i:]), p.o.Uint32(d[i+4:])
 		if e.typ == typeSRational {
@@ -279,7 +318,7 @@ func (p *parser) rationals(e entry) ([][2]int64, bool) {
 
 // rational returns the first value as float64; a zero denominator fails.
 func (p *parser) rational(e entry) (float64, bool) {
-	r, ok := p.rationals(e)
+	r, ok := p.rationals(e, 1)
 	if !ok || r[0][1] == 0 {
 		return 0, false
 	}
@@ -290,15 +329,15 @@ func (p *parser) str(e entry) (string, bool) {
 	if e.typ != typeASCII {
 		return "", false
 	}
-	d, ok := p.data(e)
+	d, ok := p.data(e, maxASCIIBytes)
 	if !ok {
 		return "", false
 	}
 	return sanitize(d), true
 }
 
-// sanitize cuts at the first NUL, drops invalid UTF-8 and control
-// characters, trims whitespace and caps at maxStringBytes on a rune
+// sanitize cuts at the first NUL, drops invalid UTF-8, control (Cc) and
+// format (Cf: bidi overrides, zero-width) characters, trims whitespace and caps at maxStringBytes on a rune
 // boundary.
 func sanitize(d []byte) string {
 	if i := bytes.IndexByte(d, 0); i >= 0 {
@@ -306,7 +345,7 @@ func sanitize(d []byte) string {
 	}
 	s := strings.ToValidUTF8(string(d), "")
 	s = strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
 			return -1
 		}
 		return r
@@ -332,37 +371,58 @@ func inRange(v, lo, hi float64) *float64 {
 func (p *parser) applyExif(out *EXIF, entries []entry) {
 	var dto, oto string
 	for _, e := range entries {
+		if p.decoded >= maxDecodedBytes {
+			break
+		}
 		switch e.tag {
 		case tagExposureTime:
-			p.exposure(out, e)
+			if out.ExposureSeconds == nil {
+				p.exposure(out, e)
+			}
 		case tagFNumber:
-			if v, ok := p.rational(e); ok {
-				out.Aperture = inRange(v, 0.5, 128)
+			if out.Aperture == nil {
+				if v, ok := p.rational(e); ok {
+					out.Aperture = inRange(v, 0.5, 128)
+				}
 			}
 		case tagISO:
-			if v, ok := p.uint(e); ok && v >= 1 && v <= 10_000_000 {
-				iso := int64(v)
-				out.ISO = &iso
+			if out.ISO == nil {
+				if v, ok := p.uint(e); ok && v >= 1 && v <= 10_000_000 {
+					iso := int64(v)
+					out.ISO = &iso
+				}
 			}
 		case tagDateTimeOriginal:
-			dto, _ = p.str(e)
+			if dto == "" {
+				dto, _ = p.str(e)
+			}
 		case tagOffsetTimeOriginal:
-			oto, _ = p.str(e)
+			if oto == "" {
+				oto, _ = p.str(e)
+			}
 		case tagExposureBias:
-			if v, ok := p.rational(e); ok {
-				out.ExposureBias = inRange(v, -20, 20)
+			if out.ExposureBias == nil {
+				if v, ok := p.rational(e); ok {
+					out.ExposureBias = inRange(v, -20, 20)
+				}
 			}
 		case tagFocalLength:
-			if v, ok := p.rational(e); ok && v > 0 {
-				out.FocalLengthMM = inRange(v, 0, 5000)
+			if out.FocalLengthMM == nil {
+				if v, ok := p.rational(e); ok && v > 0 {
+					out.FocalLengthMM = inRange(v, 0, 5000)
+				}
 			}
 		case tagFocalLength35:
-			if v, ok := p.uint(e); ok && v > 0 && v <= 5000 {
-				f := float64(v)
-				out.FocalLength35mm = &f
+			if out.FocalLength35mm == nil {
+				if v, ok := p.uint(e); ok && v > 0 && v <= 5000 {
+					f := float64(v)
+					out.FocalLength35mm = &f
+				}
 			}
 		case tagLensModel:
-			out.LensModel, _ = p.str(e)
+			if out.LensModel == "" {
+				out.LensModel, _ = p.str(e)
+			}
 		}
 	}
 	out.TakenAt = takenAt(dto, oto)
@@ -379,7 +439,7 @@ func (p *parser) exposure(out *EXIF, e entry) {
 	if e.typ != typeRational {
 		return
 	}
-	r, ok := p.rationals(e)
+	r, ok := p.rationals(e, 1)
 	if !ok {
 		return
 	}
@@ -389,10 +449,16 @@ func (p *parser) exposure(out *EXIF, e entry) {
 		return
 	}
 	secs := float64(num) / float64(den)
-	if num < den {
-		g := gcd(num, den)
-		out.ExposureTime = strconv.FormatUint(num/g, 10) + "/" + strconv.FormatUint(den/g, 10)
-	} else {
+	g := gcd(num, den)
+	switch {
+	case num < den && num/g == 1:
+		// Exact unit fraction: "1/250".
+		out.ExposureTime = "1/" + strconv.FormatUint(den/g, 10)
+	case num < den && secs < 0.25:
+		// Short non-unit fraction: nearest "1/N".
+		out.ExposureTime = "1/" + strconv.FormatFloat(math.Round(1/secs), 'f', -1, 64)
+	default:
+		// 0.25 s and longer: decimal seconds, one place at most.
 		out.ExposureTime = strconv.FormatFloat(math.Round(secs*10)/10, 'f', -1, 64)
 	}
 	out.ExposureSeconds = &secs
@@ -403,6 +469,10 @@ func (p *parser) exposure(out *EXIF, e entry) {
 func takenAt(dto, oto string) *int64 {
 	if dto == "" {
 		return nil
+	}
+	// time.Parse rejects leap seconds; clamp :60 to :59.
+	if len(dto) == 19 && dto[17:] == "60" {
+		dto = dto[:17] + "59"
 	}
 	t, err := time.Parse("2006:01:02 15:04:05", dto)
 	if err != nil || t.Year() < 1 {
@@ -436,15 +506,26 @@ func (p *parser) gps(entries []entry) (*float64, *float64) {
 	var latRef, lonRef string
 	var lat, lon *float64
 	for _, e := range entries {
+		if p.decoded >= maxDecodedBytes {
+			break
+		}
 		switch e.tag {
 		case tagGPSLatRef:
-			latRef, _ = p.str(e)
+			if latRef == "" {
+				latRef, _ = p.str(e)
+			}
 		case tagGPSLonRef:
-			lonRef, _ = p.str(e)
+			if lonRef == "" {
+				lonRef, _ = p.str(e)
+			}
 		case tagGPSLat:
-			lat = p.dms(e)
+			if lat == nil {
+				lat = p.dms(e)
+			}
 		case tagGPSLon:
-			lon = p.dms(e)
+			if lon == nil {
+				lon = p.dms(e)
+			}
 		}
 	}
 	if lat == nil || lon == nil {
@@ -475,7 +556,7 @@ func (p *parser) dms(e entry) *float64 {
 	if e.typ != typeRational {
 		return nil
 	}
-	r, ok := p.rationals(e)
+	r, ok := p.rationals(e, 3)
 	if !ok || len(r) < 3 {
 		return nil
 	}

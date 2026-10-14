@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -439,7 +440,14 @@ func TestExtractEXIFExposureFormatting(t *testing.T) {
 	}{
 		{1, 250, "1/250", 1.0 / 250},
 		{10, 2500, "1/250", 1.0 / 250},
-		{2, 3, "2/3", 2.0 / 3},
+		{2, 3, "0.7", 2.0 / 3},
+		{3, 10, "0.3", 0.3},
+		{4, 10, "0.4", 0.4},
+		{1, 3, "1/3", 1.0 / 3},
+		{2, 750, "1/375", 2.0 / 750},
+		{3, 1000, "1/333", 0.003},
+		{1, 4, "1/4", 0.25},
+		{99, 100, "1", 0.99},
 		{1, 1, "1", 1},
 		{2, 1, "2", 2},
 		{30, 1, "30", 30},
@@ -519,6 +527,8 @@ func TestExtractEXIFTakenAt(t *testing.T) {
 		{"blank date", []tEntry{eASCII(tagDateTimeOriginal, "    :  :     :  :  ")}, nil},
 		{"invalid", []tEntry{eASCII(tagDateTimeOriginal, "2024:13:45 99:00:00")}, nil},
 		{"wrong format", []tEntry{eASCII(tagDateTimeOriginal, "2024-05-01T12:34:56")}, nil},
+		{"leap second clamps to 59", []tEntry{eASCII(tagDateTimeOriginal, "2016:12:31 23:59:60")}, utc(2016, 12, 31, 23, 59, 59)},
+		{"second 61 rejected", []tEntry{eASCII(tagDateTimeOriginal, "2016:12:31 23:59:61")}, nil},
 		{"trailing garbage", []tEntry{eASCII(tagDateTimeOriginal, "2024:05:01 12:34:56xyz")}, nil},
 	}
 	for _, c := range cases {
@@ -544,6 +554,8 @@ func TestExtractEXIFStringSanitizing(t *testing.T) {
 		{"cap on rune boundary", append([]byte(long), 0), strings.Repeat("a", 127)},
 		{"all control", []byte("\x01\x02\x03"), ""},
 		{"no NUL", []byte("Pentax"), "Pentax"},
+		{"bidi override", []byte("Fu\u202ejifilm\x00"), "Fujifilm"},
+		{"zero width space", []byte("Ca\u200bnon\x00"), "Canon"},
 	}
 	for _, c := range cases {
 		blob, _, _ := buildTIFF(tiffSpec{order: binary.BigEndian, ifd0: []tEntry{eRawASCII(tagMake, c.raw)}})
@@ -606,4 +618,109 @@ func FuzzExtractEXIF(f *testing.F) {
 			}
 		}
 	})
+}
+
+// amplificationBlob is the review's I1 scenario: a 1 MiB blob whose Exif
+// IFD holds 512 entries of the same tag, all pointing at one huge shared
+// out-of-line block.
+func amplificationBlob(tag, typ uint16, unit int, fill []byte) []byte {
+	o := binary.LittleEndian
+	b := make([]byte, maxBlob)
+	copy(b, "II")
+	o.PutUint16(b[2:], 42)
+	o.PutUint32(b[4:], 8)
+	o.PutUint16(b[8:], 1) // IFD0: one entry
+	o.PutUint16(b[10:], tagExifIFD)
+	o.PutUint16(b[12:], typeLong)
+	o.PutUint32(b[14:], 1)
+	o.PutUint32(b[18:], 26)
+	o.PutUint32(b[22:], 0)
+	const dataOff = 8000
+	count := uint32((maxBlob - dataOff) / unit)
+	o.PutUint16(b[26:], maxIFDEntries)
+	for i := 0; i < maxIFDEntries; i++ {
+		p := 28 + 12*i
+		o.PutUint16(b[p:], tag)
+		o.PutUint16(b[p+2:], typ)
+		o.PutUint32(b[p+4:], count)
+		o.PutUint32(b[p+8:], dataOff)
+	}
+	for i := dataOff; i+len(fill) <= len(b); i += len(fill) {
+		copy(b[i:], fill)
+	}
+	return b
+}
+
+func TestExtractEXIFBoundedDecoding(t *testing.T) {
+	fnum := make([]byte, 8)
+	binary.LittleEndian.PutUint32(fnum, 28)
+	binary.LittleEndian.PutUint32(fnum[4:], 10)
+	cases := map[string]struct {
+		blob  []byte
+		check func(EXIF) bool
+	}{
+		"512x FNumber rationals": {
+			amplificationBlob(tagFNumber, typeRational, 8, fnum),
+			func(e EXIF) bool { return e.Aperture != nil && approx(*e.Aperture, 2.8) },
+		},
+		"512x LensModel ascii": {
+			amplificationBlob(tagLensModel, typeASCII, 1, []byte("L")),
+			func(e EXIF) bool { return len(e.LensModel) == maxStringBytes },
+		},
+		"512x ISO longs": {
+			amplificationBlob(tagISO, typeLong, 4, []byte{100, 0, 0, 0}),
+			func(e EXIF) bool { return e.ISO != nil && *e.ISO == 100 },
+		},
+	}
+	for name, c := range cases {
+		if len(c.blob) != maxBlob {
+			t.Fatalf("%s: blob is %d bytes", name, len(c.blob))
+		}
+		e := mustExtract(t, c.blob, "off")
+		if !c.check(e) {
+			t.Errorf("%s: unexpected result %+v", name, e)
+		}
+		allocs := testing.AllocsPerRun(50, func() {
+			if _, err := ExtractEXIF(c.blob, "archive"); err != nil {
+				t.Fatal(err)
+			}
+		})
+		const runs = 20
+		runtime.GC()
+		var start, end runtime.MemStats
+		runtime.ReadMemStats(&start)
+		for i := 0; i < runs; i++ {
+			if _, err := ExtractEXIF(c.blob, "archive"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		runtime.ReadMemStats(&end)
+		per := (end.TotalAlloc - start.TotalAlloc) / runs
+		if per >= 1<<20 {
+			t.Errorf("%s: %d bytes allocated per call, want < 1 MiB", name, per)
+		}
+		t.Logf("%s: %d B/op, %.1f allocs/op", name, per, allocs)
+	}
+}
+
+func TestExtractEXIFDecodeBudget(t *testing.T) {
+	p := &parser{b: make([]byte, 1<<20), o: binary.LittleEndian}
+	e := entry{tag: tagLensModel, typ: typeASCII, count: 1 << 19, val: []byte{0, 0, 0, 0}}
+	n := 0
+	for {
+		if _, ok := p.data(e, maxASCIIBytes); !ok {
+			break
+		}
+		n++
+		if n > 1000 {
+			t.Fatal("decode budget never exhausted")
+		}
+	}
+	if n != maxDecodedBytes/maxASCIIBytes {
+		t.Errorf("decoded %d strings before budget stop, want %d", n, maxDecodedBytes/maxASCIIBytes)
+	}
+	// Once exhausted, even tiny values are refused.
+	if _, ok := p.data(entry{typ: typeShort, count: 1, val: []byte{1, 0, 0, 0}}, 1); ok {
+		t.Error("budget exhausted but short still decoded")
+	}
 }
