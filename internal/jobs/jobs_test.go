@@ -1,10 +1,12 @@
 package jobs_test
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -673,14 +675,163 @@ func TestOnDeadHookCanUseDB(t *testing.T) {
 		mustClaim(t, q)
 		c.advance(jobs.LeaseMillis)
 	}
-	done := make(chan struct{})
-	go func() { defer close(done); mustNone(t, q) }()
+	type result struct {
+		j   *jobs.Job
+		err error
+	}
+	res := make(chan result, 1)
+	go func() {
+		j, err := q.Claim(ctx, nil)
+		res <- result{j, err}
+	}()
 	select {
-	case <-done:
+	case r := <-res:
+		if r.err != nil || r.j != nil {
+			t.Fatalf("Claim = %+v, %v; want nil, nil", r.j, r.err)
+		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("Claim deadlocked calling OnDead")
 	}
 	if state != "dead" {
 		t.Fatalf("hook saw state %q", state)
+	}
+}
+
+type ctxKey struct{}
+
+func TestOnDeadContextDetachedWithTimeout(t *testing.T) {
+	q, _, c := setup(t)
+	parent, cancel := context.WithCancel(context.WithValue(context.Background(), ctxKey{}, "v"))
+	defer cancel()
+	var (
+		calls       int
+		errAfter    error
+		value       any
+		hasDeadline bool
+		remaining   time.Duration
+	)
+	q.OnDead(func(ctx context.Context, j jobs.Job) {
+		calls++
+		cancel() // the caller's ctx goes away after the kill has committed
+		errAfter = ctx.Err()
+		value = ctx.Value(ctxKey{})
+		var dl time.Time
+		dl, hasDeadline = ctx.Deadline()
+		remaining = time.Until(dl)
+	})
+	check := func(path string) {
+		t.Helper()
+		if calls != 1 {
+			t.Fatalf("%s: calls=%d", path, calls)
+		}
+		if errAfter != nil {
+			t.Fatalf("%s: hook ctx cancelled with caller: %v", path, errAfter)
+		}
+		if value != "v" {
+			t.Fatalf("%s: hook ctx lost values: %v", path, value)
+		}
+		if !hasDeadline || remaining <= 25*time.Second || remaining > jobs.DeadHookTimeout {
+			t.Fatalf("%s: deadline=%v remaining=%v", path, hasDeadline, remaining)
+		}
+	}
+
+	// Fail path.
+	if _, err := q.Enqueue(parent, "decode", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.Fail(parent, mustClaim(t, q), true, errors.New("bad")); err != nil {
+		t.Fatal(err)
+	}
+	check("fail")
+
+	// Sweep path.
+	calls = 0
+	parent, cancel = context.WithCancel(context.WithValue(context.Background(), ctxKey{}, "v"))
+	defer cancel()
+	q.Enqueue(parent, "crashy", nil)
+	for i := 1; i <= jobs.MaxAttempts; i++ {
+		mustClaim(t, q)
+		c.advance(jobs.LeaseMillis)
+	}
+	// The hook cancels the caller's ctx mid-Claim, so Claim's own claim
+	// statement legitimately fails with that cancellation afterwards.
+	if j, err := q.Claim(parent, nil); j != nil || (err != nil && !errors.Is(err, context.Canceled)) {
+		t.Fatalf("Claim = %+v, %v", j, err)
+	}
+	check("sweep")
+}
+
+func TestOnDeadPanicLogged(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	q, _, _ := setup(t)
+	q.OnDead(func(context.Context, jobs.Job) { panic("hook bug") })
+	ctx := context.Background()
+	id, _ := q.Enqueue(ctx, "decode", map[string]string{"secret": "do-not-log"})
+	if err := q.Fail(ctx, mustClaim(t, q), true, errors.New("bad")); err != nil {
+		t.Fatal(err)
+	}
+	var rec map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &rec); err != nil {
+		t.Fatalf("want one JSON log line, got %q: %v", buf.String(), err)
+	}
+	if rec["level"] != "ERROR" || rec["id"] != id || rec["kind"] != "decode" || rec["panic"] != "hook bug" {
+		t.Fatalf("log record %v", rec)
+	}
+	if strings.Contains(buf.String(), "do-not-log") || strings.Contains(buf.String(), "payload") {
+		t.Fatalf("payload leaked into log: %s", buf.String())
+	}
+}
+
+func TestDeadSince(t *testing.T) {
+	q, _, c := setup(t)
+	ctx := context.Background()
+	kill := func(kind string, payload any) string {
+		t.Helper()
+		id, err := q.Enqueue(ctx, kind, payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := q.Fail(ctx, mustClaim(t, q, kind), true, errors.New("x")); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	_ = kill("process_photo", 1) // before the cutoff
+	c.advance(10 * sec)
+	cutoff := c.now()
+	a := kill("process_photo", map[string]string{"photoId": "a"})
+	c.advance(sec)
+	other := kill("rotate_derived", 2)
+	c.advance(sec)
+	b := kill("process_photo", map[string]string{"photoId": "b"})
+	q.Enqueue(ctx, "process_photo", 3) // queued, not dead
+	mustDone(t, q, "process_photo")    // done, not dead
+
+	got, err := q.DeadSince(ctx, cutoff, "process_photo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].ID != a || got[1].ID != b {
+		t.Fatalf("got %+v", got)
+	}
+	if got[0].Kind != "process_photo" || got[0].Attempts != 1 || string(got[0].Payload) != `{"photoId":"a"}` || got[0].LeaseToken != "" {
+		t.Fatalf("job fields %+v", got[0])
+	}
+
+	all, err := q.DeadSince(ctx, cutoff, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 3 || all[0].ID != a || all[1].ID != other || all[2].ID != b {
+		t.Fatalf("any kind: %+v", all)
+	}
+
+	none, err := q.DeadSince(ctx, c.now()+1, "")
+	if err != nil || len(none) != 0 {
+		t.Fatalf("future cutoff: %v %v", none, err)
 	}
 }

@@ -13,9 +13,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strings"
 	"sync/atomic"
+	"time"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
@@ -28,6 +30,9 @@ const (
 	LeaseMillis = int64(2 * 60 * 1000)
 	// BaseBackoffMillis is the first retry delay; it doubles per attempt.
 	BaseBackoffMillis = int64(30 * 1000)
+
+	// DeadHookTimeout bounds each OnDead call. See OnDead.
+	DeadHookTimeout = 30 * time.Second
 
 	maxErrorBytes = 500
 
@@ -76,10 +81,16 @@ func New(d *sql.DB, now func() int64) *Queue {
 // photo to failed (spec §6.2). Passing nil removes the hook.
 //
 // fn runs after the statement that killed the job has finished, on the
-// goroutine that called Fail or Claim, with that call's ctx. It may use the
-// database. A panic in fn is recovered and does not affect the caller. The job
-// is already dead and committed when fn runs, so fn should be idempotent with
-// respect to its own side effects but will not be retried by the queue.
+// goroutine that called Fail or Claim. Its ctx is detached from the caller's
+// (context.WithoutCancel, so values are kept but the caller's cancellation and
+// deadline are not), with its own DeadHookTimeout deadline: the job is already
+// committed as dead, so a shutdown or a deadline poll must not abort the only
+// notification. fn may use the database. A panic in fn is recovered, logged
+// via slog at Error level with the job id and kind (never the payload), and
+// does not affect the caller.
+//
+// The queue never retries fn. If fn fails or the process dies before it
+// runs, the owner must reconcile at startup using DeadSince.
 func (q *Queue) OnDead(fn DeadHook) {
 	if fn == nil {
 		q.onDead.Store(nil)
@@ -93,8 +104,14 @@ func (q *Queue) fireDead(ctx context.Context, j Job) {
 	if p == nil {
 		return
 	}
-	defer func() { _ = recover() }()
-	(*p)(ctx, j)
+	hctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), DeadHookTimeout)
+	defer cancel()
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("jobs: OnDead hook panicked", "id", j.ID, "kind", j.Kind, "panic", r)
+		}
+	}()
+	(*p)(hctx, j)
 }
 
 // Enqueue adds a job that is ready immediately.
@@ -277,6 +294,41 @@ func (q *Queue) PurgeDone(ctx context.Context, olderThan int64) (int, error) {
 	}
 	n, err := res.RowsAffected()
 	return int(n), err
+}
+
+// DeadSince returns dead jobs that finished at or after since (Unix ms),
+// oldest first, restricted to kind unless kind is empty. LeaseToken is empty.
+// It exists for startup reconciliation of owners whose OnDead hook did not
+// run (e.g. the process crashed between the kill and the hook).
+func (q *Queue) DeadSince(ctx context.Context, since int64, kind string) ([]Job, error) {
+	query := `SELECT id, kind, payload, attempts FROM jobs WHERE state='dead' AND finished_at>=?`
+	args := []any{since}
+	if kind != "" {
+		query += ` AND kind=?`
+		args = append(args, kind)
+	}
+	query += ` ORDER BY finished_at, created_at`
+	rows, err := q.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("jobs: dead since: %w", err)
+	}
+	defer rows.Close()
+	var out []Job
+	for rows.Next() {
+		var (
+			j       Job
+			payload string
+		)
+		if err := rows.Scan(&j.ID, &j.Kind, &payload, &j.Attempts); err != nil {
+			return nil, fmt.Errorf("jobs: dead since: %w", err)
+		}
+		j.Payload = json.RawMessage(payload)
+		out = append(out, j)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("jobs: dead since: %w", err)
+	}
+	return out, nil
 }
 
 // fenced runs set (an "UPDATE jobs SET ..." prefix) only while j is still
