@@ -127,6 +127,7 @@ func TestWriteRoutesRequireLoginAndCSRF(t *testing.T) {
 	u := e.user("u1")
 	cid := u.newCollection("A")
 	pid := e.readyPhoto("u1")
+	aid := newID()
 	routes := []struct{ method, path, body string }{
 		{http.MethodPost, "/api/collections", `{"title":"x"}`},
 		{http.MethodPut, "/api/collections/" + cid, collectionBody(nil)},
@@ -137,6 +138,12 @@ func TestWriteRoutesRequireLoginAndCSRF(t *testing.T) {
 		{http.MethodPost, "/api/collections/" + cid + "/unpublish", ""},
 		{http.MethodPut, "/api/collections/" + cid + "/overrides/" + pid, `{}`},
 		{http.MethodDelete, "/api/photos/" + pid, ""},
+		{http.MethodPost, "/api/albums", `{"title":"x","visibility":"private"}`},
+		{http.MethodPut, "/api/albums/" + aid, `{"title":"x","visibility":"private"}`},
+		{http.MethodDelete, "/api/albums/" + aid, ""},
+		{http.MethodPut, "/api/albums/" + aid + "/items", `{"collectionIds":[]}`},
+		{http.MethodPut, "/api/profile", `{"name":"n","bio":"","wallLayout":"grid"}`},
+		{http.MethodPut, "/api/upload-prefs", `{}`},
 	}
 	anon := e.anon()
 	for _, rt := range routes {
@@ -152,8 +159,12 @@ func TestWriteRoutesRequireLoginAndCSRF(t *testing.T) {
 			}
 		}
 	}
+	if r := anon.get("/api/upload-prefs"); r.code != 401 {
+		t.Errorf("anon prefs: %d", r.code)
+	}
 	var n int
-	_ = e.d.QueryRow(`SELECT count(*) FROM collections`).Scan(&n)
+	_ = e.d.QueryRow(`SELECT (SELECT count(*) FROM collections)+(SELECT count(*) FROM albums)+
+		(SELECT count(*) FROM profiles)+(SELECT count(*) FROM upload_prefs)`).Scan(&n)
 	if n != 1 || len(e.jobs()) != 0 {
 		t.Fatalf("writes leaked through: %d collections, %d jobs", n, len(e.jobs()))
 	}

@@ -93,6 +93,15 @@ func (s *server) routes(r chi.Router) {
 	r.Post("/api/collections/{id}/publish", s.handle(s.publishCollection))
 	r.Post("/api/collections/{id}/unpublish", s.handle(s.unpublishCollection))
 	r.Put("/api/collections/{id}/overrides/{photoId}", s.handle(s.putOverride))
+
+	r.Post("/api/albums", s.handle(s.createAlbum))
+	r.Put("/api/albums/{id}", s.handle(s.updateAlbum))
+	r.Delete("/api/albums/{id}", s.handle(s.deleteAlbum))
+	r.Put("/api/albums/{id}/items", s.handle(s.putAlbumItems))
+
+	r.Put("/api/profile", s.handle(s.putProfile))
+	r.Get("/api/upload-prefs", s.handle(s.getPrefs))
+	r.Put("/api/upload-prefs", s.handle(s.putPrefs))
 }
 
 func securityHeaders(next http.Handler) http.Handler {
