@@ -309,6 +309,13 @@ func (c *client) send(method, path, body string, hdr map[string]string) (resp, e
 	w := httptest.NewRecorder()
 	c.e.h.ServeHTTP(w, r)
 	out := resp{code: w.Code, raw: w.Body.String(), header: w.Header()}
+	if out.code == http.StatusNoContent {
+		// 204 carries no body; only the headers are checked.
+		if out.raw != "" {
+			return out, fmt.Errorf("204 with body %q", out.raw)
+		}
+		return out, checkSecurityHeaders(out.header)
+	}
 	if leak := privacyLeak(out.raw); leak != "" {
 		return out, fmt.Errorf("response leaks %s: %s", leak, out.raw)
 	}
@@ -334,6 +341,8 @@ func (c *client) send(method, path, body string, hdr map[string]string) (resp, e
 
 func (c *client) post(path, body string) resp { return c.do(http.MethodPost, path, body, nil) }
 func (c *client) get(path string) resp        { return c.do(http.MethodGet, path, "", nil) }
+func (c *client) put(path, body string) resp  { return c.do(http.MethodPut, path, body, nil) }
+func (c *client) del(path string) resp        { return c.do(http.MethodDelete, path, "", nil) }
 
 // privacyLeak describes the first leak in body, or returns "". Keys and
 // string values are checked structurally so random tokens cannot trip it.

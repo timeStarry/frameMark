@@ -84,6 +84,14 @@ func (s *server) routes(r chi.Router) {
 	r.Post("/api/uploads", s.handle(s.createUpload))
 	r.Post("/api/uploads/{id}/complete", s.handle(s.completeUpload))
 	r.Get("/api/photos/{id}", s.handle(s.getPhoto))
+
+	r.Post("/api/collections", s.handle(s.createCollection))
+	r.Put("/api/collections/{id}", s.handle(s.updateCollection))
+	r.Delete("/api/collections/{id}", s.handle(s.deleteCollection))
+	r.Put("/api/collections/{id}/frames", s.handle(s.putFrames))
+	r.Post("/api/collections/{id}/publish", s.handle(s.publishCollection))
+	r.Post("/api/collections/{id}/unpublish", s.handle(s.unpublishCollection))
+	r.Put("/api/collections/{id}/overrides/{photoId}", s.handle(s.putOverride))
 }
 
 func securityHeaders(next http.Handler) http.Handler {
@@ -108,6 +116,7 @@ func securityHeaders(next http.Handler) http.Handler {
 //
 // handlerFunc returns the status and body to send as JSON, or an error that
 // is written through httperr (non-StatusError values become a generic 500).
+// A 204 status sends no body.
 type handlerFunc func(w http.ResponseWriter, r *http.Request) (int, any, error)
 
 func (s *server) handle(fn handlerFunc) http.HandlerFunc {
@@ -115,6 +124,10 @@ func (s *server) handle(fn handlerFunc) http.HandlerFunc {
 		code, body, err := fn(w, r)
 		if err != nil {
 			httperr.Write(w, err)
+			return
+		}
+		if code == http.StatusNoContent {
+			w.WriteHeader(code)
 			return
 		}
 		writeJSON(w, code, body)
@@ -169,11 +182,14 @@ func requireUser(r *http.Request) (string, error) {
 
 // pathID returns the {id} URL parameter when it is a canonical (lowercase,
 // hyphenated) UUID; anything else is a 404 so ids are never probed by shape.
-func pathID(r *http.Request) (string, error) {
-	raw := chi.URLParam(r, "id")
+func pathID(r *http.Request) (string, error) { return idParam(r, "id", msgPhotoAbsent) }
+
+// idParam is pathID for any URL parameter, with the 404 message to use.
+func idParam(r *http.Request, name, absent string) (string, error) {
+	raw := chi.URLParam(r, name)
 	u, err := uuid.Parse(raw)
 	if err != nil || u.String() != raw {
-		return "", httperr.Fail(http.StatusNotFound, msgPhotoAbsent)
+		return "", httperr.Fail(http.StatusNotFound, absent)
 	}
 	return raw, nil
 }
