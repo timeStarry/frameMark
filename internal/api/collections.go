@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/timeStarry/frameMark/internal/domain"
+	"github.com/timeStarry/frameMark/internal/exposure"
 	"github.com/timeStarry/frameMark/internal/httperr"
 )
 
@@ -661,25 +662,10 @@ func (s *server) putOverride(w http.ResponseWriter, r *http.Request) (int, any, 
 // --- withdrawal (spec §7 撤回) ---
 
 // exposedPhotos returns the ids of owner's photos that appear in at least
-// one of owner's published public or unlisted collections. Unlisted counts
-// as exposure: anyone holding the link has seen the derived hash.
+// one of owner's published public or unlisted collections (exposure.OwnerPhotos,
+// shared with the worker's rotate_derived re-check).
 func exposedPhotos(ctx context.Context, tx *sql.Tx, owner string) (map[string]struct{}, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT DISTINCT fp.photo_id FROM frame_photos fp
-		JOIN frames f ON f.id=fp.frame_id JOIN collections c ON c.id=f.collection_id
-		WHERE c.owner_id=? AND c.status='published' AND c.visibility IN ('public','unlisted')`, owner)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := map[string]struct{}{}
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		out[id] = struct{}{}
-	}
-	return out, rows.Err()
+	return exposure.OwnerPhotos(ctx, tx, owner)
 }
 
 // withdraw enqueues rotate_derived for every photo in before (the

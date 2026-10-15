@@ -242,6 +242,10 @@ func testDeletePrefixAndCopy(t *testing.T, mode string) {
 		t.Fatalf("Head copy = %+v, %v; want sha256 preserved", obj, err)
 	}
 
+	keys, err := c.List(ctx, bucket, "d/p1/")
+	if err != nil || len(keys) != n || keys[0] != "d/p1/h/0000" {
+		t.Fatalf("List = %d keys, %v", len(keys), err)
+	}
 	deleted, err := c.DeletePrefix(ctx, bucket, "d/p1/")
 	if err != nil || deleted != n {
 		t.Fatalf("DeletePrefix = %d, %v; want %d", deleted, err, n)

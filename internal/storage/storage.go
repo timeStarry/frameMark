@@ -294,6 +294,30 @@ func (c *Client) DeletePrefix(ctx context.Context, bucket, prefix string) (int, 
 	return deleted, nil
 }
 
+// List returns every key under prefix, in the service's (lexicographic)
+// order. prefix must be non-empty and end with "/", like DeletePrefix.
+func (c *Client) List(ctx context.Context, bucket, prefix string) ([]string, error) {
+	if prefix == "" || prefix == "/" || !strings.HasSuffix(prefix, "/") {
+		return nil, fmt.Errorf("storage: refusing to list prefix %q: must be non-empty and end with \"/\"", prefix)
+	}
+	var keys []string
+	p := s3.NewListObjectsV2Paginator(c.s3, &s3.ListObjectsV2Input{
+		Bucket:  aws.String(bucket),
+		Prefix:  aws.String(prefix),
+		MaxKeys: aws.Int32(deleteBatch),
+	})
+	for p.HasMorePages() {
+		page, err := p.NextPage(ctx)
+		if err != nil {
+			return keys, wrap("list", bucket, prefix, err)
+		}
+		for _, o := range page.Contents {
+			keys = append(keys, aws.ToString(o.Key))
+		}
+	}
+	return keys, nil
+}
+
 // Copy performs a server-side copy.
 func (c *Client) Copy(ctx context.Context, srcBucket, srcKey, dstBucket, dstKey string) error {
 	_, err := c.s3.CopyObject(ctx, &s3.CopyObjectInput{

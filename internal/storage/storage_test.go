@@ -159,6 +159,9 @@ func TestDeletePrefixGuards(t *testing.T) {
 		if _, err := c.DeletePrefix(context.Background(), "b", p); err == nil {
 			t.Fatalf("expected error for prefix %q", p)
 		}
+		if _, err := c.List(context.Background(), "b", p); err == nil {
+			t.Fatalf("List: expected error for prefix %q", p)
+		}
 	}
 }
 
