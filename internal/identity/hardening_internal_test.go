@@ -129,3 +129,44 @@ func TestDecodeIsStrict(t *testing.T) {
 		}
 	}
 }
+
+// The session touch is throttled: touched_at is rewritten only once it is
+// at least touchEveryMs old, so bursts (e.g. many /m/ images) do not write.
+func TestSessionTouchThrottled(t *testing.T) {
+	s, d, now := newClockSvc(t)
+	h := s.Handler()
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/api/auth/session", nil))
+	var val string
+	for _, c := range w.Result().Cookies() {
+		if c.Name == s.cookie {
+			val = c.Value
+		}
+	}
+	if val == "" {
+		t.Fatal("no session cookie")
+	}
+	touched := func() int64 {
+		var v int64
+		if err := d.QueryRow(`SELECT touched_at FROM sessions`).Scan(&v); err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	get := func(path string) {
+		r := httptest.NewRequest("GET", path, nil)
+		r.Header.Set("Cookie", s.cookie+"="+val)
+		h.ServeHTTP(httptest.NewRecorder(), r)
+	}
+	start := touched()
+	now.Add(touchEveryMs - 1)
+	get("/m/x")
+	if touched() != start {
+		t.Fatal("touched before the throttle interval")
+	}
+	now.Add(1)
+	get("/m/x")
+	if got := touched(); got != now.Load() {
+		t.Fatalf("touched_at %d, want %d", got, now.Load())
+	}
+}

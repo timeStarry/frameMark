@@ -69,6 +69,7 @@ const (
 	pendingMs    = 30 * 60_000
 	rateMs       = 15 * 60_000
 	pruneEveryMs = 60_000
+	touchEveryMs = 60_000 // session touched_at is rewritten at most this often
 	maxBody      = 128 << 10
 	scryptN      = 131072
 	scryptR      = 8
@@ -545,7 +546,10 @@ func (s *Service) Middleware(next http.Handler) http.Handler {
 				return
 			}
 			if sess != nil {
-				if _, err := s.db.Exec(`UPDATE sessions SET touched_at=? WHERE hash=?`, now, sess.hash); err != nil {
+				// Throttled: idle expiry is a day, so a minute of slack is
+				// harmless and bursts of requests do not each write.
+				if _, err := s.db.Exec(`UPDATE sessions SET touched_at=? WHERE hash=? AND touched_at<=?`,
+					now, sess.hash, now-touchEveryMs); err != nil {
 					httperr.Write(w, err)
 					return
 				}
