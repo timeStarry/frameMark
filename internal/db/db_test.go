@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	_ "modernc.org/sqlite"
+
 	"github.com/timeStarry/frameMark/internal/db"
 )
 
@@ -284,10 +286,13 @@ func TestTransactionsBeginImmediate(t *testing.T) {
 	if err := db.Migrate(d1); err != nil {
 		t.Fatal(err)
 	}
-	d2, err := db.Open(path)
+	// Second connection with a short busy_timeout so the expected lock
+	// failure surfaces in ~50ms instead of the production 5s.
+	d2, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(50)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_txlock=immediate")
 	if err != nil {
 		t.Fatal(err)
 	}
+	d2.SetMaxOpenConns(1)
 	defer d2.Close()
 
 	tx, err := d1.Begin()

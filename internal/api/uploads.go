@@ -335,8 +335,12 @@ func (s *server) failVerification(ctx context.Context, owner, id, key string) (i
 	if n, _ := res.RowsAffected(); n != 1 {
 		return s.completedElsewhere(ctx, owner, id)
 	}
-	if err := s.store.Delete(ctx, s.cfg.BucketOriginals, key); err != nil {
-		if _, rbErr := s.db.ExecContext(ctx, `UPDATE photos SET status='uploading',error=NULL,updated_at=? WHERE id=? AND status='failed' AND error=?`,
+	// The row is already failed; finish the cleanup even if the client has
+	// gone away, so a failed row never keeps pointing at a live object.
+	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+	defer cancel()
+	if err := s.store.Delete(cleanup, s.cfg.BucketOriginals, key); err != nil {
+		if _, rbErr := s.db.ExecContext(cleanup, `UPDATE photos SET status='uploading',error=NULL,updated_at=? WHERE id=? AND status='failed' AND error=?`,
 			s.now(), id, msgVerifyFail); rbErr != nil {
 			return 0, nil, errors.Join(err, rbErr)
 		}
