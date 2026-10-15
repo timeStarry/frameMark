@@ -101,6 +101,12 @@ func (s *server) routes(r chi.Router) {
 	r.Delete("/api/albums/{id}", s.handle(s.deleteAlbum))
 	r.Put("/api/albums/{id}/items", s.handle(s.putAlbumItems))
 
+	r.Get("/api/square", s.handle(s.readSquare))
+	r.Get("/api/u/{userId}", s.handle(s.readUser))
+	r.Get("/api/collections/{id}", s.handle(s.readCollection))
+	r.Get("/api/collections/{id}/neighbors", s.handle(s.readNeighbors))
+	r.Get("/api/albums/{id}", s.handle(s.readAlbum))
+
 	r.Put("/api/profile", s.handle(s.putProfile))
 	r.Get("/api/upload-prefs", s.handle(s.getPrefs))
 	r.Put("/api/upload-prefs", s.handle(s.putPrefs))
