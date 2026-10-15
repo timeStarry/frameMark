@@ -136,6 +136,7 @@ func TestWriteRoutesRequireLoginAndCSRF(t *testing.T) {
 		{http.MethodPost, "/api/collections/" + cid + "/publish", ""},
 		{http.MethodPost, "/api/collections/" + cid + "/unpublish", ""},
 		{http.MethodPut, "/api/collections/" + cid + "/overrides/" + pid, `{}`},
+		{http.MethodDelete, "/api/photos/" + pid, ""},
 	}
 	anon := e.anon()
 	for _, rt := range routes {
@@ -300,6 +301,7 @@ func TestCollectionNonOwnerGets404(t *testing.T) {
 		{http.MethodPost, "/api/collections/" + cid + "/publish", ""},
 		{http.MethodPost, "/api/collections/" + cid + "/unpublish", ""},
 		{http.MethodPut, "/api/collections/" + cid + "/overrides/" + p, `{"publicFields":[]}`},
+		{http.MethodDelete, "/api/photos/" + p, ""},
 		{http.MethodPut, "/api/collections/not-a-uuid", collectionBody(nil)},
 		{http.MethodPut, "/api/collections/" + newID(), collectionBody(nil)},
 	} {

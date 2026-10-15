@@ -84,6 +84,7 @@ func (s *server) routes(r chi.Router) {
 	r.Post("/api/uploads", s.handle(s.createUpload))
 	r.Post("/api/uploads/{id}/complete", s.handle(s.completeUpload))
 	r.Get("/api/photos/{id}", s.handle(s.getPhoto))
+	r.Delete("/api/photos/{id}", s.handle(s.deletePhoto))
 
 	r.Post("/api/collections", s.handle(s.createCollection))
 	r.Put("/api/collections/{id}", s.handle(s.updateCollection))
