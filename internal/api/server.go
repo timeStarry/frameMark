@@ -106,6 +106,7 @@ func (s *server) routes(r chi.Router) {
 	r.Get("/api/collections/{id}", s.handle(s.readCollection))
 	r.Get("/api/collections/{id}/neighbors", s.handle(s.readNeighbors))
 	r.Get("/api/albums/{id}", s.handle(s.readAlbum))
+	r.Get("/api/archive", s.handle(s.readArchive))
 
 	r.Put("/api/profile", s.handle(s.putProfile))
 	r.Get("/api/upload-prefs", s.handle(s.getPrefs))
