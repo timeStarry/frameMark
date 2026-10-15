@@ -139,3 +139,15 @@ func TestLoad_RedactedExcludesSecrets(t *testing.T) {
 		}
 	}
 }
+
+func TestLoad_S3PathStyle(t *testing.T) {
+	base := []string{"MARKR_ORIGIN=https://example.com", "MARKR_DATA_DIR=/tmp/x"}
+	cfg, err := config.Load(base)
+	if err != nil || cfg.S3PathStyle {
+		t.Fatalf("default path style = %v, %v", cfg.S3PathStyle, err)
+	}
+	cfg, err = config.Load(append(base, "MARKR_S3_PATH_STYLE=true"))
+	if err != nil || !cfg.S3PathStyle {
+		t.Fatalf("path style = %v, %v", cfg.S3PathStyle, err)
+	}
+}

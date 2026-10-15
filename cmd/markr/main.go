@@ -1,17 +1,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
-
-	"github.com/timeStarry/frameMark/internal/config"
 )
 
 func main() {
-	cfg, err := config.Load(os.Environ())
-	if err != nil {
+	if err := run(context.Background(), os.Args[1:], os.Environ(), os.Stderr); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("markr starting: %v\n", cfg.Redacted())
 }

@@ -19,6 +19,9 @@ type Config struct {
 
 	S3Endpoint, S3Region, S3AccessKey, S3SecretKey string
 	BucketOriginals, BucketDerived                 string
+	// S3PathStyle selects path-style addressing (MinIO). TOS uses
+	// virtual-host style, the default.
+	S3PathStyle bool
 
 	ReplicaEndpoint, ReplicaRegion, ReplicaAccessKey, ReplicaSecretKey, ReplicaBucket string
 
@@ -92,6 +95,7 @@ func Load(environ []string) (Config, error) {
 	cfg.S3Endpoint, cfg.S3Region = env["MARKR_S3_ENDPOINT"], env["MARKR_S3_REGION"]
 	cfg.S3AccessKey, cfg.S3SecretKey = env["MARKR_S3_ACCESS_KEY"], env["MARKR_S3_SECRET_KEY"]
 	cfg.BucketOriginals, cfg.BucketDerived = env["MARKR_BUCKET_ORIGINALS"], env["MARKR_BUCKET_DERIVED"]
+	cfg.S3PathStyle = env["MARKR_S3_PATH_STYLE"] == "true"
 	cfg.ReplicaEndpoint, cfg.ReplicaRegion = env["MARKR_REPLICA_ENDPOINT"], env["MARKR_REPLICA_REGION"]
 	cfg.ReplicaAccessKey, cfg.ReplicaSecretKey = env["MARKR_REPLICA_ACCESS_KEY"], env["MARKR_REPLICA_SECRET_KEY"]
 	cfg.ReplicaBucket = env["MARKR_REPLICA_BUCKET"]
