@@ -195,6 +195,93 @@ func TestCanReadAlbumMember(t *testing.T) {
 	}
 }
 
+func TestCanReadAlbum(t *testing.T) {
+	cases := []struct {
+		vis, viewer string
+		want        bool
+	}{
+		{"private", "u1", true}, {"private", "u2", false}, {"private", "", false},
+		{"unlisted", "u1", true}, {"unlisted", "u2", true}, {"unlisted", "", true},
+		{"public", "u1", true}, {"public", "u2", true}, {"public", "", true},
+	}
+	for _, tc := range cases {
+		if got := domain.CanReadAlbum(domain.Album{OwnerID: "u1", Visibility: tc.vis}, tc.viewer); got != tc.want {
+			t.Errorf("%s/%q: got %v want %v", tc.vis, tc.viewer, got, tc.want)
+		}
+	}
+	if domain.CanReadAlbum(domain.Album{Visibility: "private"}, "") {
+		t.Error("anonymous must not own an album with empty OwnerID")
+	}
+}
+
+func TestOnWall(t *testing.T) {
+	cases := []struct {
+		status, vis, viewer string
+		want                bool
+	}{
+		{"published", "public", "u2", true},
+		{"published", "public", "", true},
+		{"published", "unlisted", "u2", false},
+		{"published", "unlisted", "", false},
+		{"published", "private", "u2", false},
+		{"draft", "public", "u2", false},
+		{"draft", "private", "u1", true},
+		{"published", "unlisted", "u1", true},
+	}
+	for _, tc := range cases {
+		c := domain.Collection{OwnerID: "u1", Status: tc.status, Visibility: tc.vis}
+		if got := domain.CollectionOnWall(c, tc.viewer); got != tc.want {
+			t.Errorf("collection %s/%s/%q: got %v want %v", tc.status, tc.vis, tc.viewer, got, tc.want)
+		}
+	}
+	for _, tc := range []struct {
+		vis, viewer string
+		want        bool
+	}{
+		{"public", "u2", true}, {"public", "", true}, {"unlisted", "u2", false}, {"unlisted", "", false},
+		{"private", "u2", false}, {"private", "u1", true}, {"unlisted", "u1", true},
+	} {
+		if got := domain.AlbumOnWall(domain.Album{OwnerID: "u1", Visibility: tc.vis}, tc.viewer); got != tc.want {
+			t.Errorf("album %s/%q: got %v want %v", tc.vis, tc.viewer, got, tc.want)
+		}
+	}
+	if domain.CollectionOnWall(domain.Collection{Status: "draft", Visibility: "private"}, "") ||
+		domain.AlbumOnWall(domain.Album{Visibility: "private"}, "") {
+		t.Error("anonymous must not own empty OwnerID")
+	}
+}
+
+func TestCanReadPhotoIn(t *testing.T) {
+	p := domain.Photo{ID: "p1", OwnerID: "u1"}
+	pub := &domain.Collection{OwnerID: "u1", Status: "published", Visibility: "unlisted"}
+	draft := &domain.Collection{OwnerID: "u1", Status: "draft", Visibility: "public"}
+	cases := []struct {
+		name   string
+		c      *domain.Collection
+		viewer string
+		want   bool
+	}{
+		{"owner without collection", nil, "u1", true},
+		{"owner in draft", draft, "u1", true},
+		{"other without collection", nil, "u2", false},
+		{"anon without collection", nil, "", false},
+		{"other in readable", pub, "u2", true},
+		{"anon in readable", pub, "", true},
+		{"other in draft", draft, "u2", false},
+	}
+	for _, tc := range cases {
+		if got := domain.CanReadPhotoIn(p, tc.c, tc.viewer); got != tc.want {
+			t.Errorf("%s: got %v want %v", tc.name, got, tc.want)
+		}
+	}
+	if domain.CanReadPhotoIn(domain.Photo{}, nil, "") {
+		t.Error("anonymous must not own a photo with empty OwnerID")
+	}
+	if !domain.IsOwner("u1", "u1") || domain.IsOwner("", "") || domain.IsOwner("u1", "u2") {
+		t.Error("IsOwner")
+	}
+}
+
 func TestValidators(t *testing.T) {
 	for _, k := range []string{"camera", "lens", "focal_length", "aperture", "shutter", "iso", "exposure_bias", "taken_date"} {
 		if !domain.ValidPublicField(k) {

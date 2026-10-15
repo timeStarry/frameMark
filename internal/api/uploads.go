@@ -96,8 +96,9 @@ type photoView struct {
 	HistogramPublic  bool      `json:"histogramPublic"`
 	OriginalDownload bool      `json:"originalDownload"`
 	EXIF             *exifView `json:"exif"`
-	// Media stays null here; the media URL builder (Task 13) fills it for ready photos.
-	Media any `json:"media"`
+	// Media is null until the photo is ready with a derived hash. In the owner
+	// view it has no collection context, so URLs are /m/…?c= (owner only).
+	Media *mediaView `json:"media"`
 }
 
 // --- POST /api/uploads ---
@@ -420,15 +421,16 @@ func (s *server) loadPhoto(ctx context.Context, owner, id string) (*photoView, e
 		focal, focal35, ap, secs sql.NullFloat64
 		bias                     sql.NullFloat64
 		iso, taken               sql.NullInt64
+		hash                     sql.NullString
 	)
 	err := s.db.QueryRowContext(ctx, `SELECT p.id,p.status,p.error,p.title,p.caption,p.width,p.height,p.format,p.created_at,
-			p.public_fields,p.histogram_public,p.original_download,
+			p.public_fields,p.histogram_public,p.original_download,p.derived_hash,
 			e.photo_id,e.camera_make,e.camera_model,e.lens_model,e.focal_length_mm,e.focal_length_35mm,e.aperture,
 			e.exposure_time,e.exposure_seconds,e.iso,e.exposure_bias,e.taken_at
 		FROM photos p LEFT JOIN photo_exif e ON e.photo_id=p.id
 		WHERE p.id=? AND p.owner_id=?`, id, owner).Scan(
 		&p.ID, &p.Status, &errMsg, &p.Title, &p.Caption, &width, &height, &p.Format, &p.CreatedAt,
-		&fields, &hist, &orig,
+		&fields, &hist, &orig, &hash,
 		&exifRow, &mk, &model, &lens, &focal, &focal35, &ap, &shutter, &secs, &iso, &bias, &taken)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, httperr.Fail(http.StatusNotFound, msgPhotoAbsent)
@@ -447,6 +449,7 @@ func (s *server) loadPhoto(ctx context.Context, owner, id string) (*photoView, e
 	}
 	p.PublicFields = parsePublicFields(fields)
 	p.HistogramPublic, p.OriginalDownload = hist == 1, orig == 1
+	p.Media = s.mediaFor(mediaSource{ID: p.ID, Status: p.Status, Width: width, Height: height, Hash: hash}, nil)
 	if exifRow.Valid && p.Status == statusReady {
 		p.EXIF = &exifView{
 			Camera:          cameraName(mk.String, model.String),

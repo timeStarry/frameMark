@@ -520,11 +520,13 @@ func (s *Service) issue(w http.ResponseWriter, st *state, user string) error {
 	return nil
 }
 
-// Middleware handles every /api/ request: no-store caching, a 128 KiB body
+// Middleware handles every /api/ and /m/ request: no-store caching, a 128 KiB body
 // limit, pruning, session lookup and touch, and CSRF checks on writes.
 func (s *Service) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasPrefix(r.URL.Path, "/api/") {
+		// /m/ is the authorized media redirect: it re-checks the viewer on
+		// every request, so it needs the session as much as /api/ does.
+		if !strings.HasPrefix(r.URL.Path, "/api/") && !strings.HasPrefix(r.URL.Path, "/m/") {
 			next.ServeHTTP(w, r)
 			return
 		}

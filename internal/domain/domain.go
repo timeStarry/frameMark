@@ -109,13 +109,19 @@ func CollectionInSquare(c Collection) bool {
 	return c.Status == StatusPublished && c.Visibility == VisibilityPublic && c.Distribute
 }
 
+// CanReadAlbum: the owner can always read an album; anyone else only when
+// its visibility is public or unlisted. Reading an album never grants
+// access to its members; see CanReadAlbumMember.
+func CanReadAlbum(a Album, viewer string) bool {
+	return isOwner(a.OwnerID, viewer) || openVisibility(a.Visibility)
+}
+
 // CanReadAlbumMember reports whether viewer may see member through album.
 // An album never raises a member's visibility: both the album and the member
 // must be readable on their own terms. An album is readable by its owner or
 // when its visibility is public or unlisted.
 func CanReadAlbumMember(a Album, member Collection, viewer string) bool {
-	albumReadable := isOwner(a.OwnerID, viewer) || openVisibility(a.Visibility)
-	return albumReadable && CanReadCollection(member, viewer)
+	return CanReadAlbum(a, viewer) && CanReadCollection(member, viewer)
 }
 
 // EffectivePublicFields returns the fields a photo publicly exposes in one
@@ -158,4 +164,35 @@ func CanDownloadOriginal(p Photo, c Collection, viewer string) bool {
 // same-origin /m/ re-auth redirect.
 func UsesCDN(c Collection, cdnBase string) bool {
 	return cdnBase != "" && c.Status == StatusPublished && c.Visibility == VisibilityPublic
+}
+
+// IsOwner reports whether viewer is the owner. An anonymous viewer never is.
+func IsOwner(ownerID, viewer string) bool { return isOwner(ownerID, viewer) }
+
+// CollectionOnWall reports whether a collection is listed on its owner's
+// wall (and the user-wall neighbor strip) for viewer: the owner sees all of
+// theirs, anyone else only published public ones. Unlisted collections are
+// readable by direct link (CanReadCollection) but never listed.
+func CollectionOnWall(c Collection, viewer string) bool {
+	if isOwner(c.OwnerID, viewer) {
+		return true
+	}
+	return c.Status == StatusPublished && c.Visibility == VisibilityPublic
+}
+
+// AlbumOnWall reports whether an album is listed on its owner's wall for
+// viewer: the owner sees all, anyone else only public albums.
+func AlbumOnWall(a Album, viewer string) bool {
+	return isOwner(a.OwnerID, viewer) || a.Visibility == VisibilityPublic
+}
+
+// CanReadPhotoIn reports whether viewer may read photo p in the context of
+// collection c (nil = no collection context, e.g. the owner's archive). The
+// owner always can. Anyone else needs a collection readable on its own
+// terms. The caller must have verified that c actually contains p.
+func CanReadPhotoIn(p Photo, c *Collection, viewer string) bool {
+	if isOwner(p.OwnerID, viewer) {
+		return true
+	}
+	return c != nil && CanReadCollection(*c, viewer)
 }

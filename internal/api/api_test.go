@@ -48,11 +48,17 @@ type presignCall struct {
 	TTL                              time.Duration
 }
 
+type getCall struct {
+	Bucket, Key, Name string
+	TTL               time.Duration
+}
+
 type fakeStorage struct {
 	mu         sync.Mutex
 	objects    map[string]storage.Object // by bucket+"/"+key
 	deleted    []string
 	presigns   []presignCall
+	gets       []getCall
 	presignErr error
 	deleteErr  error
 	onHead     func() // runs before Head answers, outside the lock
@@ -111,11 +117,14 @@ func (f *fakeStorage) Delete(_ context.Context, b, key string) error {
 	return nil
 }
 
-func (f *fakeStorage) PresignGet(_ context.Context, b, key string, ttl time.Duration, _ string) (string, error) {
+func (f *fakeStorage) PresignGet(_ context.Context, b, key string, ttl time.Duration, name string) (string, error) {
 	if ttl <= 0 || ttl > 7*24*time.Hour || b == "" || key == "" {
 		f.t().Errorf("PresignGet called with invalid args: %q %q %v", b, key, ttl)
 		return "", errors.New("fake: invalid presign args")
 	}
+	f.mu.Lock()
+	f.gets = append(f.gets, getCall{b, key, name, ttl})
+	f.mu.Unlock()
 	return "https://storage.test/" + b + "/" + key + "?get", nil
 }
 
@@ -143,6 +152,15 @@ func (f *fakeStorage) wasDeleted(key string) bool {
 	return false
 }
 
+func (f *fakeStorage) lastGet() getCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.gets) == 0 {
+		return getCall{}
+	}
+	return f.gets[len(f.gets)-1]
+}
+
 func (f *fakeStorage) presignCalls() []presignCall {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -160,7 +178,15 @@ type env struct {
 	now atomic.Int64
 }
 
-func newEnv(t *testing.T) *env {
+const (
+	derivedBucket = "derived"
+	cdnBase       = "https://cdn.test"
+)
+
+func newEnv(t *testing.T) *env { t.Helper(); return newEnvCfg(t, nil) }
+
+// newEnvCfg is newEnv with a hook to adjust the config (e.g. set CDNBase).
+func newEnvCfg(t *testing.T, mod func(*config.Config)) *env {
 	t.Helper()
 	d, err := db.Open(filepath.Join(t.TempDir(), "markr.db"))
 	if err != nil {
@@ -178,14 +204,18 @@ func newEnv(t *testing.T) *env {
 	}
 	t.Cleanup(func() { id.Close(context.Background()) })
 	e.q = jobs.New(d, e.now.Load)
+	cfg := config.Config{Origin: origin, Dev: true, IdentityOn: true, BucketOriginals: bucket,
+		BucketDerived: derivedBucket, UploadMaxMB: maxMB, QuotaPhotos: quota}
+	if mod != nil {
+		mod(&cfg)
+	}
 	e.h = api.New(api.Deps{
 		DB:       d,
 		Identity: id,
 		Storage:  e.st,
 		Jobs:     e.q,
 		Now:      e.now.Load,
-		Cfg: config.Config{Origin: origin, Dev: true, IdentityOn: true, BucketOriginals: bucket,
-			UploadMaxMB: maxMB, QuotaPhotos: quota},
+		Cfg:      cfg,
 	})
 	return e
 }
@@ -337,6 +367,33 @@ func (c *client) send(method, path, body string, hdr map[string]string) (resp, e
 		c.csrf = tok
 	}
 	return out, nil
+}
+
+// raw sends a GET and returns the recorder for non-JSON answers such as
+// redirects. Security headers are always checked; a body (an error) must be
+// JSON and pass the privacy scan.
+func (c *client) raw(path string) *httptest.ResponseRecorder {
+	t := c.e.t
+	t.Helper()
+	r := httptest.NewRequest(http.MethodGet, path, nil)
+	if c.cookie != "" {
+		r.Header.Set("Cookie", cookie+"="+c.cookie)
+	}
+	w := httptest.NewRecorder()
+	c.e.h.ServeHTTP(w, r)
+	if err := checkSecurityHeaders(w.Header()); err != nil {
+		t.Fatalf("GET %s: %v", path, err)
+	}
+	if w.Code == http.StatusFound {
+		if w.Body.Len() != 0 {
+			t.Fatalf("GET %s: redirect with body %q", path, w.Body.String())
+		}
+	} else if body := w.Body.String(); body != "" {
+		if leak := privacyLeak(body); leak != "" {
+			t.Fatalf("GET %s leaks %s: %s", path, leak, body)
+		}
+	}
+	return w
 }
 
 func (c *client) post(path, body string) resp { return c.do(http.MethodPost, path, body, nil) }

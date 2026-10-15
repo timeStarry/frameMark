@@ -859,6 +859,22 @@ func TestMiddlewareHeadersBodyLimitAndUser(t *testing.T) {
 	if seen != "" {
 		t.Fatalf("anonymous User(ctx) = %q", seen)
 	}
+	// /m/ media redirects re-authorize per request, so they resolve the session too.
+	seen = ""
+	req = httptest.NewRequest("GET", "/m/p/h/w480.jpg", nil)
+	req.Header.Set("Cookie", c.name+"="+c.cookie)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if seen != "u1" || w.Header().Get("Cache-Control") != "private, no-store" {
+		t.Fatalf("/m/ User(ctx) = %q, cache-control %q", seen, w.Header().Get("Cache-Control"))
+	}
+	seen = "x"
+	req = httptest.NewRequest("GET", "/static/app.js", nil)
+	req.Header.Set("Cookie", c.name+"="+c.cookie)
+	h.ServeHTTP(httptest.NewRecorder(), req)
+	if seen != "" {
+		t.Fatalf("non-API path User(ctx) = %q", seen)
+	}
 }
 
 func TestNewRejectsHTTPOriginOutsideDev(t *testing.T) {

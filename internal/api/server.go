@@ -85,6 +85,8 @@ func (s *server) routes(r chi.Router) {
 	r.Post("/api/uploads/{id}/complete", s.handle(s.completeUpload))
 	r.Get("/api/photos/{id}", s.handle(s.getPhoto))
 	r.Delete("/api/photos/{id}", s.handle(s.deletePhoto))
+	r.Get("/api/photos/{id}/original", s.handle(s.originalDownload))
+	r.Get("/m/{photoId}/{hash}/{file}", s.mediaRedirect)
 
 	r.Post("/api/collections", s.handle(s.createCollection))
 	r.Put("/api/collections/{id}", s.handle(s.updateCollection))
@@ -126,12 +128,16 @@ func securityHeaders(next http.Handler) http.Handler {
 //
 // handlerFunc returns the status and body to send as JSON, or an error that
 // is written through httperr (non-StatusError values become a generic 500).
-// A 204 status sends no body.
+// A 204 status sends no body. errRedirected means fn already wrote the
+// response (a 302).
 type handlerFunc func(w http.ResponseWriter, r *http.Request) (int, any, error)
 
 func (s *server) handle(fn handlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		code, body, err := fn(w, r)
+		if err == errRedirected {
+			return
+		}
 		if err != nil {
 			httperr.Write(w, err)
 			return
