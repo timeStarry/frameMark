@@ -14,6 +14,7 @@ import (
 	mrand "math/rand/v2"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -108,6 +109,8 @@ type Worker struct {
 	process ProcessFunc
 
 	poll, hb time.Duration
+
+	failCommit atomic.Bool
 }
 
 // New returns a Worker. It registers the dead-letter hook on Deps.Jobs.
@@ -198,7 +201,7 @@ func (w *Worker) loop(ctx context.Context) {
 func (w *Worker) handle(ctx context.Context, j *jobs.Job) {
 	hctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	defer cancel()
-	stop := w.heartbeat(hctx, j)
+	stop := w.heartbeat(hctx, cancel, j)
 	defer stop()
 
 	var err error
@@ -238,7 +241,10 @@ func (w *Worker) handle(ctx context.Context, j *jobs.Job) {
 	}
 }
 
-func (w *Worker) heartbeat(ctx context.Context, j *jobs.Job) func() {
+// heartbeat renews j's lease every w.hb. On ErrLeaseLost another worker may
+// own the job, so the handler's ctx is cancelled to stop its storage calls
+// and DB writes. Other errors are retried on the next tick.
+func (w *Worker) heartbeat(ctx context.Context, cancel context.CancelFunc, j *jobs.Job) func() {
 	done := make(chan struct{})
 	go func() {
 		t := time.NewTicker(w.hb)
@@ -250,8 +256,14 @@ func (w *Worker) heartbeat(ctx context.Context, j *jobs.Job) func() {
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				if err := w.q.Heartbeat(ctx, j); err != nil {
+				err := w.q.Heartbeat(ctx, j)
+				if errors.Is(err, jobs.ErrLeaseLost) {
+					w.log.Warn("worker: lease lost; cancelling handler", "id", j.ID, "kind", j.Kind)
+					cancel()
 					return
+				}
+				if err != nil && ctx.Err() == nil {
+					w.log.Warn("worker: heartbeat failed; retrying", "id", j.ID, "kind", j.Kind, "err", err)
 				}
 			}
 		}
@@ -278,7 +290,14 @@ func jitter(d time.Duration) time.Duration {
 // --- dead hook / reconcile ---
 
 func (w *Worker) onDead(ctx context.Context, j jobs.Job) {
-	if j.Kind != kindProcess {
+	switch j.Kind {
+	case kindRotate, kindPurge:
+		// A withdrawn photo may still serve its published hash, or old
+		// objects may linger. Startup reconcile re-enqueues a purge.
+		w.log.Error("worker: privacy job dead", "id", j.ID, "kind", j.Kind)
+		return
+	case kindProcess:
+	default:
 		return
 	}
 	id, err := photoID(j.Payload)
@@ -291,6 +310,9 @@ func (w *Worker) onDead(ctx context.Context, j jobs.Job) {
 }
 
 func (w *Worker) reconcile(ctx context.Context) error {
+	if err := w.reconcilePurges(ctx); err != nil {
+		return err
+	}
 	dead, err := w.q.DeadSince(ctx, 0, kindProcess)
 	if err != nil {
 		return err
@@ -309,6 +331,53 @@ func (w *Worker) reconcile(ctx context.Context) error {
 			continue
 		}
 		if err := w.failPhoto(ctx, id, msgDead); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// reconcilePurges enqueues one purge_derived per photo whose rotate_derived
+// or purge_derived died in the last 7 days, unless a purge is already
+// queued or running for it. purge_derived computes the stale set itself,
+// so a redundant run is harmless.
+func (w *Worker) reconcilePurges(ctx context.Context) error {
+	since := w.now() - purgeJobAge.Milliseconds()
+	// Old prefixes from dead purge jobs are carried forward: their objects
+	// may already be gone, so listing alone would not find them to purge.
+	prefixes := map[string][]string{}
+	var order []string
+	for _, kind := range []string{kindRotate, kindPurge} {
+		dead, err := w.q.DeadSince(ctx, since, kind)
+		if err != nil {
+			return err
+		}
+		for _, j := range dead {
+			id, err := photoID(j.Payload)
+			if err != nil {
+				continue
+			}
+			if _, ok := prefixes[id]; !ok {
+				prefixes[id] = []string{}
+				order = append(order, id)
+			}
+			if kind == kindPurge {
+				if pp, err := parsePurge(j.Payload); err == nil {
+					prefixes[id] = append(prefixes[id], pp.Prefixes...)
+				}
+			}
+		}
+	}
+	for _, id := range order {
+		var n int
+		if err := w.db.QueryRowContext(ctx, `SELECT count(*) FROM jobs WHERE kind=? AND state IN ('queued','running') AND json_extract(payload,'$.photoId')=?`,
+			kindPurge, id).Scan(&n); err != nil {
+			return err
+		}
+		if n > 0 {
+			continue
+		}
+		if _, err := w.q.Enqueue(ctx, kindPurge, map[string]any{"photoId": id, "prefixes": prefixes[id]}); err != nil {
 			return err
 		}
 	}
@@ -370,6 +439,9 @@ func validDerivedPrefix(prefix, id string) bool {
 	return prefix == "d/"+id+"/"
 }
 
+// purgePayload names the photo. Prefixes are the old prefixes known at
+// enqueue time, kept as an audit trail; the stale set is computed at run
+// time (see purgeDerived).
 type purgePayload struct {
 	PhotoID  string   `json:"photoId"`
 	Prefixes []string `json:"prefixes"`
@@ -382,9 +454,6 @@ func parsePurge(raw json.RawMessage) (purgePayload, error) {
 	}
 	if _, err := uuid.Parse(p.PhotoID); err != nil {
 		return p, perm("invalid photoId")
-	}
-	if len(p.Prefixes) == 0 {
-		return p, perm("empty prefixes")
 	}
 	for _, pfx := range p.Prefixes {
 		if err := checkPurgePrefix(p.PhotoID, pfx); err != nil {
@@ -739,7 +808,7 @@ func (w *Worker) rotateDerived(ctx context.Context, raw json.RawMessage) error {
 	if err != nil {
 		return err
 	}
-	outcome, err := w.commitRotate(ctx, id, salt, res.DerivedHash, prefixes)
+	outcome, err := w.commitRotate(ctx, id, salt, old, res.DerivedHash, prefixes)
 	if err != nil {
 		return err
 	}
@@ -794,7 +863,10 @@ func (w *Worker) oldPrefixes(ctx context.Context, id, old string) ([]string, err
 // photo is still ready and still not exposed, and enqueues purge_derived
 // for the old prefixes in the same tx, so the old objects are always
 // cleaned up once the new hash is live.
-func (w *Worker) commitRotate(ctx context.Context, id, salt, hash string, oldPrefixes []string) (commitOutcome, error) {
+func (w *Worker) commitRotate(ctx context.Context, id, salt, old, hash string, oldPrefixes []string) (commitOutcome, error) {
+	if w.failCommit.CompareAndSwap(true, false) {
+		return 0, errors.New("worker: injected commit failure")
+	}
 	tx, err := w.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
@@ -802,14 +874,17 @@ func (w *Worker) commitRotate(ctx context.Context, id, salt, hash string, oldPre
 	defer tx.Rollback()
 
 	var status string
-	err = tx.QueryRowContext(ctx, `SELECT status FROM photos WHERE id=?`, id).Scan(&status)
+	var cur sql.NullString
+	err = tx.QueryRowContext(ctx, `SELECT status, derived_hash FROM photos WHERE id=?`, id).Scan(&status, &cur)
 	if errors.Is(err, sql.ErrNoRows) {
 		return commitGone, nil
 	}
 	if err != nil {
 		return 0, err
 	}
-	if status != "ready" {
+	// A concurrent rotate committed first: this attempt's hash is never
+	// published, so it is dropped (and its prefix deleted by the caller).
+	if status != "ready" || cur.String != old {
 		return commitSkipped, nil
 	}
 	exposed, err := exposure.Photo(ctx, tx, id)
@@ -844,9 +919,10 @@ func newSalt() (string, error) {
 
 // --- purge_derived ---
 
-// purgeDerived deletes and CDN-purges old derived prefixes of a photo. The
-// objects go first, so a CDN refetch after the purge finds nothing. The
-// photo's current hash is never touched. Both steps are idempotent.
+// purgeDerived deletes and CDN-purges every derived prefix of a photo that
+// is not its current hash. The stale set is listed at run time, so prefixes
+// orphaned by a crashed or superseded rotate are cleaned up too. Objects go
+// first, so a CDN refetch after the purge finds nothing. Idempotent.
 func (w *Worker) purgeDerived(ctx context.Context, raw json.RawMessage) error {
 	p, err := parsePurge(raw)
 	if err != nil {
@@ -854,14 +930,48 @@ func (w *Worker) purgeDerived(ctx context.Context, raw json.RawMessage) error {
 	}
 	var cur sql.NullString
 	err = w.db.QueryRowContext(ctx, `SELECT derived_hash FROM photos WHERE id=?`, p.PhotoID).Scan(&cur)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, sql.ErrNoRows) {
+		// Deleted photos are handled by delete_photo_objects.
+		return errNoop
+	}
+	if err != nil {
 		return err
 	}
+	head := "d/" + p.PhotoID + "/"
+	keys, err := w.store.List(ctx, w.cfg.BucketDerived, head)
+	if err != nil {
+		return err
+	}
+	seen := map[string]bool{}
 	var stale []string
+	// The payload's prefixes (already validated) are always included, so
+	// a retry after a failed CDN purge still purges prefixes whose objects
+	// were deleted on the previous attempt.
 	for _, pfx := range p.Prefixes {
-		seg := strings.TrimSuffix(strings.TrimPrefix(pfx, "d/"+p.PhotoID+"/"), "/")
+		seg := strings.TrimSuffix(strings.TrimPrefix(pfx, head), "/")
+		hash, _, _ := strings.Cut(seg, "-wm")
+		if seen[pfx] || (cur.Valid && hash == cur.String) {
+			continue
+		}
+		seen[pfx] = true
+		stale = append(stale, pfx)
+	}
+	for _, k := range keys {
+		seg, _, ok := strings.Cut(strings.TrimPrefix(k, head), "/")
+		if !ok {
+			continue
+		}
+		pfx := head + seg + "/"
+		if seen[pfx] {
+			continue
+		}
+		seen[pfx] = true
 		hash, _, _ := strings.Cut(seg, "-wm")
 		if cur.Valid && hash == cur.String {
+			continue
+		}
+		if checkPurgePrefix(p.PhotoID, pfx) != nil {
+			w.log.Warn("worker: skipping unexpected derived prefix", "photo", p.PhotoID)
 			continue
 		}
 		stale = append(stale, pfx)
@@ -972,7 +1082,7 @@ func (w *Worker) cleanupUploads(ctx context.Context) error {
 	failCut := now - staleFailedAge.Milliseconds()
 
 	rows, err := w.db.QueryContext(ctx, `SELECT id, original_key FROM photos
-		WHERE (status='uploading' AND created_at<?) OR (status='failed' AND updated_at<?)`, upCut, failCut)
+		WHERE (status='uploading' AND updated_at<?) OR (status='failed' AND updated_at<?)`, upCut, failCut)
 	if err != nil {
 		return err
 	}
@@ -996,7 +1106,10 @@ func (w *Worker) cleanupUploads(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		res, err := tx.ExecContext(ctx, `DELETE FROM photos WHERE id=? AND status IN ('uploading','failed')`, r.id)
+		// The full age predicate is repeated: a row reused (bumped to a
+		// fresh uploading) since the SELECT must survive.
+		res, err := tx.ExecContext(ctx, `DELETE FROM photos WHERE id=?
+			AND ((status='uploading' AND updated_at<?) OR (status='failed' AND updated_at<?))`, r.id, upCut, failCut)
 		if err != nil {
 			tx.Rollback()
 			return err
@@ -1029,3 +1142,8 @@ func (w *Worker) cleanupUploads(ctx context.Context) error {
 	}
 	return nil
 }
+
+// FailNextCommit makes the next rotate commit fail once with a transient
+// error, after the new objects are written. It is a test hook that
+// simulates a crash between putAll and the commit.
+func (w *Worker) FailNextCommit() { w.failCommit.Store(true) }

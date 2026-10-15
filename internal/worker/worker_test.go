@@ -140,6 +140,25 @@ func (f *fakeStore) keys(bucket, prefix string) []string {
 	return ks
 }
 
+func (e *env) derivedHashes(id string) []string {
+	e.t.Helper()
+	seen := map[string]struct{}{}
+	for _, k := range e.st.keys(derB, "d/"+id+"/") {
+		rest := strings.TrimPrefix(k, "d/"+id+"/")
+		seg, _, _ := strings.Cut(rest, "/")
+		hash, _, _ := strings.Cut(seg, "-wm")
+		if hash != "" {
+			seen[hash] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for h := range seen {
+		out = append(out, h)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // --- env ---
 
 type env struct {
@@ -866,6 +885,158 @@ func TestPurgeDerivedRejectsBadPrefixesAndKeepsCurrent(t *testing.T) {
 	}
 }
 
+func TestRotateCrashBeforeCommitCleansOrphans(t *testing.T) {
+	e := newEnv(t, nil)
+	id, old := readyPhoto(t, e)
+	e.w.FailNextCommit()
+	jid := e.enqueue("rotate_derived", map[string]string{"photoId": id})
+	e.runOne()
+	if e.jobState(jid) == "done" {
+		t.Fatal("injected commit failure still finished the job")
+	}
+	p, _ := e.photo(id)
+	if p.hash.String != old {
+		t.Fatalf("hash committed despite failure: %s", p.hash.String)
+	}
+	if extras := e.derivedHashes(id); len(extras) < 2 {
+		t.Fatalf("expected orphan prefixes after crash, got %v", extras)
+	}
+	e.now.Add(jobs.BaseBackoffMillis)
+	e.runOne() // rotate retry
+	for e.runIfDue() {
+	}
+	p, _ = e.photo(id)
+	got := e.derivedHashes(id)
+	if len(got) != 1 || got[0] != p.hash.String {
+		t.Fatalf("after retry hashes = %v current %s", got, p.hash.String)
+	}
+}
+
+func TestRotateInterleavedJobsKeepOneHash(t *testing.T) {
+	e := newEnv(t, func(_ *env, c *config.Config, d *worker.Deps) {
+		c.Workers = 2
+		d.PollEvery = 5 * time.Millisecond
+		d.HeartbeatEvery = 5 * time.Millisecond
+	})
+	id, _ := readyPhoto(t, e)
+	var started atomic.Int32
+	block := make(chan struct{})
+	e.setProcess(func(b []byte, o media.Options) (*media.Result, error) {
+		if started.Add(1) == 2 {
+			close(block)
+		}
+		select {
+		case <-block:
+		case <-time.After(10 * time.Second):
+			t.Error("second rotate never started")
+		}
+		return media.Process(b, o)
+	})
+	e.enqueue("rotate_derived", map[string]string{"photoId": id})
+	e.enqueue("rotate_derived", map[string]string{"photoId": id})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- e.w.Run(ctx) }()
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		js := e.jobs("rotate_derived")
+		finished := 0
+		for _, j := range js {
+			if j.state == "done" || j.state == "dead" {
+				finished++
+			}
+		}
+		if finished == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatalf("rotates stuck: %+v hashes %v", js, e.derivedHashes(id))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	for e.runIfDue() {
+	}
+	p, _ := e.photo(id)
+	got := e.derivedHashes(id)
+	if len(got) != 1 || got[0] != p.hash.String {
+		t.Fatalf("hashes = %v current %s", got, p.hash.String)
+	}
+}
+
+func TestHeartbeatCancelsOnLeaseLost(t *testing.T) {
+	e := newEnv(t, func(_ *env, _ *config.Config, d *worker.Deps) {
+		d.HeartbeatEvery = 5 * time.Millisecond
+	})
+	entered := make(chan struct{})
+	e.setProcess(func(b []byte, o media.Options) (*media.Result, error) {
+		close(entered)
+		time.Sleep(80 * time.Millisecond)
+		return media.Process(b, o)
+	})
+	id := e.addPhoto("processing", testJPEG(t, false))
+	jid := e.enqueue("process_photo", map[string]string{"photoId": id})
+	go func() {
+		<-entered
+		if _, err := e.d.Exec(`UPDATE jobs SET lease_token='stolen' WHERE id=?`, jid); err != nil {
+			t.Error(err)
+		}
+		time.Sleep(30 * time.Millisecond)
+	}()
+	e.runOne()
+	if e.jobState(jid) == "done" {
+		t.Fatal("handler finished after the lease was stolen")
+	}
+	if p, _ := e.photo(id); p.status == "ready" {
+		t.Fatal("photo committed after the lease was stolen")
+	}
+}
+
+func TestDeadRotateLogsAndReconcileEnqueuesPurge(t *testing.T) {
+	var logs syncBuffer
+	e := newEnv(t, func(_ *env, _ *config.Config, d *worker.Deps) {
+		d.Log = slog.New(slog.NewTextHandler(&logs, nil))
+	})
+	id, cur := readyPhoto(t, e)
+	orphan := "0123456789abcdef"
+	e.st.put(derB, "d/"+id+"/"+orphan+"/w480.jpg", []byte("x"))
+	e.setProcess(func([]byte, media.Options) (*media.Result, error) {
+		return nil, errors.New("boom")
+	})
+	jid := e.enqueue("rotate_derived", map[string]string{"photoId": id})
+	for i := 0; i < jobs.MaxAttempts; i++ {
+		e.runOne()
+		if i+1 < jobs.MaxAttempts {
+			e.now.Add(jobs.BaseBackoffMillis << i)
+		}
+	}
+	if e.jobState(jid) != "dead" {
+		t.Fatalf("state %s", e.jobState(jid))
+	}
+	if !strings.Contains(logs.String(), "kind=rotate_derived") || !strings.Contains(strings.ToLower(logs.String()), "level=error") {
+		t.Fatalf("dead rotate not logged at error: %s", logs.String())
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := e.w.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	pj := e.jobs("purge_derived")
+	if len(pj) == 0 {
+		t.Fatal("reconcile did not enqueue purge_derived")
+	}
+	e.runOne()
+	got := e.derivedHashes(id)
+	if len(got) != 1 || got[0] != cur {
+		t.Fatalf("hashes after reconcile purge = %v want %s", got, cur)
+	}
+}
+
 func TestRotateMissingOrNotReadyIsNoop(t *testing.T) {
 	e := newEnv(t, nil)
 	j1 := e.enqueue("rotate_derived", map[string]string{"photoId": newID()})
@@ -1041,6 +1212,30 @@ func TestCleanupUploads(t *testing.T) {
 	}
 }
 
+func TestCleanupSkipsReusedFailedUpload(t *testing.T) {
+	e := newEnv(t, nil)
+	e.now.Store(t0 + 30*hour)
+	now := e.now.Load()
+	body := testJPEG(t, false)
+	id := e.addPhoto("failed", body)
+	e.exec(`UPDATE photos SET created_at=?, updated_at=?, status='failed' WHERE id=?`, now-24*hour-1, now-24*hour-1, id)
+	// T11 reuse: status uploading, created_at kept, updated_at bumped.
+	e.exec(`UPDATE photos SET status='uploading', error=NULL, updated_at=? WHERE id=?`, now, id)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := e.w.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	e.runOne()
+	if _, ok := e.photo(id); !ok {
+		t.Fatal("reused uploading row was deleted by cleanup")
+	}
+	if _, ok := e.st.get(origB, "o/"+owner+"/"+id); !ok {
+		t.Fatal("original of a reused upload was deleted")
+	}
+}
+
 func (e *env) runIfDue() bool {
 	ran, err := e.w.RunOnce(context.Background())
 	if err != nil {
@@ -1140,4 +1335,21 @@ func TestRunLoopProcessesQueuedJobs(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
+}
+
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
 }
