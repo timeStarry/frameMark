@@ -12,6 +12,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/google/uuid"
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 
 	"github.com/timeStarry/frameMark/internal/domain"
 	"github.com/timeStarry/frameMark/internal/httperr"
@@ -160,7 +162,11 @@ func (s *server) createUpload(w http.ResponseWriter, r *http.Request) (int, any,
 // reserve finds or creates the photo row for an upload in one transaction.
 // dup is true when an existing ready/processing photo should be returned
 // instead. A failed or uploading row with the same hash is reused (same id,
-// same object key) and reset to uploading.
+// same object key) and fully reset: see resetForReuse.
+//
+// The dedup and quota check-then-write is race-free because db.Open opens
+// every transaction with _txlock=immediate (BEGIN IMMEDIATE takes the write
+// lock up front) and caps the pool at one connection; either alone suffices.
 func (s *server) reserve(ctx context.Context, owner string, in createInput, format, title string, now int64) (id string, dup bool, err error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -190,20 +196,15 @@ func (s *server) reserve(ctx context.Context, owner string, in createInput, form
 		}
 	}
 
+	fields, hist, orig, err := prefsSnapshot(ctx, tx, owner)
+	if err != nil {
+		return "", false, err
+	}
 	if id != "" {
-		res, err := tx.ExecContext(ctx, `UPDATE photos SET status='uploading',error=NULL,original_bytes=?,format=?,title=?,updated_at=?
-			WHERE id=? AND status=?`, in.Bytes, format, title, now, id, status)
-		if err != nil {
+		if err := resetForReuse(ctx, tx, id, status, in, format, title, fields, hist, orig, now); err != nil {
 			return "", false, err
-		}
-		if n, _ := res.RowsAffected(); n != 1 {
-			return "", false, httperr.Fail(http.StatusConflict, msgConflict)
 		}
 	} else {
-		fields, hist, orig, err := prefsSnapshot(ctx, tx, owner)
-		if err != nil {
-			return "", false, err
-		}
 		u, err := uuid.NewV7()
 		if err != nil {
 			return "", false, err
@@ -221,6 +222,30 @@ func (s *server) reserve(ctx context.Context, owner string, in createInput, form
 		}
 	}
 	return id, false, tx.Commit()
+}
+
+// resetForReuse returns a failed or uploading row to the state of a fresh
+// upload: every derived column (dimensions, location, derived_hash, error)
+// is cleared, the prefs snapshot is retaken, and photo_exif and
+// photo_histograms rows are deleted so reprocessing starts clean. The id,
+// original_key, created_at and derived_salt are kept.
+func resetForReuse(ctx context.Context, tx *sql.Tx, id, status string, in createInput, format, title, fields string, hist, orig int, now int64) error {
+	res, err := tx.ExecContext(ctx, `UPDATE photos SET status='uploading',error=NULL,original_bytes=?,format=?,title=?,
+		width=NULL,height=NULL,latitude=NULL,longitude=NULL,derived_hash=NULL,
+		public_fields=?,histogram_public=?,original_download=?,updated_at=?
+		WHERE id=? AND status=?`, in.Bytes, format, title, fields, hist, orig, now, id, status)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return httperr.Fail(http.StatusConflict, msgConflict)
+	}
+	for _, q := range []string{`DELETE FROM photo_exif WHERE photo_id=?`, `DELETE FROM photo_histograms WHERE photo_id=?`} {
+		if _, err := tx.ExecContext(ctx, q, id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // prefsSnapshot returns the owner's upload_prefs values to copy onto a new
@@ -252,10 +277,10 @@ func (s *server) completeUpload(w http.ResponseWriter, r *http.Request) (int, an
 	}
 	ctx := r.Context()
 
-	var status, sha string
+	var status, sha, format string
 	var declared int64
-	err = s.db.QueryRowContext(ctx, `SELECT status,original_sha256,original_bytes FROM photos WHERE id=? AND owner_id=?`, id, owner).
-		Scan(&status, &sha, &declared)
+	err = s.db.QueryRowContext(ctx, `SELECT status,original_sha256,original_bytes,format FROM photos WHERE id=? AND owner_id=?`, id, owner).
+		Scan(&status, &sha, &declared, &format)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, nil, httperr.Fail(http.StatusNotFound, msgPhotoAbsent)
 	}
@@ -279,29 +304,58 @@ func (s *server) completeUpload(w http.ResponseWriter, r *http.Request) (int, an
 		return 0, nil, err
 	}
 
-	// An empty stored checksum is unverified and fails ChecksumMatches.
-	if obj.Size != declared || !obj.ChecksumMatches(sha) {
-		// Delete first: if it fails the photo stays uploading and the client
-		// can retry complete, so a failed row never points at a live object.
-		if err := s.store.Delete(ctx, s.cfg.BucketOriginals, key); err != nil {
-			return 0, nil, err
-		}
-		if _, err := s.db.ExecContext(ctx, `UPDATE photos SET status='failed',error=?,updated_at=? WHERE id=? AND status='uploading'`,
-			msgVerifyFail, s.now(), id); err != nil {
-			return 0, nil, err
-		}
-		return 0, nil, httperr.Fail(http.StatusUnprocessableEntity, msgVerifyFail)
+	// An empty stored checksum is unverified and fails ChecksumMatches. The
+	// stored Content-Type must match the declared format too: a stale presign
+	// from an earlier initiate may have been used with another type.
+	if obj.Size != declared || !obj.ChecksumMatches(sha) || contentTypes[obj.ContentType] != format {
+		return s.failVerification(ctx, owner, id, key)
 	}
 
 	started, err := s.startProcessing(ctx, id)
 	if err != nil {
 		return 0, nil, err
 	}
-	code := http.StatusAccepted
 	if !started {
-		code = http.StatusOK // a concurrent complete won the race
+		return s.completedElsewhere(ctx, owner, id) // a concurrent complete won the race
 	}
-	return s.photoResponse(ctx, code, owner, id)
+	return s.photoResponse(ctx, http.StatusAccepted, owner, id)
+}
+
+// failVerification marks an uploading photo failed and deletes its object.
+// The conditional UPDATE runs first so a concurrent complete that already
+// moved the photo on keeps its original; that request's photo is returned
+// instead. If Delete then fails, the status is rolled back to uploading so a
+// failed row never points at a live object and the client can retry.
+func (s *server) failVerification(ctx context.Context, owner, id, key string) (int, any, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE photos SET status='failed',error=?,updated_at=? WHERE id=? AND status='uploading'`,
+		msgVerifyFail, s.now(), id)
+	if err != nil {
+		return 0, nil, err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return s.completedElsewhere(ctx, owner, id)
+	}
+	if err := s.store.Delete(ctx, s.cfg.BucketOriginals, key); err != nil {
+		if _, rbErr := s.db.ExecContext(ctx, `UPDATE photos SET status='uploading',error=NULL,updated_at=? WHERE id=? AND status='failed' AND error=?`,
+			s.now(), id, msgVerifyFail); rbErr != nil {
+			return 0, nil, errors.Join(err, rbErr)
+		}
+		return 0, nil, err
+	}
+	return 0, nil, httperr.Fail(http.StatusUnprocessableEntity, msgVerifyFail)
+}
+
+// completedElsewhere answers a complete whose photo left uploading while it
+// was being checked: 200 with the photo once processing or ready, else 409.
+func (s *server) completedElsewhere(ctx context.Context, owner, id string) (int, any, error) {
+	p, err := s.loadPhoto(ctx, owner, id)
+	if err != nil {
+		return 0, nil, err
+	}
+	if p.Status == statusProcessing || p.Status == statusReady {
+		return http.StatusOK, p, nil
+	}
+	return 0, nil, httperr.Fail(http.StatusConflict, msgIncomplete)
 }
 
 // startProcessing moves an uploading photo to processing and enqueues its
@@ -514,6 +568,12 @@ func intPtr(v sql.NullInt64) *int64 {
 	return &v.Int64
 }
 
+// isUniqueViolation reports a SQLite UNIQUE or PRIMARY KEY constraint failure
+// by the driver's extended result code.
 func isUniqueViolation(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
+	var se *sqlite.Error
+	if !errors.As(err, &se) {
+		return false
+	}
+	return se.Code() == sqlite3.SQLITE_CONSTRAINT_UNIQUE || se.Code() == sqlite3.SQLITE_CONSTRAINT_PRIMARYKEY
 }

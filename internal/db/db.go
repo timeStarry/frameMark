@@ -18,9 +18,11 @@ import (
 var migrationsFS embed.FS
 
 // Open opens the SQLite database at path with WAL, foreign keys and a 5s busy
-// timeout applied to every connection.
+// timeout applied to every connection. Transactions start with BEGIN
+// IMMEDIATE (_txlock=immediate), so a check-then-write tx holds the write
+// lock from its first read and cannot lose a lock upgrade to another writer.
 func Open(path string) (*sql.DB, error) {
-	d, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)")
+	d, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_txlock=immediate")
 	if err != nil {
 		return nil, err
 	}

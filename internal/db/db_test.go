@@ -270,3 +270,36 @@ func TestDeleteCoverPhotoClearsCover(t *testing.T) {
 		t.Fatalf("cover_photo_id = %q, want NULL", cover.String)
 	}
 }
+
+// With _txlock=immediate a transaction holds the write lock from BEGIN, so
+// another connection's write waits (here: until busy_timeout) even while the
+// transaction has only read.
+func TestTransactionsBeginImmediate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.sqlite")
+	d1, err := db.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d1.Close()
+	if err := db.Migrate(d1); err != nil {
+		t.Fatal(err)
+	}
+	d2, err := db.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d2.Close()
+
+	tx, err := d1.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	var n int
+	if err := tx.QueryRow(`SELECT count(*) FROM users`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d2.Exec(`INSERT INTO users(id,email,password,created_at) VALUES('u','a@example.test','x',0)`); err == nil {
+		t.Fatal("write succeeded while another transaction held BEGIN IMMEDIATE")
+	}
+}

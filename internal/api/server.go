@@ -99,6 +99,13 @@ func securityHeaders(next http.Handler) http.Handler {
 	})
 }
 
+// Response convention (binding for all routes in this package): a single
+// resource is returned as the bare object (e.g. GET /api/photos/{id}, and the
+// 200/202 photo bodies of the upload endpoints), never wrapped as
+// {"photo": …}; the status code tells the client which shape it has. Lists are
+// {"items": […], "nextCursor": string|null}. Field names are camelCase and
+// times are Unix milliseconds. Errors are {"error": message} via httperr.
+//
 // handlerFunc returns the status and body to send as JSON, or an error that
 // is written through httperr (non-StatusError values become a generic 500).
 type handlerFunc func(w http.ResponseWriter, r *http.Request) (int, any, error)

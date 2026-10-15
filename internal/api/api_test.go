@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -48,17 +49,36 @@ type presignCall struct {
 }
 
 type fakeStorage struct {
-	mu       sync.Mutex
-	objects  map[string]storage.Object // by bucket+"/"+key
-	deleted  []string
-	presigns []presignCall
+	mu         sync.Mutex
+	objects    map[string]storage.Object // by bucket+"/"+key
+	deleted    []string
+	presigns   []presignCall
+	presignErr error
+	deleteErr  error
+	onHead     func() // runs before Head answers, outside the lock
+	tt         *testing.T
 }
 
-func newFakeStorage() *fakeStorage { return &fakeStorage{objects: map[string]storage.Object{}} }
+var lowerHex64 = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
+func newFakeStorage(t *testing.T) *fakeStorage {
+	return &fakeStorage{objects: map[string]storage.Object{}, tt: t}
+}
+
+func (f *fakeStorage) t() *testing.T { return f.tt }
+
+// PresignPut mirrors the real client's argument checks so a caller bug
+// cannot pass here and fail against S3.
 func (f *fakeStorage) PresignPut(_ context.Context, b, key, ct, sha string, ttl time.Duration) (storage.PresignedRequest, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if !lowerHex64.MatchString(sha) || ct == "" || ttl <= 0 || ttl > 7*24*time.Hour || b == "" || key == "" {
+		f.t().Errorf("PresignPut called with invalid args: %q %q %q %q %v", b, key, ct, sha, ttl)
+		return storage.PresignedRequest{}, errors.New("fake: invalid presign args")
+	}
+	if f.presignErr != nil {
+		return storage.PresignedRequest{}, f.presignErr
+	}
 	f.presigns = append(f.presigns, presignCall{b, key, ct, sha, ttl})
 	return storage.PresignedRequest{
 		URL:     "https://storage.test/" + b + "/" + key + "?X-Amz-Signature=fake",
@@ -68,6 +88,9 @@ func (f *fakeStorage) PresignPut(_ context.Context, b, key, ct, sha string, ttl 
 }
 
 func (f *fakeStorage) Head(_ context.Context, b, key string) (storage.Object, error) {
+	if f.onHead != nil {
+		f.onHead()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	o, ok := f.objects[b+"/"+key]
@@ -80,12 +103,19 @@ func (f *fakeStorage) Head(_ context.Context, b, key string) (storage.Object, er
 func (f *fakeStorage) Delete(_ context.Context, b, key string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
 	delete(f.objects, b+"/"+key)
 	f.deleted = append(f.deleted, b+"/"+key)
 	return nil
 }
 
-func (f *fakeStorage) PresignGet(_ context.Context, b, key string, _ time.Duration, _ string) (string, error) {
+func (f *fakeStorage) PresignGet(_ context.Context, b, key string, ttl time.Duration, _ string) (string, error) {
+	if ttl <= 0 || ttl > 7*24*time.Hour || b == "" || key == "" {
+		f.t().Errorf("PresignGet called with invalid args: %q %q %v", b, key, ttl)
+		return "", errors.New("fake: invalid presign args")
+	}
 	return "https://storage.test/" + b + "/" + key + "?get", nil
 }
 
@@ -140,7 +170,7 @@ func newEnv(t *testing.T) *env {
 	if err := db.Migrate(d); err != nil {
 		t.Fatal(err)
 	}
-	e := &env{t: t, d: d, st: newFakeStorage()}
+	e := &env{t: t, d: d, st: newFakeStorage(t)}
 	e.now.Store(t0)
 	id, err := identity.New(d, identity.Deps{Origin: origin, Dev: true, Enabled: true, Now: e.now.Load})
 	if err != nil {
@@ -244,9 +274,20 @@ func (e *env) user(id string) *client {
 	return c
 }
 
+// do sends a request and asserts privacy, security headers and a JSON body.
 func (c *client) do(method, path, body string, hdr map[string]string) resp {
 	t := c.e.t
 	t.Helper()
+	out, err := c.send(method, path, body, hdr)
+	if err != nil {
+		t.Fatalf("%s %s: %v", method, path, err)
+	}
+	return out
+}
+
+// send is do without t.Fatal, safe from goroutines; it returns the first
+// failed assertion as an error.
+func (c *client) send(method, path, body string, hdr map[string]string) (resp, error) {
 	r := httptest.NewRequest(method, path, strings.NewReader(body))
 	if body != "" {
 		r.Header.Set("Content-Type", "application/json")
@@ -268,13 +309,17 @@ func (c *client) do(method, path, body string, hdr map[string]string) resp {
 	w := httptest.NewRecorder()
 	c.e.h.ServeHTTP(w, r)
 	out := resp{code: w.Code, raw: w.Body.String(), header: w.Header()}
-	assertPrivate(t, path, out.raw)
-	assertSecurityHeaders(t, path, out.header)
+	if leak := privacyLeak(out.raw); leak != "" {
+		return out, fmt.Errorf("response leaks %s: %s", leak, out.raw)
+	}
+	if err := checkSecurityHeaders(out.header); err != nil {
+		return out, err
+	}
 	if ct := out.header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
-		t.Fatalf("%s %s: content-type %q", method, path, ct)
+		return out, fmt.Errorf("content-type %q", ct)
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &out.body); err != nil {
-		t.Fatalf("%s %s: body is not a JSON object: %q", method, path, out.raw)
+		return out, fmt.Errorf("body is not a JSON object: %q", out.raw)
 	}
 	for _, ck := range w.Result().Cookies() {
 		if ck.Name == cookie {
@@ -284,20 +329,11 @@ func (c *client) do(method, path, body string, hdr map[string]string) resp {
 	if tok, ok := out.body["csrfToken"].(string); ok {
 		c.csrf = tok
 	}
-	return out
+	return out, nil
 }
 
 func (c *client) post(path, body string) resp { return c.do(http.MethodPost, path, body, nil) }
 func (c *client) get(path string) resp        { return c.do(http.MethodGet, path, "", nil) }
-
-// assertPrivate fails when a body carries location data or an original
-// object key ("o/{owner}/{photoId}").
-func assertPrivate(t *testing.T, path, body string) {
-	t.Helper()
-	if leak := privacyLeak(body); leak != "" {
-		t.Fatalf("%s: response leaks %s: %s", path, leak, body)
-	}
-}
 
 // privacyLeak describes the first leak in body, or returns "". Keys and
 // string values are checked structurally so random tokens cannot trip it.
@@ -353,8 +389,7 @@ func TestPrivacyScanCatchesLeaks(t *testing.T) {
 	}
 }
 
-func assertSecurityHeaders(t *testing.T, path string, h http.Header) {
-	t.Helper()
+func checkSecurityHeaders(h http.Header) error {
 	want := map[string]string{
 		"X-Content-Type-Options": "nosniff",
 		"Referrer-Policy":        "no-referrer",
@@ -363,9 +398,10 @@ func assertSecurityHeaders(t *testing.T, path string, h http.Header) {
 	}
 	for k, v := range want {
 		if got := h.Get(k); got != v {
-			t.Fatalf("%s: header %s = %q, want %q", path, k, got, v)
+			return fmt.Errorf("header %s = %q, want %q", k, got, v)
 		}
 	}
+	return nil
 }
 
 // --- skeleton tests ---

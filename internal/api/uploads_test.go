@@ -1,10 +1,13 @@
 package api_test
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -479,5 +482,209 @@ func TestExifHiddenUntilReady(t *testing.T) {
 	e.exec(`INSERT INTO photo_exif(photo_id,iso) VALUES(?,100)`, id)
 	if g := u.get("/api/photos/" + id); g.body["exif"] != nil {
 		t.Fatalf("%s", g.raw)
+	}
+}
+
+func TestReuseFailedRowFullyResets(t *testing.T) {
+	e := newEnv(t)
+	u := e.user("u1")
+	id := newID()
+	e.insertPhoto("u1", id, "failed", shaA)
+	e.exec(`UPDATE photos SET width=10,height=20,derived_hash='0123456789abcdef',derived_salt='salt',
+		latitude=1.5,longitude=2.5,error='x' WHERE id=?`, id)
+	e.exec(`INSERT INTO photo_exif(photo_id,iso) VALUES(?,100)`, id)
+	e.exec(`INSERT INTO photo_histograms(photo_id,bins) VALUES(?,x'00')`, id)
+	e.exec(`INSERT INTO upload_prefs(user_id,public_fields,histogram_public,original_download,updated_at)
+		VALUES('u1','["camera"]',0,1,?)`, t0)
+
+	if again := u.initiate(shaA, 10); again != id {
+		t.Fatalf("id %s, want %s", again, id)
+	}
+	var (
+		w, h, lat, lng, dh, msg sql.NullString
+		salt, fields            string
+		hist, orig, nExif, nH   int
+	)
+	err := e.d.QueryRow(`SELECT width,height,latitude,longitude,derived_hash,error,derived_salt,public_fields,
+		histogram_public,original_download,(SELECT count(*) FROM photo_exif WHERE photo_id=p.id),
+		(SELECT count(*) FROM photo_histograms WHERE photo_id=p.id) FROM photos p WHERE id=?`, id).
+		Scan(&w, &h, &lat, &lng, &dh, &msg, &salt, &fields, &hist, &orig, &nExif, &nH)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w.Valid || h.Valid || lat.Valid || lng.Valid || dh.Valid || msg.Valid || nExif != 0 || nH != 0 {
+		t.Fatalf("stale state: w=%v h=%v lat=%v lng=%v dh=%v err=%v exif=%d hist=%d", w, h, lat, lng, dh, msg, nExif, nH)
+	}
+	if salt != "salt" || fields != `["camera"]` || hist != 0 || orig != 1 {
+		t.Fatalf("salt %q prefs %s %d %d", salt, fields, hist, orig)
+	}
+	g := u.get("/api/photos/" + id)
+	if g.body["width"] != nil || g.body["exif"] != nil || g.body["status"] != "uploading" {
+		t.Fatalf("%s", g.raw)
+	}
+}
+
+func TestCompleteContentTypeMismatch(t *testing.T) {
+	e := newEnv(t)
+	u := e.user("u1")
+	id := u.initiate(shaA, 10) // image/jpeg
+	e.st.put(key("u1", id), storage.Object{Size: 10, ContentType: "image/png", ChecksumSHA256Hex: shaA})
+	if r := u.post("/api/uploads/"+id+"/complete", ""); r.code != 422 {
+		t.Fatalf("%d %s", r.code, r.raw)
+	}
+	if st, _ := e.status(id); st != "failed" || !e.st.wasDeleted(key("u1", id)) || len(e.jobs()) != 0 {
+		t.Fatalf("status %s", st)
+	}
+}
+
+func TestBytesTypeValidation(t *testing.T) {
+	e := newEnv(t)
+	u := e.user("u1")
+	for _, v := range []string{"1.5", "1e9", "null", `"10"`, "true"} {
+		body := `{"filename":"a.jpg","bytes":` + v + `,"sha256":"` + shaA + `","contentType":"image/jpeg"}`
+		if r := u.post("/api/uploads", body); r.code != 400 {
+			t.Errorf("bytes %s: %d %s", v, r.code, r.raw)
+		}
+	}
+}
+
+func TestOversizedBodyIs413(t *testing.T) {
+	e := newEnv(t)
+	u := e.user("u1")
+	body := `{"filename":"` + strings.Repeat("a", 200<<10) + `","bytes":1,"sha256":"` + shaA + `","contentType":"image/jpeg"}`
+	for _, path := range []string{"/api/uploads", "/api/uploads/" + newID() + "/complete"} {
+		if r := u.post(path, body); r.code != 413 {
+			t.Errorf("%s: %d %s", path, r.code, r.raw)
+		}
+	}
+}
+
+func TestPresignErrorKeepsRowRetryable(t *testing.T) {
+	e := newEnv(t)
+	u := e.user("u1")
+	e.st.presignErr = errors.New("boom")
+	r := u.post("/api/uploads", uploadBody("a.jpg", 10, shaA, "image/jpeg"))
+	if r.code != 500 || strings.Contains(r.raw, "boom") {
+		t.Fatalf("%d %s", r.code, r.raw)
+	}
+	var id, st string
+	if err := e.d.QueryRow(`SELECT id,status FROM photos`).Scan(&id, &st); err != nil || st != "uploading" {
+		t.Fatalf("%v %s", err, st)
+	}
+	e.st.presignErr = nil
+	if again := u.initiate(shaA, 10); again != id {
+		t.Fatalf("retry id %s, want %s", again, id)
+	}
+}
+
+func TestDeleteErrorOnVerifyFailure(t *testing.T) {
+	e := newEnv(t)
+	u := e.user("u1")
+	id := u.initiate(shaA, 10)
+	e.st.put(key("u1", id), storage.Object{Size: 11, ContentType: "image/jpeg", ChecksumSHA256Hex: shaA})
+	e.st.deleteErr = errors.New("boom")
+	r := u.post("/api/uploads/"+id+"/complete", "")
+	if r.code != 500 || strings.Contains(r.raw, "boom") {
+		t.Fatalf("%d %s", r.code, r.raw)
+	}
+	if st, _ := e.status(id); st != "uploading" || !e.st.has(key("u1", id)) {
+		t.Fatalf("status %s", st)
+	}
+	// Once Delete works, a retry fails the photo normally.
+	e.st.deleteErr = nil
+	if r := u.post("/api/uploads/"+id+"/complete", ""); r.code != 422 {
+		t.Fatalf("retry: %d %s", r.code, r.raw)
+	}
+	if st, _ := e.status(id); st != "failed" || e.st.has(key("u1", id)) {
+		t.Fatalf("status %s", st)
+	}
+}
+
+// A verify failure must not delete the object once another complete has
+// already moved the photo on.
+func TestVerifyFailureDoesNotDeleteAfterConcurrentSuccess(t *testing.T) {
+	e := newEnv(t)
+	u := e.user("u1")
+	id := u.initiate(shaA, 10)
+	e.st.put(key("u1", id), storage.Object{Size: 11, ContentType: "image/jpeg", ChecksumSHA256Hex: shaA})
+	e.st.onHead = func() {
+		e.st.onHead = nil
+		// Between this Head and the verdict, another request succeeded.
+		e.exec(`UPDATE photos SET status='processing' WHERE id=?`, id)
+	}
+	r := u.post("/api/uploads/"+id+"/complete", "")
+	if r.code != 200 || r.body["status"] != "processing" {
+		t.Fatalf("%d %s", r.code, r.raw)
+	}
+	if e.st.wasDeleted(key("u1", id)) {
+		t.Fatal("deleted the original of a processing photo")
+	}
+}
+
+func TestConcurrentCreatesSameSHA(t *testing.T) {
+	e := newEnv(t)
+	u := e.user("u1")
+	const n = 8
+	var wg sync.WaitGroup
+	results := make([]resp, n)
+	errs := make([]error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			results[i], errs[i] = u.send(http.MethodPost, "/api/uploads", uploadBody("a.jpg", 10, shaA, "image/jpeg"), nil)
+		}(i)
+	}
+	wg.Wait()
+	ids := map[any]bool{}
+	for i, r := range results {
+		if errs[i] != nil {
+			t.Fatal(errs[i])
+		}
+		if r.code != 201 {
+			t.Fatalf("%d %s", r.code, r.raw)
+		}
+		ids[r.body["photoId"]] = true
+	}
+	var rows int
+	_ = e.d.QueryRow(`SELECT count(*) FROM photos`).Scan(&rows)
+	if len(ids) != 1 || rows != 1 {
+		t.Fatalf("ids %v rows %d", ids, rows)
+	}
+}
+
+func TestConcurrentCompletes(t *testing.T) {
+	e := newEnv(t)
+	u := e.user("u1")
+	id := u.initiate(shaA, 10)
+	e.st.put(key("u1", id), storage.Object{Size: 10, ContentType: "image/jpeg", ChecksumSHA256Hex: shaA})
+	const n = 8
+	var wg sync.WaitGroup
+	codes := make([]int, n)
+	errs := make([]error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			r, err := u.send(http.MethodPost, "/api/uploads/"+id+"/complete", "", nil)
+			codes[i], errs[i] = r.code, err
+		}(i)
+	}
+	wg.Wait()
+	accepted := 0
+	for i, c := range codes {
+		if errs[i] != nil {
+			t.Fatal(errs[i])
+		}
+		switch c {
+		case 202:
+			accepted++
+		case 200:
+		default:
+			t.Fatalf("code %d", c)
+		}
+	}
+	if accepted != 1 || len(e.jobs()) != 1 {
+		t.Fatalf("accepted %d jobs %d", accepted, len(e.jobs()))
 	}
 }
