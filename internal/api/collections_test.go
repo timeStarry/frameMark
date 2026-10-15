@@ -674,3 +674,65 @@ func TestWithdrawalOnUnpublishDeleteAndFrames(t *testing.T) {
 		}
 	}
 }
+
+func TestEmptyFramesOnPublishedCollection(t *testing.T) {
+	e := newEnv(t)
+	u := e.user("u1")
+	a := e.readyPhoto("u1")
+	cid := u.newCollection("A")
+	u.mustFrames(cid, full(a))
+	u.publishPublic(cid)
+	if r := u.setFrames(cid); r.code != 400 || r.errMsg() != "已发布的合集至少需要一帧。" {
+		t.Fatalf("%d %s", r.code, r.raw)
+	}
+	if got := e.framesOf(cid); len(got) != 1 {
+		t.Fatalf("frames %+v", got)
+	}
+	if got := e.rotated(); len(got) != 0 {
+		t.Fatalf("rotated %v", got)
+	}
+	// After unpublishing, emptying is allowed.
+	_ = u.post("/api/collections/"+cid+"/unpublish", "")
+	if r := u.setFrames(cid); r.code != 200 {
+		t.Fatalf("draft: %d %s", r.code, r.raw)
+	}
+}
+
+func TestWithdrawalFramesKeepOtherPublicExposure(t *testing.T) {
+	e := newEnv(t)
+	u := e.user("u1")
+	shared, other := e.readyPhoto("u1"), e.readyPhoto("u1")
+	c1 := u.newCollection("one")
+	c2 := u.newCollection("two")
+	u.mustFrames(c1, full(shared), full(other))
+	u.mustFrames(c2, full(shared))
+	u.publishPublic(c1)
+	u.publishPublic(c2)
+	// Dropping shared from c1 leaves it public through c2: nothing enqueued.
+	u.mustFrames(c1, full(other))
+	if got := e.rotated(); len(got) != 0 {
+		t.Fatalf("rotated %v", got)
+	}
+}
+
+func TestWithdrawalUnlistedIsNotPublicExposure(t *testing.T) {
+	e := newEnv(t)
+	u := e.user("u1")
+	a := e.readyPhoto("u1")
+	pub := u.newCollection("public")
+	unl := u.newCollection("unlisted")
+	u.mustFrames(pub, full(a), textFrame("x"))
+	u.mustFrames(unl, full(a))
+	u.publishPublic(pub)
+	if r := u.updateCollection(unl, map[string]any{"visibility": "unlisted"}); r.code != 200 {
+		t.Fatal(r.raw)
+	}
+	if r := u.post("/api/collections/"+unl+"/publish", ""); r.code != 200 {
+		t.Fatal(r.raw)
+	}
+	// a's only remaining exposure is an unlisted published collection.
+	u.mustFrames(pub, textFrame("x"))
+	if got := e.rotated(); !sameIDs(got, []string{a}) {
+		t.Fatalf("rotated %v", got)
+	}
+}

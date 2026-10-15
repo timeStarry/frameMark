@@ -45,6 +45,7 @@ const (
 	msgMatte            = "留白帧的画面占比需在 0.5–0.95 之间，其他版式不能设置。"
 	msgFramePhotoRef    = "帧引用的照片不存在或尚未处理完成。"
 	msgEmptyPublish     = "合集至少需要一帧才能发布。"
+	msgEmptyPublished   = "已发布的合集至少需要一帧。"
 	msgDryRun           = "dry_run 参数无效。"
 	msgPublicFields     = "公开字段无效。"
 	msgOverridePhoto    = "照片不在该合集中。"
@@ -241,9 +242,18 @@ func (s *server) deleteCollection(w http.ResponseWriter, r *http.Request) (int, 
 		if err != nil {
 			return err
 		}
+		albums, err := stringsOf(ctx, tx, `SELECT DISTINCT album_id FROM album_items WHERE collection_id=?`, id)
+		if err != nil {
+			return err
+		}
 		// frames, frame_photos, photo_overrides and album_items cascade.
 		if _, err := tx.ExecContext(ctx, `DELETE FROM collections WHERE id=? AND owner_id=?`, id, owner); err != nil {
 			return err
+		}
+		for _, aid := range albums {
+			if err := renumberAlbum(ctx, tx, aid); err != nil {
+				return err
+			}
 		}
 		return s.withdraw(ctx, tx, owner, before)
 	})
@@ -298,8 +308,12 @@ func (s *server) putFrames(w http.ResponseWriter, r *http.Request) (int, any, er
 	ctx := r.Context()
 	now := s.now()
 	err = s.inTx(ctx, func(tx *sql.Tx) error {
-		if _, _, err := ownedCollection(ctx, tx, owner, id); err != nil {
+		status, _, err := ownedCollection(ctx, tx, owner, id)
+		if err != nil {
 			return err
+		}
+		if status == domain.StatusPublished && len(frames) == 0 {
+			return httperr.Fail(http.StatusBadRequest, msgEmptyPublished)
 		}
 		if err := checkReadyPhotos(ctx, tx, owner, refs); err != nil {
 			return err

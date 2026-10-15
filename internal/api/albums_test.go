@@ -139,3 +139,42 @@ func TestAlbumItems(t *testing.T) {
 		t.Fatalf("%d rows after clear", n)
 	}
 }
+
+func TestCollectionDeleteRenumbersAlbums(t *testing.T) {
+	e := newEnv(t)
+	u := e.user("u1")
+	c1, c2, c3 := u.newCollection("1"), u.newCollection("2"), u.newCollection("3")
+	a1 := u.post("/api/albums", `{"title":"A","visibility":"private"}`).body["id"].(string)
+	a2 := u.post("/api/albums", `{"title":"B","visibility":"private"}`).body["id"].(string)
+	untouched := u.post("/api/albums", `{"title":"C","visibility":"private"}`).body["id"].(string)
+	for aid, ids := range map[string][]string{a1: {c1, c2, c3}, a2: {c2, c3}, untouched: {c3, c1}} {
+		if r := u.put("/api/albums/"+aid+"/items", jsonBody(map[string]any{"collectionIds": ids})); r.code != 200 {
+			t.Fatal(r.raw)
+		}
+	}
+	if r := u.del("/api/collections/" + c2); r.code != 204 {
+		t.Fatal(r.raw)
+	}
+	for aid, want := range map[string][]string{a1: {c1, c3}, a2: {c3}, untouched: {c3, c1}} {
+		rows, err := e.d.Query(`SELECT position,collection_id FROM album_items WHERE album_id=? ORDER BY position`, aid)
+		if err != nil {
+			t.Fatal(err)
+		}
+		i := 0
+		for rows.Next() {
+			var pos int
+			var cid string
+			if err := rows.Scan(&pos, &cid); err != nil {
+				t.Fatal(err)
+			}
+			if i >= len(want) || pos != i || cid != want[i] {
+				t.Errorf("album %s item %d: %s at %d", aid, i, cid, pos)
+			}
+			i++
+		}
+		rows.Close()
+		if i != len(want) {
+			t.Errorf("album %s: %d items", aid, i)
+		}
+	}
+}

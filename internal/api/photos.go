@@ -94,15 +94,36 @@ func pruneFrames(ctx context.Context, tx *sql.Tx, cid string) error {
 			return err
 		}
 	}
-	// Same two-step renumbering for positions (UNIQUE(collection_id, position)).
-	if _, err := tx.ExecContext(ctx, `UPDATE frames SET position = -1 - (SELECT count(*) FROM frames o
-		WHERE o.collection_id=frames.collection_id AND o.position < frames.position) WHERE collection_id=?`, cid); err != nil {
+	if err := renumberFrames(ctx, tx, cid); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE frames SET position = -1 - position WHERE collection_id=?`, cid); err != nil {
+	if err := demoteIfEmpty(ctx, tx, cid); err != nil {
 		return err
 	}
 	return dropDetached(ctx, tx, cid)
+}
+
+// renumberFrames makes a collection's positions dense (0..n-1) keeping their
+// order. Ranks come from a row_number() snapshot taken before the UPDATE
+// writes, so the result does not depend on rowid order; staging through
+// negatives avoids UNIQUE(collection_id, position) collisions.
+func renumberFrames(ctx context.Context, tx *sql.Tx, cid string) error {
+	if _, err := tx.ExecContext(ctx, `UPDATE frames SET position = -1 - n.rn
+		FROM (SELECT id, row_number() OVER (ORDER BY position) - 1 AS rn FROM frames WHERE collection_id=?) AS n
+		WHERE frames.id = n.id`, cid); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `UPDATE frames SET position = -1 - position WHERE collection_id=? AND position < 0`, cid)
+	return err
+}
+
+// demoteIfEmpty returns a published collection left with no frames to draft:
+// publishing requires at least one frame. The caller's withdrawal pass then
+// sees its photos (none remain) as unexposed.
+func demoteIfEmpty(ctx context.Context, tx *sql.Tx, cid string) error {
+	_, err := tx.ExecContext(ctx, `UPDATE collections SET status='draft'
+		WHERE id=? AND status='published' AND NOT EXISTS (SELECT 1 FROM frames WHERE collection_id=?)`, cid, cid)
+	return err
 }
 
 // derivedPrefix is the derived-bucket prefix holding every rendition of a

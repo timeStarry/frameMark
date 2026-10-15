@@ -229,3 +229,16 @@ func (s *server) albumResponse(ctx context.Context, code int, owner, id string) 
 	}
 	return code, &a, nil
 }
+
+// renumberAlbum makes an album's item positions dense (0..n-1) keeping their
+// order, from a row_number() snapshot staged through negatives so the
+// (album_id, position) primary key never collides.
+func renumberAlbum(ctx context.Context, tx *sql.Tx, aid string) error {
+	if _, err := tx.ExecContext(ctx, `UPDATE album_items SET position = -1 - n.rn
+		FROM (SELECT collection_id, row_number() OVER (ORDER BY position) - 1 AS rn FROM album_items WHERE album_id=?) AS n
+		WHERE album_items.album_id=? AND album_items.collection_id = n.collection_id`, aid, aid); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `UPDATE album_items SET position = -1 - position WHERE album_id=? AND position < 0`, aid)
+	return err
+}

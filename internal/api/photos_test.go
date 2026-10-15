@@ -191,3 +191,77 @@ func TestDeleteNonReadyPhoto(t *testing.T) {
 		t.Fatalf("jobs %v", js)
 	}
 }
+
+// Frames whose rowid order differs from position order must still renumber
+// densely (the renumbering reads a snapshot, not rows updated mid-statement).
+func TestDeletePhotoRenumbersOutOfOrderRowids(t *testing.T) {
+	e := newEnv(t)
+	u := e.user("u1")
+	p := e.readyPhoto("u1")
+	cid := u.newCollection("A")
+	// rowid order: positions 3, 2, 0, 1.
+	ids := map[int]string{3: newID(), 2: newID(), 0: newID(), 1: newID()}
+	for _, pos := range []int{3, 2, 0} {
+		e.exec(`INSERT INTO frames(id,collection_id,position,layout,text) VALUES(?,?,?,'text','x')`, ids[pos], cid, pos)
+	}
+	e.exec(`INSERT INTO frames(id,collection_id,position,layout) VALUES(?,?,1,'full')`, ids[1], cid)
+	e.exec(`INSERT INTO frame_photos(frame_id,slot,photo_id) VALUES(?,0,?)`, ids[1], p)
+	if r := u.del("/api/photos/" + p); r.code != 204 {
+		t.Fatalf("%d %s", r.code, r.raw)
+	}
+	rows, err := e.d.Query(`SELECT id,position FROM frames WHERE collection_id=? ORDER BY position`, cid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	want := []string{ids[0], ids[2], ids[3]}
+	i := 0
+	for rows.Next() {
+		var id string
+		var pos int
+		if err := rows.Scan(&id, &pos); err != nil {
+			t.Fatal(err)
+		}
+		if i >= len(want) || id != want[i] || pos != i {
+			t.Fatalf("frame %d: %s at %d", i, id, pos)
+		}
+		i++
+	}
+	if i != 3 {
+		t.Fatalf("%d frames", i)
+	}
+}
+
+// Pruning a published collection down to no frames demotes it to draft and
+// withdraws the photos that were only exposed there.
+func TestDeletePhotoDemotesEmptiedPublishedCollection(t *testing.T) {
+	e := newEnv(t)
+	u := e.user("u1")
+	a, b := e.readyPhoto("u1"), e.readyPhoto("u1")
+	cid := u.newCollection("A")
+	u.mustFrames(cid, pair(a, b))
+	u.publishPublic(cid)
+	if r := u.del("/api/photos/" + a); r.code != 204 {
+		t.Fatalf("%d %s", r.code, r.raw)
+	}
+	var status string
+	var n int
+	_ = e.d.QueryRow(`SELECT status,(SELECT count(*) FROM frames WHERE collection_id=?) FROM collections WHERE id=?`, cid, cid).Scan(&status, &n)
+	if status != "draft" || n != 0 {
+		t.Fatalf("status %s, %d frames", status, n)
+	}
+	if got := e.rotated(); !sameIDs(got, []string{b}) {
+		t.Fatalf("rotated %v", got)
+	}
+	// A published collection that keeps a frame stays published.
+	c2 := u.newCollection("B")
+	u.mustFrames(c2, full(b), textFrame("x"))
+	u.publishPublic(c2)
+	if r := u.del("/api/photos/" + b); r.code != 204 {
+		t.Fatal(r.raw)
+	}
+	_ = e.d.QueryRow(`SELECT status FROM collections WHERE id=?`, c2).Scan(&status)
+	if status != "published" {
+		t.Fatalf("c2 %s", status)
+	}
+}
