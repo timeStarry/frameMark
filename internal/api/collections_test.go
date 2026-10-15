@@ -615,8 +615,15 @@ func TestWithdrawalOnVisibilityChange(t *testing.T) {
 	if got := e.rotated(); !sameIDs(got, sorted(a, b)) {
 		t.Fatalf("rotated %v, want %v", got, sorted(a, b))
 	}
-	// Now c2 public -> unlisted: shared leaves too.
+	// c2 public -> unlisted: still exposed (unlisted links carry the hash).
 	if r := u.updateCollection(c2, map[string]any{"visibility": "unlisted"}); r.code != 200 {
+		t.Fatal(r.raw)
+	}
+	if got := e.rotated(); !sameIDs(got, sorted(a, b)) {
+		t.Fatalf("rotated %v", got)
+	}
+	// c2 unlisted -> private: shared leaves its last exposed collection.
+	if r := u.updateCollection(c2, map[string]any{"visibility": "private"}); r.code != 200 {
 		t.Fatal(r.raw)
 	}
 	if got := e.rotated(); !sameIDs(got, sorted(a, b, shared)) {
@@ -715,7 +722,20 @@ func TestWithdrawalFramesKeepOtherPublicExposure(t *testing.T) {
 	}
 }
 
-func TestWithdrawalUnlistedIsNotPublicExposure(t *testing.T) {
+// publishUnlisted makes cid a published unlisted collection.
+func (c *client) publishUnlisted(cid string) {
+	c.e.t.Helper()
+	if r := c.updateCollection(cid, map[string]any{"visibility": "unlisted"}); r.code != 200 {
+		c.e.t.Fatalf("visibility: %d %s", r.code, r.raw)
+	}
+	if r := c.post("/api/collections/"+cid+"/publish", ""); r.code != 200 {
+		c.e.t.Fatalf("publish: %d %s", r.code, r.raw)
+	}
+}
+
+// Unlisted links carry the derived hash, so a published unlisted collection
+// is exposure too (Task 13 ruling I1).
+func TestWithdrawalUnlistedIsExposure(t *testing.T) {
 	e := newEnv(t)
 	u := e.user("u1")
 	a := e.readyPhoto("u1")
@@ -724,15 +744,54 @@ func TestWithdrawalUnlistedIsNotPublicExposure(t *testing.T) {
 	u.mustFrames(pub, full(a), textFrame("x"))
 	u.mustFrames(unl, full(a))
 	u.publishPublic(pub)
-	if r := u.updateCollection(unl, map[string]any{"visibility": "unlisted"}); r.code != 200 {
-		t.Fatal(r.raw)
-	}
-	if r := u.post("/api/collections/"+unl+"/publish", ""); r.code != 200 {
-		t.Fatal(r.raw)
-	}
-	// a's only remaining exposure is an unlisted published collection.
+	u.publishUnlisted(unl)
+	// a stays exposed through the unlisted collection: nothing enqueued.
 	u.mustFrames(pub, textFrame("x"))
-	if got := e.rotated(); !sameIDs(got, []string{a}) {
+	if got := e.rotated(); len(got) != 0 {
+		t.Fatalf("rotated %v", got)
+	}
+}
+
+func TestWithdrawalUnlistedOnly(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		act  func(u *client, cid string) resp
+	}{
+		{"to private", func(u *client, cid string) resp {
+			return u.updateCollection(cid, map[string]any{"visibility": "private"})
+		}},
+		{"unpublish", func(u *client, cid string) resp { return u.post("/api/collections/"+cid+"/unpublish", "") }},
+		{"delete", func(u *client, cid string) resp { return u.del("/api/collections/" + cid) }},
+		{"frames", func(u *client, cid string) resp { return u.setFrames(cid, textFrame("x")) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+			u := e.user("u1")
+			a := e.readyPhoto("u1")
+			unl := u.newCollection("unlisted")
+			u.mustFrames(unl, full(a))
+			u.publishUnlisted(unl)
+			if r := tc.act(u, unl); r.code != 200 && r.code != 204 {
+				t.Fatalf("%d %s", r.code, r.raw)
+			}
+			if got := e.rotated(); !sameIDs(got, []string{a}) {
+				t.Fatalf("rotated %v", got)
+			}
+		})
+	}
+}
+
+func TestWithdrawalUnlistedToPublicNoRotate(t *testing.T) {
+	e := newEnv(t)
+	u := e.user("u1")
+	a := e.readyPhoto("u1")
+	unl := u.newCollection("unlisted")
+	u.mustFrames(unl, full(a))
+	u.publishUnlisted(unl)
+	if r := u.updateCollection(unl, map[string]any{"visibility": "public"}); r.code != 200 {
+		t.Fatal(r.raw)
+	}
+	if got := e.rotated(); len(got) != 0 {
 		t.Fatalf("rotated %v", got)
 	}
 }

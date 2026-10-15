@@ -382,7 +382,8 @@ func (s *server) collectionPhotos(ctx context.Context, c collRow, viewer string)
 			raw := json.RawMessage(attr.String)
 			v.Attribution = &raw
 		}
-		v.Downloadable = domain.CanDownloadOriginal(p, c.Collection, viewer)
+		// /original serves only ready photos, so only those are downloadable.
+		v.Downloadable = status == statusReady && domain.CanDownloadOriginal(p, c.Collection, viewer)
 		out[v.ID] = &v
 	}
 	return out, rows.Err()

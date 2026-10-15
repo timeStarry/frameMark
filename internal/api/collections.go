@@ -189,7 +189,7 @@ func (s *server) updateCollection(w http.ResponseWriter, r *http.Request) (int, 
 				return err
 			}
 		}
-		before, err := publicPhotos(ctx, tx, owner)
+		before, err := exposedPhotos(ctx, tx, owner)
 		if err != nil {
 			return err
 		}
@@ -238,7 +238,7 @@ func (s *server) deleteCollection(w http.ResponseWriter, r *http.Request) (int, 
 		if _, _, err := ownedCollection(ctx, tx, owner, id); err != nil {
 			return err
 		}
-		before, err := publicPhotos(ctx, tx, owner)
+		before, err := exposedPhotos(ctx, tx, owner)
 		if err != nil {
 			return err
 		}
@@ -318,7 +318,7 @@ func (s *server) putFrames(w http.ResponseWriter, r *http.Request) (int, any, er
 		if err := checkReadyPhotos(ctx, tx, owner, refs); err != nil {
 			return err
 		}
-		before, err := publicPhotos(ctx, tx, owner)
+		before, err := exposedPhotos(ctx, tx, owner)
 		if err != nil {
 			return err
 		}
@@ -579,7 +579,7 @@ func (s *server) unpublishCollection(w http.ResponseWriter, r *http.Request) (in
 		if err != nil || status == domain.StatusDraft {
 			return err
 		}
-		before, err := publicPhotos(ctx, tx, owner)
+		before, err := exposedPhotos(ctx, tx, owner)
 		if err != nil {
 			return err
 		}
@@ -660,12 +660,13 @@ func (s *server) putOverride(w http.ResponseWriter, r *http.Request) (int, any, 
 
 // --- withdrawal (spec §7 撤回) ---
 
-// publicPhotos returns the ids of owner's photos that appear in at least one
-// of owner's published public collections.
-func publicPhotos(ctx context.Context, tx *sql.Tx, owner string) (map[string]struct{}, error) {
+// exposedPhotos returns the ids of owner's photos that appear in at least
+// one of owner's published public or unlisted collections. Unlisted counts
+// as exposure: anyone holding the link has seen the derived hash.
+func exposedPhotos(ctx context.Context, tx *sql.Tx, owner string) (map[string]struct{}, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT DISTINCT fp.photo_id FROM frame_photos fp
 		JOIN frames f ON f.id=fp.frame_id JOIN collections c ON c.id=f.collection_id
-		WHERE c.owner_id=? AND c.status='published' AND c.visibility='public'`, owner)
+		WHERE c.owner_id=? AND c.status='published' AND c.visibility IN ('public','unlisted')`, owner)
 	if err != nil {
 		return nil, err
 	}
@@ -682,13 +683,13 @@ func publicPhotos(ctx context.Context, tx *sql.Tx, owner string) (map[string]str
 }
 
 // withdraw enqueues rotate_derived for every photo in before (the
-// publicPhotos set taken earlier in the same tx) that is no longer publicly
+// exposedPhotos set taken earlier in the same tx) that is no longer
 // exposed, so its old derived URLs stop resolving.
 func (s *server) withdraw(ctx context.Context, tx *sql.Tx, owner string, before map[string]struct{}) error {
 	if len(before) == 0 {
 		return nil
 	}
-	after, err := publicPhotos(ctx, tx, owner)
+	after, err := exposedPhotos(ctx, tx, owner)
 	if err != nil {
 		return err
 	}

@@ -41,7 +41,7 @@ func (s *server) deletePhoto(w http.ResponseWriter, r *http.Request) (int, any, 
 		if err != nil {
 			return err
 		}
-		before, err := publicPhotos(ctx, tx, owner)
+		before, err := exposedPhotos(ctx, tx, owner)
 		if err != nil {
 			return err
 		}

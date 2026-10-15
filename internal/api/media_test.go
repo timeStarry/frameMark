@@ -195,6 +195,13 @@ func TestOriginalDownload(t *testing.T) {
 	if g := e.st.lastGet(); g.Name != p+".jpg" {
 		t.Fatalf("empty title name %q", g.Name)
 	}
+	for format, ext := range map[string]string{"png": ".png", "webp": ".webp", "heic": ".bin", "": ".bin"} {
+		e.exec(`UPDATE photos SET title='T',format=? WHERE id=?`, format, p)
+		u1.raw(base)
+		if g := e.st.lastGet(); g.Name != "T"+ext {
+			t.Errorf("format %q: name %q", format, g.Name)
+		}
+	}
 	e.exec(`UPDATE photos SET status='failed' WHERE id=?`, p)
 	is404JSON(t, u1.raw(base), "failed photo")
 }
@@ -231,5 +238,25 @@ func TestOwnerPhotoMedia(t *testing.T) {
 	e.exec(`UPDATE photos SET derived_hash=?,status='processing' WHERE id=?`, hashA, p)
 	if g := u1.get("/api/photos/" + p); g.body["media"] != nil {
 		t.Fatalf("media while processing: %s", g.raw)
+	}
+}
+
+func TestDownloadableRequiresReady(t *testing.T) {
+	e := newEnv(t)
+	u1, u2 := e.user("u1"), e.user("u2")
+	p := e.mediaPhoto("u1", "P")
+	cid := u1.coll("published", "public", map[string]any{"originalDownload": true}, p)
+	flag := func() any {
+		r := u2.get("/api/collections/" + cid)
+		return r.body["frames"].([]any)[0].(map[string]any)["photos"].([]any)[0].(map[string]any)["downloadable"]
+	}
+	if flag() != true {
+		t.Fatal("ready photo not downloadable")
+	}
+	for _, st := range []string{"processing", "failed"} {
+		e.exec(`UPDATE photos SET status=? WHERE id=?`, st, p)
+		if flag() != false {
+			t.Errorf("%s photo downloadable", st)
+		}
 	}
 }

@@ -2,7 +2,9 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -212,9 +214,9 @@ func (s *server) reserve(ctx context.Context, owner string, in createInput, form
 		}
 		id = u.String()
 		_, err = tx.ExecContext(ctx, `INSERT INTO photos(id,owner_id,status,original_key,original_sha256,original_bytes,format,
-			title,public_fields,histogram_public,original_download,created_at,updated_at)
-			VALUES(?,?,'uploading',?,?,?,?,?,?,?,?,?,?)`,
-			id, owner, originalKey(owner, id), in.SHA256, in.Bytes, format, title, fields, hist, orig, now, now)
+			title,public_fields,histogram_public,original_download,derived_salt,created_at,updated_at)
+			VALUES(?,?,'uploading',?,?,?,?,?,?,?,?,?,?,?)`,
+			id, owner, originalKey(owner, id), in.SHA256, in.Bytes, format, title, fields, hist, orig, newSalt(), now, now)
 		if isUniqueViolation(err) {
 			return "", false, httperr.Fail(http.StatusConflict, msgConflict)
 		}
@@ -470,6 +472,15 @@ func (s *server) loadPhoto(ctx context.Context, owner, id string) (*photoView, e
 // --- helpers ---
 
 func originalKey(owner, id string) string { return "o/" + owner + "/" + id }
+
+// newSalt is a random 16-byte hex derived_salt for a new photo, so its
+// derived hash (and so its media URLs) cannot be computed from the
+// original's sha256. Reused rows keep theirs.
+func newSalt() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b) // crypto/rand.Read never returns an error
+	return hex.EncodeToString(b)
+}
 
 func isLowerHex64(s string) bool {
 	if len(s) != 64 {

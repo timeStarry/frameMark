@@ -240,7 +240,10 @@ func downloadName(id, title, format string) string {
 	if name == "" {
 		name = id
 	}
-	ext := map[string]string{"jpeg": ".jpg", "png": ".png", "webp": ".webp"}[format]
+	ext, ok := map[string]string{"jpeg": ".jpg", "png": ".png", "webp": ".webp"}[format]
+	if !ok {
+		ext = ".bin" // unknown format: never serve an extensionless name
+	}
 	return name + ext
 }
 

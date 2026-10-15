@@ -194,6 +194,34 @@ func TestCreateUploadSnapshotsPrefs(t *testing.T) {
 	}
 }
 
+// New photos get a random 16-byte hex derived_salt so derived URLs cannot
+// be computed from the original's sha256 (Task 13 ruling I1).
+func TestNewPhotoGetsRandomSalt(t *testing.T) {
+	e := newEnv(t)
+	u := e.user("u1")
+	salt := func(id string) string {
+		var s string
+		if err := e.d.QueryRow(`SELECT derived_salt FROM photos WHERE id=?`, id).Scan(&s); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	a, b := u.initiate(shaN(1), 10), u.initiate(shaN(2), 10)
+	sa, sb := salt(a), salt(b)
+	for _, s := range []string{sa, sb} {
+		if len(s) != 32 || strings.Trim(s, "0123456789abcdef") != "" {
+			t.Fatalf("salt %q", s)
+		}
+	}
+	if sa == sb {
+		t.Fatal("salts repeat")
+	}
+	// Re-initiating the same uploading row keeps its salt.
+	if again := u.initiate(shaN(1), 10); again != a || salt(a) != sa {
+		t.Fatalf("reuse changed salt: %s %q", again, salt(a))
+	}
+}
+
 func TestTitleDefault(t *testing.T) {
 	e := newEnv(t)
 	u := e.user("u1")
