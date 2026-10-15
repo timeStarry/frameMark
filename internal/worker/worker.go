@@ -519,8 +519,11 @@ func (w *Worker) processPhoto(ctx context.Context, raw json.RawMessage) error {
 	}
 	body, err := w.store.Get(ctx, w.cfg.BucketOriginals, row.key, w.maxBytes())
 	if err != nil {
-		if errors.Is(err, storage.ErrNotFound) || errors.Is(err, storage.ErrTooLarge) {
-			return w.failPermanently(ctx, id, msgSHA)
+		if errors.Is(err, storage.ErrNotFound) {
+			return w.failPermanently(ctx, id, "原图缺失，请重新上传。")
+		}
+		if errors.Is(err, storage.ErrTooLarge) {
+			return w.failPermanently(ctx, id, "原图超过大小上限。")
 		}
 		return err
 	}

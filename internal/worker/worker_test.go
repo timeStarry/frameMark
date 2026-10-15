@@ -634,6 +634,22 @@ func TestProcessPhotoSHAMismatch(t *testing.T) {
 	}
 }
 
+func TestProcessPhotoOriginalMissingOrTooLarge(t *testing.T) {
+	e := newEnv(t, nil)
+	missing := e.addPhoto("processing", testJPEG(t, false))
+	e.st.Delete(context.Background(), origB, "o/"+owner+"/"+missing)
+	big := e.addPhoto("processing", testJPEG(t, true))
+	e.st.put(origB, "o/"+owner+"/"+big, make([]byte, 3<<20)) // UploadMaxMB is 2
+	for id, msg := range map[string]string{missing: "原图缺失，请重新上传。", big: "原图超过大小上限。"} {
+		jid := e.enqueue("process_photo", map[string]string{"photoId": id})
+		e.runOne()
+		p, _ := e.photo(id)
+		if p.status != "failed" || p.err.String != msg || e.jobState(jid) != "dead" {
+			t.Errorf("photo %s: %s %q job %s", id, p.status, p.err.String, e.jobState(jid))
+		}
+	}
+}
+
 func TestProcessPhotoMissingOrNotProcessingIsNoop(t *testing.T) {
 	e := newEnv(t, nil)
 	j1 := e.enqueue("process_photo", map[string]string{"photoId": newID()})

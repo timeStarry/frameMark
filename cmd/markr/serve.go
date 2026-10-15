@@ -126,7 +126,7 @@ func cmdServe(ctx context.Context, cfg config.Config, role string, log *slog.Log
 				Region:    defaultStr(cfg.ReplicaRegion, "us-east-1"),
 				AccessKey: cfg.ReplicaAccessKey,
 				SecretKey: cfg.ReplicaSecretKey,
-				PathStyle: true,
+				PathStyle: cfg.ReplicaPathStyle,
 			})
 			if err != nil {
 				return err
@@ -143,7 +143,7 @@ func cmdServe(ctx context.Context, cfg config.Config, role string, log *slog.Log
 	}
 
 	var mailer identity.Mailer
-	if cfg.SMTPConfigFile != "" {
+	if (role == "api" || role == "all") && cfg.SMTPConfigFile != "" {
 		s, err := mail.LoadSMTP(cfg.SMTPConfigFile)
 		if err != nil {
 			return err
@@ -151,11 +151,14 @@ func cmdServe(ctx context.Context, cfg config.Config, role string, log *slog.Log
 		mailer = mail.NewSMTP(s)
 	}
 
-	id, err := identity.New(d, identity.Deps{
-		Origin: cfg.Origin, Dev: cfg.Dev, Enabled: cfg.IdentityOn, RegistrationOpen: cfg.RegOpen, Mailer: mailer,
-	})
-	if err != nil {
-		return err
+	var id *identity.Service
+	if role == "api" || role == "all" {
+		id, err = identity.New(d, identity.Deps{
+			Origin: cfg.Origin, Dev: cfg.Dev, Enabled: cfg.IdentityOn, RegistrationOpen: cfg.RegOpen, Mailer: mailer,
+		})
+		if err != nil {
+			return err
+		}
 	}
 
 	q := jobs.New(d, clock.Now)
@@ -217,17 +220,14 @@ func cmdServe(ctx context.Context, cfg config.Config, role string, log *slog.Log
 	}
 	// Worker Run honours ctx and finishes in-flight handlers (and their
 	// DB writes) before returning. Wait for both goroutines.
-	done := make(chan struct{})
-	go func() { wg.Wait(); close(done) }()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Minute):
-		log.Error("shutdown timed out")
-	}
+	wg.Wait()
 
-	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-	defer cancel()
-	return id.Close(cctx)
+	if id != nil {
+		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		return id.Close(cctx)
+	}
+	return nil
 }
 
 func defaultStr(v, d string) string {

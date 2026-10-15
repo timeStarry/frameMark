@@ -24,6 +24,7 @@ type Config struct {
 	S3PathStyle bool
 
 	ReplicaEndpoint, ReplicaRegion, ReplicaAccessKey, ReplicaSecretKey, ReplicaBucket string
+	ReplicaPathStyle                                                                  bool
 
 	CDNBase                           string
 	EOSecretID, EOSecretKey, EOZoneID string
@@ -99,6 +100,7 @@ func Load(environ []string) (Config, error) {
 	cfg.ReplicaEndpoint, cfg.ReplicaRegion = env["MARKR_REPLICA_ENDPOINT"], env["MARKR_REPLICA_REGION"]
 	cfg.ReplicaAccessKey, cfg.ReplicaSecretKey = env["MARKR_REPLICA_ACCESS_KEY"], env["MARKR_REPLICA_SECRET_KEY"]
 	cfg.ReplicaBucket = env["MARKR_REPLICA_BUCKET"]
+	cfg.ReplicaPathStyle = env["MARKR_REPLICA_PATH_STYLE"] == "true"
 	cfg.CDNBase = strings.TrimRight(env["MARKR_CDN_BASE"], "/")
 	cfg.EOSecretID, cfg.EOSecretKey, cfg.EOZoneID = env["MARKR_EO_SECRET_ID"], env["MARKR_EO_SECRET_KEY"], env["MARKR_EO_ZONE_ID"]
 

@@ -59,6 +59,21 @@ func TestMigrateCommand(t *testing.T) {
 	if fi, err := os.Stat(dir); err != nil || fi.Mode().Perm() != 0o700 {
 		t.Fatalf("data dir mode = %v, %v", fi.Mode().Perm(), err)
 	}
+	d.Close()
+
+	// A second migrate is a no-op.
+	if err := run(context.Background(), []string{"migrate"}, testEnv(dir), &out); err != nil {
+		t.Fatalf("second migrate: %v", err)
+	}
+	d2, err := db.Open(filepath.Join(dir, dbFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d2.Close()
+	var v2 int
+	if err := d2.QueryRow(`PRAGMA user_version`).Scan(&v2); err != nil || v2 != v {
+		t.Fatalf("user_version after second migrate = %d, %v; want %d", v2, err, v)
+	}
 }
 
 func TestUsageErrors(t *testing.T) {
@@ -142,7 +157,13 @@ func TestServeWorkerRoleShutsDown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	var logs syncBuffer
-	go func() { done <- run(ctx, []string{"serve", "--role=worker"}, testEnv(dir), &logs) }()
+	// The worker role never builds identity, so an unusable SMTP file is
+	// not loaded (role=api would fail on it).
+	smtp := testEnv(dir, "MARKR_SMTP_CONFIG_FILE="+filepath.Join(dir, "missing.env"))
+	if err := run(context.Background(), []string{"serve", "--role=api"}, smtp, io.Discard); err == nil {
+		t.Fatal("api role must fail on a missing SMTP file")
+	}
+	go func() { done <- run(ctx, []string{"serve", "--role=worker"}, smtp, &logs) }()
 	time.Sleep(200 * time.Millisecond)
 	cancel()
 	select {

@@ -151,3 +151,15 @@ func TestLoad_S3PathStyle(t *testing.T) {
 		t.Fatalf("path style = %v, %v", cfg.S3PathStyle, err)
 	}
 }
+
+func TestLoad_ReplicaPathStyle(t *testing.T) {
+	base := []string{"MARKR_ORIGIN=https://example.com", "MARKR_DATA_DIR=/tmp/x"}
+	cfg, err := config.Load(base)
+	if err != nil || cfg.ReplicaPathStyle {
+		t.Fatalf("default replica path style = %v, %v", cfg.ReplicaPathStyle, err)
+	}
+	cfg, err = config.Load(append(base, "MARKR_REPLICA_PATH_STYLE=true"))
+	if err != nil || !cfg.ReplicaPathStyle {
+		t.Fatalf("replica path style = %v, %v", cfg.ReplicaPathStyle, err)
+	}
+}
