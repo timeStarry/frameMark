@@ -1,5 +1,7 @@
 # 子项目 1 实施计划：Go 底座与媒体管线
 
+> **执行后说明（2026-10-15）：** 本计划是实施前的论证，已执行完毕。执行中的裁决（自写 EXIF 解析器代替 goexif、60 MP 上限、`PurgePrefixes`、水印用 `vips.Text`、非作者一律 404、`purge_derived` 与双重暴露规则、环境变量门控的 MinIO 测试等）记录在规格中；两者冲突时以规格为准。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 交付 `markr` Go 单二进制：SQLite 结构、账户、TOS 预签名直传、libvips 媒体管线、SQLite 任务队列、读取与权限、EO purge、Demo 种子、端到端验收。
