@@ -139,22 +139,38 @@ export class WheelAccumulator {
     this.lockMs = opts?.lockMs ?? 500
   }
 
+  /** True while wheel input is swallowed (the rolling post-trigger lock). */
+  locked(t: number): boolean {
+    return t < this.lockUntil
+  }
+
   push(e: WheelSample): Intent | null {
-    // Inside the lock: swallow (absorbs inertial scrolling), do not accumulate.
-    if (e.t < this.lockUntil) return null
+    // Rolling lock: any event inside it is swallowed (not accumulated) and
+    // extends it, so one flick plus its momentum pages at most once until a
+    // quiet gap of lockMs.
+    if (e.t < this.lockUntil) {
+      this.lockUntil = e.t + this.lockMs
+      return null
+    }
+
+    // Each event counts only on its dominant axis, so drift on the minor
+    // axis never accumulates into a (heavy) collection change.
+    const vertical = Math.abs(e.deltaY) >= Math.abs(e.deltaX)
+    const d = vertical ? e.deltaY : e.deltaX
+    if (d === 0) return null
 
     if (e.deltaMode !== 0) {
       // Line/page mode: one notch flips immediately.
-      const vertical = Math.abs(e.deltaY) >= Math.abs(e.deltaX)
-      const d = vertical ? e.deltaY : e.deltaX
-      if (d === 0) return null
       return this.trigger(vertical ? 'frame' : 'collection', d, e.t)
     }
 
-    this.accY = accumulate(this.accY, e.deltaY)
-    this.accX = accumulate(this.accX, e.deltaX)
-    if (Math.abs(this.accY) >= this.threshold) return this.trigger('frame', this.accY, e.t)
-    if (Math.abs(this.accX) >= this.threshold) return this.trigger('collection', this.accX, e.t)
+    if (vertical) {
+      this.accY = accumulate(this.accY, d)
+      if (Math.abs(this.accY) >= this.threshold) return this.trigger('frame', this.accY, e.t)
+    } else {
+      this.accX = accumulate(this.accX, d)
+      if (Math.abs(this.accX) >= this.threshold) return this.trigger('collection', this.accX, e.t)
+    }
     return null
   }
 

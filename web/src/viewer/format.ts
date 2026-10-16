@@ -12,7 +12,10 @@ function num(n: number, digits: number): string {
 }
 
 export function formatFocal(exif: Exif): string | null {
-  if (exif.focalLength === undefined) return null
+  if (exif.focalLength === undefined) {
+    // Only the 35mm equivalent is known: show it alone, labelled.
+    return exif.focalLength35mm === undefined ? null : `等效 ${num(exif.focalLength35mm, 0)}mm`
+  }
   const real = num(exif.focalLength, 1)
   if (exif.focalLength35mm === undefined) return `${real}mm`
   const eq = num(exif.focalLength35mm, 0)
@@ -63,7 +66,15 @@ export function formatBias(exif: Exif): string | null {
   return t === '0 EV' ? null : t
 }
 
-/** Unix ms -> "YYYY.MM.DD" in UTC, matching how the pipeline stores takenAt. */
+/**
+ * Unix ms -> "YYYY.MM.DD" in UTC.
+ *
+ * Known limitation: the backend stores takenAt as the wall clock interpreted
+ * as UTC when EXIF has no OffsetTimeOriginal (UTC formatting is then exact),
+ * but as the true UTC instant when an offset is present. For the latter the
+ * shown day can be off by one for shots near local midnight. No frontend
+ * timezone choice fixes both cases; SP4 will store the offset and fix this.
+ */
 export function formatDate(ms: number): string {
   const d = new Date(ms)
   const p = (n: number) => String(n).padStart(2, '0')

@@ -46,6 +46,26 @@ describe('getCollection', () => {
     expect(await getCollection('c1')).toEqual({ ok: false, status: 0 })
   })
 
+  it('maps an aborted request to status -1', async () => {
+    mockFetch(async () => {
+      throw new DOMException('The operation was aborted.', 'AbortError')
+    })
+    expect(await getCollection('c1')).toEqual({ ok: false, status: -1 })
+  })
+
+  it('maps an abort while reading the body to status -1', async () => {
+    const ctl = new AbortController()
+    mockFetch(async () => {
+      const r = json({ id: 'c1' })
+      r.json = async () => {
+        ctl.abort()
+        throw new DOMException('The operation was aborted.', 'AbortError')
+      }
+      return r
+    })
+    expect(await getCollection('c1', ctl.signal)).toEqual({ ok: false, status: -1 })
+  })
+
   it('maps an unparsable body to status 0', async () => {
     mockFetch(async () => new Response('<html>', { status: 200 }))
     expect(await getCollection('c1')).toEqual({ ok: false, status: 0 })

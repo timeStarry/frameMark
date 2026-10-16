@@ -97,6 +97,52 @@ describe('PointerGesture', () => {
     expect(g.end(200, 395, 4)).toBeNull()
   })
 
+  // Slow drag to (x, y) by t=1000, then release still at t=2000: velocity 0.
+  const slowDrag = (g: PointerGesture, x0: number, y0: number, x: number, y: number) => {
+    g.start(x0, y0, 0)
+    g.move((x0 + x) / 2, (y0 + y) / 2, 500)
+    g.move(x, y, 1000)
+    return g.end(x, y, 2000)
+  }
+
+  it('distance threshold: 19% of height springs back, 21% commits', () => {
+    expect(slowDrag(new PointerGesture(cfg()), 200, 600, 200, 600 - 152)).toBeNull()
+    expect(slowDrag(new PointerGesture(cfg()), 200, 600, 200, 600 - 168)).toEqual({ kind: 'frame', dir: 1 })
+    expect(slowDrag(new PointerGesture(cfg()), 200, 100, 200, 100 + 168)).toEqual({ kind: 'frame', dir: -1 })
+  })
+
+  it('distance threshold: 19% of width springs back, 21% commits', () => {
+    expect(slowDrag(new PointerGesture(cfg()), 300, 400, 300 - 76, 400)).toBeNull()
+    expect(slowDrag(new PointerGesture(cfg()), 300, 400, 300 - 84, 400)).toEqual({ kind: 'collection', dir: 1 })
+  })
+
+  // Steady drag over 100ms covering `px`, released while moving.
+  const steady = (px: number) => {
+    const g = new PointerGesture(cfg())
+    g.start(200, 400, 0)
+    for (let t = 10; t <= 100; t += 10) g.move(200, 400 - (px * t) / 100, t)
+    return g.end(200, 400 - px, 100)
+  }
+
+  it('velocity threshold: 0.39 px/ms springs back, 0.41 px/ms commits', () => {
+    expect(steady(39)).toBeNull()
+    expect(steady(41)).toEqual({ kind: 'frame', dir: 1 })
+  })
+
+  it('velocity uses the recent window, not the average since start', () => {
+    const g = new PointerGesture(cfg())
+    g.start(200, 600, 0)
+    let y = 600
+    for (let t = 50; t <= 1000; t += 50) {
+      y -= 5 // 0.1 px/ms
+      g.move(200, y, t)
+    }
+    y -= 40 // flick: 40px in 50ms
+    g.move(200, y, 1050)
+    // total 140px < 160px, average 0.13 px/ms, recent window 0.45 px/ms
+    expect(g.end(200, y, 1050)).toEqual({ kind: 'frame', dir: 1 })
+  })
+
   it('cancel resets the gesture', () => {
     const g = new PointerGesture(cfg())
     g.start(200, 600, 0)
@@ -129,9 +175,54 @@ describe('WheelAccumulator', () => {
     const w = new WheelAccumulator()
     expect(w.push({ deltaX: 0, deltaY: 60, deltaMode: 0, t: 0 })).toEqual({ kind: 'frame', dir: 1 })
     expect(w.push({ deltaX: 0, deltaY: 200, deltaMode: 0, t: 499 })).toBeNull()
-    // accumulation restarts from 0 after the lock: 200 swallowed above must not count
-    expect(w.push({ deltaX: 0, deltaY: -30, deltaMode: 0, t: 500 })).toBeNull()
-    expect(w.push({ deltaX: 0, deltaY: -30, deltaMode: 0, t: 516 })).toEqual({ kind: 'frame', dir: -1 })
+    // the event at 499 rolled the lock to 999; accumulation restarts from 0 after it
+    expect(w.push({ deltaX: 0, deltaY: -30, deltaMode: 0, t: 999 })).toBeNull()
+    expect(w.push({ deltaX: 0, deltaY: -30, deltaMode: 0, t: 1015 })).toEqual({ kind: 'frame', dir: -1 })
+  })
+
+  it('trackpad momentum decaying over ~1.5s produces exactly 1 intent (rolling lock)', () => {
+    const w = new WheelAccumulator()
+    const intents = []
+    for (let i = 0, t = 0; t <= 1500; i++, t += 16) {
+      const d = Math.max(1, Math.round(40 * 0.96 ** i))
+      const r = w.push({ deltaX: 0, deltaY: d, deltaMode: 0, t })
+      if (r) intents.push(r)
+    }
+    expect(intents).toEqual([{ kind: 'frame', dir: 1 }])
+  })
+
+  it('two deliberate flicks separated by a 600ms quiet gap produce 2 intents', () => {
+    const w = new WheelAccumulator()
+    const intents = []
+    let t = 0
+    for (let flick = 0; flick < 2; flick++) {
+      for (let i = 0; i < 10; i++, t += 16) {
+        const r = w.push({ deltaX: 0, deltaY: 30, deltaMode: 0, t })
+        if (r) intents.push(r)
+      }
+      t += 600
+    }
+    expect(intents).toEqual([
+      { kind: 'frame', dir: 1 },
+      { kind: 'frame', dir: 1 },
+    ])
+  })
+
+  it('the lock keeps rolling while events keep arriving', () => {
+    const w = new WheelAccumulator()
+    expect(w.push({ deltaX: 0, deltaY: 60, deltaMode: 0, t: 0 })).not.toBeNull()
+    expect(w.push({ deltaX: 0, deltaY: 60, deltaMode: 0, t: 400 })).toBeNull()
+    expect(w.push({ deltaX: 0, deltaY: 60, deltaMode: 0, t: 800 })).toBeNull()
+    expect(w.locked(1299)).toBe(true)
+    expect(w.locked(1300)).toBe(false)
+    expect(w.push({ deltaX: 0, deltaY: 60, deltaMode: 0, t: 1300 })).toEqual({ kind: 'frame', dir: 1 })
+  })
+
+  it('minor horizontal drift in a vertical scroll never changes collection (dominant axis per event)', () => {
+    const w = new WheelAccumulator()
+    expect(w.push({ deltaX: 25, deltaY: -30, deltaMode: 0, t: 0 })).toBeNull()
+    expect(w.push({ deltaX: 25, deltaY: 30, deltaMode: 0, t: 16 })).toBeNull()
+    expect(w.push({ deltaX: 25, deltaY: -30, deltaMode: 0, t: 32 })).toBeNull()
   })
 
   it('deltaMode 1 (lines) triggers on a single notch', () => {

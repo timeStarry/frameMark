@@ -9,7 +9,7 @@ describe('formatFocal', () => {
     [{ focalLength: 35, focalLength35mm: 35 }, '35mm'],
     [{ focalLength: 4.25, focalLength35mm: 26 }, '4.3mm (26mm)'],
     [{ focalLength: 50.0 }, '50mm'],
-    [{ focalLength35mm: 26 }, null],
+    [{ focalLength35mm: 26 }, '等效 26mm'],
     [{}, null],
   ])('%j -> %s', (exif, want) => {
     expect(formatFocal(exif)).toBe(want)

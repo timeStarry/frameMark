@@ -1,7 +1,16 @@
 import type { Collection, Neighbors } from './types'
 
-/** status 0 means a network error, abort or unreadable body. */
+/**
+ * status 0: network error or unreadable body (show the retry screen).
+ * status -1: the request was aborted (e.g. route change); callers ignore it.
+ */
 export type Result<T> = { ok: true; data: T } | { ok: false; status: number }
+
+const ABORTED = -1
+
+function isAbort(err: unknown, signal?: AbortSignal): boolean {
+  return signal?.aborted === true || (err instanceof DOMException && err.name === 'AbortError')
+}
 
 async function getJSON<T>(url: string, signal?: AbortSignal): Promise<Result<T>> {
   let res: Response
@@ -12,14 +21,14 @@ async function getJSON<T>(url: string, signal?: AbortSignal): Promise<Result<T>>
       headers: { Accept: 'application/json' },
       signal,
     })
-  } catch {
-    return { ok: false, status: 0 }
+  } catch (err) {
+    return { ok: false, status: isAbort(err, signal) ? ABORTED : 0 }
   }
   if (!res.ok) return { ok: false, status: res.status }
   try {
     return { ok: true, data: (await res.json()) as T }
-  } catch {
-    return { ok: false, status: 0 }
+  } catch (err) {
+    return { ok: false, status: isAbort(err, signal) ? ABORTED : 0 }
   }
 }
 
