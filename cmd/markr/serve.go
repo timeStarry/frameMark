@@ -204,6 +204,10 @@ func cmdServe(ctx context.Context, cfg config.Config, role string, log *slog.Log
 
 	select {
 	case <-ctx.Done():
+		// Unregister the signals: a second Ctrl-C now exits at once with
+		// Go's default behaviour instead of waiting for in-flight work.
+		stop()
+		log.Info("shutting down; press Ctrl-C again to force")
 	case err := <-errc:
 		stop()
 		if err != nil {

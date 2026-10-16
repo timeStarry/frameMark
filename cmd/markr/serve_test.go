@@ -7,9 +7,11 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -191,4 +193,72 @@ func (s *syncBuffer) String() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.b.String()
+}
+
+// TestMain lets TestSecondSignalForcesExit re-run this binary as a serve child.
+func TestMain(m *testing.M) {
+	if os.Getenv("MARKR_SERVE_CHILD") == "1" {
+		err := run(context.Background(), []string{"serve", "--role=api"}, os.Environ(), os.Stderr)
+		if err != nil {
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
+
+func TestSecondSignalForcesExit(t *testing.T) {
+	dir := t.TempDir()
+	addr := freeAddr(t)
+	cmd := exec.Command(os.Args[0], "-test.run=^$")
+	cmd.Env = append(testEnv(dir, "MARKR_LISTEN="+addr), "MARKR_SERVE_CHILD=1")
+	var logs syncBuffer
+	cmd.Stderr = &logs
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	exited := make(chan error, 1)
+	go func() { exited <- cmd.Wait() }()
+	defer cmd.Process.Kill()
+
+	deadline := time.Now().Add(10 * time.Second)
+	for get(t, "http://"+addr+"/api/square") != http.StatusOK {
+		if time.Now().After(deadline) {
+			t.Fatalf("child never came up: %s", logs.String())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	// A half-sent request keeps the connection active, so the graceful
+	// shutdown waits on it (up to ReadHeaderTimeout).
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := conn.Write([]byte("GET /api/square HTTP/1.1\r\nHost: x\r\n")); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	if err := cmd.Process.Signal(syscall.SIGINT); err != nil {
+		t.Fatal(err)
+	}
+	for !strings.Contains(logs.String(), "shutting down") {
+		select {
+		case err := <-exited:
+			t.Fatalf("child exited before the second signal: %v", err)
+		case <-time.After(20 * time.Millisecond):
+		}
+		if time.Now().After(deadline.Add(5 * time.Second)) {
+			t.Fatalf("no shutdown log: %s", logs.String())
+		}
+	}
+	if err := cmd.Process.Signal(syscall.SIGINT); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-exited:
+	case <-time.After(3 * time.Second):
+		t.Fatal("second SIGINT did not terminate the child")
+	}
 }

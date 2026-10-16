@@ -871,3 +871,125 @@ func TestEnqueueTxCommitsAndRollsBackWithCaller(t *testing.T) {
 		t.Fatalf("unexpected job %+v", j)
 	}
 }
+
+func TestBusy(t *testing.T) {
+	q, d, clk := setup(t)
+	ctx := context.Background()
+	p := func(id string) map[string]string { return map[string]string{"photoId": id} }
+	busy := func(kinds []string, photo, except string, due bool) bool {
+		t.Helper()
+		b, err := q.Busy(ctx, kinds, photo, except, due)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	rot := []string{"rotate_derived"}
+
+	if busy(rot, "a", "", true) {
+		t.Fatal("empty queue is busy")
+	}
+	later, _ := q.EnqueueAt(ctx, "rotate_derived", p("a"), clk.now()+sec)
+	if busy(rot, "a", "", true) {
+		t.Fatal("a queued job that is not due counts")
+	}
+	clk.advance(sec)
+	if !busy(rot, "a", "", true) {
+		t.Fatal("a queued, due job must count when due=true")
+	}
+	if busy(rot, "a", "", false) {
+		t.Fatal("a queued job counts with due=false")
+	}
+	if busy(rot, "a", later, true) || busy(rot, "b", "", true) || busy([]string{"process_photo"}, "a", "", true) {
+		t.Fatal("exceptID, photoId or kind filter ignored")
+	}
+
+	j := mustClaim(t, q)
+	if !busy(rot, "a", "", false) {
+		t.Fatal("a running job must count")
+	}
+	if busy(rot, "a", j.ID, false) {
+		t.Fatal("the caller's own job must not count")
+	}
+	// An expired lease is claimable again: it counts only as due.
+	clk.advance(lease)
+	if busy(rot, "a", "", false) || !busy(rot, "a", "", true) {
+		t.Fatal("expired lease must count only as due")
+	}
+	if _, err := d.Exec(`UPDATE jobs SET state='done' WHERE id=?`, j.ID); err != nil {
+		t.Fatal(err)
+	}
+	if busy(rot, "a", "", true) {
+		t.Fatal("a done job counts")
+	}
+}
+
+func TestRunningBefore(t *testing.T) {
+	q, _, clk := setup(t)
+	ctx := context.Background()
+	p := map[string]string{"photoId": "a"}
+	older, _ := q.Enqueue(ctx, "rotate_derived", p)
+	clk.advance(1)
+	newer, _ := q.Enqueue(ctx, "rotate_derived", p)
+	rb := func(id string) bool {
+		t.Helper()
+		b, err := q.RunningBefore(ctx, []string{"rotate_derived"}, "a", id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	if rb(newer) {
+		t.Fatal("queued jobs must not count")
+	}
+	j1 := mustClaim(t, q)
+	j2 := mustClaim(t, q)
+	if j1.ID != older || j2.ID != newer {
+		t.Fatalf("claim order %s %s", j1.ID, j2.ID)
+	}
+	if !rb(newer) {
+		t.Fatal("older running job must count for the newer one")
+	}
+	if rb(older) {
+		t.Fatal("a newer running job must not count for the older one")
+	}
+	clk.advance(lease)
+	if rb(newer) {
+		t.Fatal("an expired lease must not count")
+	}
+}
+
+func TestDeferDoesNotSpendAttempt(t *testing.T) {
+	q, d, clk := setup(t)
+	ctx := context.Background()
+	id, err := q.Enqueue(ctx, "rotate_derived", map[string]string{"photoId": "a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Defer far more often than MaxAttempts: the job must stay alive.
+	for i := 0; i < jobs.MaxAttempts*3; i++ {
+		j := mustClaim(t, q)
+		if j.ID != id {
+			t.Fatalf("claimed %s want %s", j.ID, id)
+		}
+		if err := q.Defer(ctx, j, time.Second, "busy"); err != nil {
+			t.Fatal(err)
+		}
+		if j2, _ := q.Claim(ctx, nil); j2 != nil {
+			t.Fatal("deferred job claimable before its delay")
+		}
+		clk.advance(sec)
+	}
+	var state string
+	var attempts int
+	if err := d.QueryRow(`SELECT state, attempts FROM jobs WHERE id=?`, id).Scan(&state, &attempts); err != nil {
+		t.Fatal(err)
+	}
+	if state != "queued" || attempts != 0 {
+		t.Fatalf("after defers: state %s attempts %d, want queued 0", state, attempts)
+	}
+	j := mustClaim(t, q)
+	if err := q.Defer(ctx, &jobs.Job{ID: j.ID, LeaseToken: "stale"}, time.Second, "x"); !errors.Is(err, jobs.ErrLeaseLost) {
+		t.Fatalf("defer with a stale lease: %v", err)
+	}
+}

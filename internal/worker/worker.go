@@ -209,7 +209,7 @@ func (w *Worker) handle(ctx context.Context, j *jobs.Job) {
 	case kindProcess:
 		err = w.processPhoto(hctx, j.Payload)
 	case kindRotate:
-		err = w.rotateDerived(hctx, j.Payload)
+		err = w.rotateDerived(hctx, j)
 	case kindDelete:
 		err = w.deletePhotoObjects(hctx, j.Payload)
 	case kindReplicate:
@@ -217,7 +217,7 @@ func (w *Worker) handle(ctx context.Context, j *jobs.Job) {
 	case kindCleanup:
 		err = w.cleanupUploads(hctx)
 	case kindPurge:
-		err = w.purgeDerived(hctx, j.Payload)
+		err = w.purgeDerived(hctx, j)
 	default:
 		err = perm("unknown kind")
 	}
@@ -227,6 +227,12 @@ func (w *Worker) handle(ctx context.Context, j *jobs.Job) {
 	case err == nil || isNoop(err):
 		if derr := w.q.Done(fin, j); derr != nil && !errors.Is(derr, jobs.ErrLeaseLost) {
 			w.log.Error("worker: done", "id", j.ID, "kind", j.Kind, "err", derr)
+		}
+	case errors.Is(err, errPhotoBusy):
+		// Waiting on another job for this photo is not a failure: requeue
+		// without spending an attempt, so a long rotate never kills a purge.
+		if ferr := w.q.Defer(fin, j, deferDelay, err.Error()); ferr != nil && !errors.Is(ferr, jobs.ErrLeaseLost) {
+			w.log.Error("worker: defer", "id", j.ID, "kind", j.Kind, "err", ferr)
 		}
 	case isPermanent(err):
 		w.log.Warn("worker: job failed permanently", "id", j.ID, "kind", j.Kind, "err", err)
@@ -765,10 +771,31 @@ func sha256Hex(b []byte) string {
 
 // --- rotate_derived ---
 
-func (w *Worker) rotateDerived(ctx context.Context, raw json.RawMessage) error {
-	id, err := photoID(raw)
+// errPhotoBusy defers a job (transient failure, retried with backoff) while
+// a conflicting job for the same photo is in flight.
+var errPhotoBusy = errors.New("worker: photo busy; deferred")
+
+// deferDelay is how long a job blocked by errPhotoBusy waits before it is
+// claimable again.
+const deferDelay = 15 * time.Second
+
+func (w *Worker) rotateDerived(ctx context.Context, j *jobs.Job) error {
+	id, err := photoID(j.Payload)
 	if err != nil {
 		return err
+	}
+	// Serialise per photo: never rotate while a purge for it is running
+	// (it could delete our fresh prefix), nor alongside an older rotate.
+	// Older-first tie-breaking means two rotates never defer each other.
+	if busy, err := w.q.Busy(ctx, []string{kindPurge}, id, j.ID, false); err != nil {
+		return err
+	} else if busy {
+		return errPhotoBusy
+	}
+	if busy, err := w.q.RunningBefore(ctx, []string{kindRotate}, id, j.ID); err != nil {
+		return err
+	} else if busy {
+		return errPhotoBusy
 	}
 	row, err := w.loadPhoto(ctx, id)
 	if err != nil {
@@ -926,19 +953,32 @@ func newSalt() (string, error) {
 // is not its current hash. The stale set is listed at run time, so prefixes
 // orphaned by a crashed or superseded rotate are cleaned up too. Objects go
 // first, so a CDN refetch after the purge finds nothing. Idempotent.
-func (w *Worker) purgeDerived(ctx context.Context, raw json.RawMessage) error {
-	p, err := parsePurge(raw)
+func (w *Worker) purgeDerived(ctx context.Context, j *jobs.Job) error {
+	p, err := parsePurge(j.Payload)
 	if err != nil {
 		return err
 	}
+	// A rotate or process writes its new prefix before committing it, so
+	// that prefix looks stale until the commit. Defer while any writer for
+	// this photo is running or due; the retry recomputes the stale set.
+	if busy, err := w.q.Busy(ctx, []string{kindRotate, kindProcess}, p.PhotoID, j.ID, true); err != nil {
+		return err
+	} else if busy {
+		return errPhotoBusy
+	}
+	var status string
 	var cur sql.NullString
-	err = w.db.QueryRowContext(ctx, `SELECT derived_hash FROM photos WHERE id=?`, p.PhotoID).Scan(&cur)
+	err = w.db.QueryRowContext(ctx, `SELECT status, derived_hash FROM photos WHERE id=?`, p.PhotoID).Scan(&status, &cur)
 	if errors.Is(err, sql.ErrNoRows) {
 		// Deleted photos are handled by delete_photo_objects.
 		return errNoop
 	}
 	if err != nil {
 		return err
+	}
+	// Only a ready photo has a known current hash to keep.
+	if status != "ready" || !cur.Valid || cur.String == "" {
+		return errNoop
 	}
 	head := "d/" + p.PhotoID + "/"
 	keys, err := w.store.List(ctx, w.cfg.BucketDerived, head)

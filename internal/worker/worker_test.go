@@ -72,13 +72,13 @@ func (f *fakeStore) Get(_ context.Context, bucket, key string, maxBytes int64) (
 }
 
 func (f *fakeStore) Put(_ context.Context, bucket, key string, body []byte, ct, cc string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.putErr != nil {
+	if f.putErr != nil { // outside the lock: a test hook may block here
 		if err := f.putErr(bucket, key); err != nil {
 			return err
 		}
 	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.objects[bucket+"/"+key] = object{body: append([]byte(nil), body...), ct: ct, cc: cc}
 	return nil
 }
@@ -928,59 +928,204 @@ func TestRotateCrashBeforeCommitCleansOrphans(t *testing.T) {
 	}
 }
 
-func TestRotateInterleavedJobsKeepOneHash(t *testing.T) {
-	e := newEnv(t, func(_ *env, c *config.Config, d *worker.Deps) {
-		c.Workers = 2
-		d.PollEvery = 5 * time.Millisecond
-		d.HeartbeatEvery = 5 * time.Millisecond
-	})
-	id, _ := readyPhoto(t, e)
-	var started atomic.Int32
-	block := make(chan struct{})
-	e.setProcess(func(b []byte, o media.Options) (*media.Result, error) {
-		if started.Add(1) == 2 {
-			close(block)
-		}
-		select {
-		case <-block:
-		case <-time.After(10 * time.Second):
-			t.Error("second rotate never started")
-		}
-		return media.Process(b, o)
-	})
-	e.enqueue("rotate_derived", map[string]string{"photoId": id})
-	e.enqueue("rotate_derived", map[string]string{"photoId": id})
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- e.w.Run(ctx) }()
-	deadline := time.Now().Add(20 * time.Second)
-	for {
-		js := e.jobs("rotate_derived")
-		finished := 0
-		for _, j := range js {
-			if j.state == "done" || j.state == "dead" {
-				finished++
-			}
-		}
-		if finished == 2 {
-			break
-		}
-		if time.Now().After(deadline) {
-			cancel()
-			t.Fatalf("rotates stuck: %+v hashes %v", js, e.derivedHashes(id))
-		}
-		time.Sleep(10 * time.Millisecond)
+// assertComplete checks the photo has exactly one hash prefix, the current
+// one, with every tier and the watermark variant present.
+func assertComplete(t *testing.T, e *env, id string) {
+	t.Helper()
+	p, _ := e.photo(id)
+	if got := e.derivedHashes(id); len(got) != 1 || got[0] != p.hash.String {
+		t.Fatalf("hashes = %v current %s", got, p.hash.String)
 	}
-	cancel()
+	assertDerived(t, e, id, p.hash.String)
+	if _, ok := e.st.get(derB, "d/"+id+"/"+p.hash.String+"-wm"+wmHash()+"/w2400.jpg"); !ok {
+		t.Fatal("watermark variant of the current hash missing")
+	}
+}
+
+// blockRotatePut makes the rotate of a photo whose hash is old stop at its
+// first w480.jpg put (after w480.avif and w480.webp are written) until
+// release is closed. paused is closed when it stops.
+func blockRotatePut(e *env, id, old string) (paused, release chan struct{}) {
+	paused, release = make(chan struct{}), make(chan struct{})
+	var fired atomic.Bool
+	e.st.putErr = func(bucket, key string) error {
+		if bucket == derB && strings.HasPrefix(key, "d/"+id+"/") && !strings.Contains(key, "/"+old) &&
+			strings.HasSuffix(key, "/w480.jpg") && fired.CompareAndSwap(false, true) {
+			close(paused)
+			<-release
+		}
+		return nil
+	}
+	return paused, release
+}
+
+func runAsync(e *env) chan error {
+	ch := make(chan error, 1)
+	go func() {
+		_, err := e.w.RunOnce(context.Background())
+		ch <- err
+	}()
+	return ch
+}
+
+func waitClosed(t *testing.T, ch chan struct{}) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(20 * time.Second):
+		t.Fatal("timed out")
+	}
+}
+
+func (e *env) drain() {
+	e.t.Helper()
+	for i := 0; i < 50; i++ {
+		for e.runIfDue() {
+		}
+		var n int
+		e.d.QueryRow(`SELECT count(*) FROM jobs WHERE state IN ('queued','running')`).Scan(&n)
+		if n == 0 {
+			return
+		}
+		e.now.Add(jobs.BaseBackoffMillis << 4)
+	}
+	e.t.Fatal("queue never drained")
+}
+
+func TestRotateInterleavedJobsKeepOneHash(t *testing.T) {
+	e := newEnv(t, nil)
+	id, old := readyPhoto(t, e)
+	e.cdn = &cdn.Fake{}
+	paused, release := blockRotatePut(e, id, old)
+	r1 := e.enqueue("rotate_derived", map[string]string{"photoId": id})
+	e.now.Add(1)
+	r2 := e.enqueue("rotate_derived", map[string]string{"photoId": id})
+	done := runAsync(e)
+	waitClosed(t, paused)
+
+	// The newer rotate defers while the older one is running.
+	e.runOne()
+	if s := e.jobState(r2); s != "queued" {
+		t.Fatalf("second rotate state %s, want deferred", s)
+	}
+	close(release)
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
-	for e.runIfDue() {
+	if s := e.jobState(r1); s != "done" {
+		t.Fatalf("first rotate state %s", s)
 	}
-	p, _ := e.photo(id)
-	got := e.derivedHashes(id)
-	if len(got) != 1 || got[0] != p.hash.String {
-		t.Fatalf("hashes = %v current %s", got, p.hash.String)
+	e.st.putErr = nil
+	e.drain()
+	assertComplete(t, e, id)
+}
+
+func TestPurgeDefersWhileRotateWrites(t *testing.T) {
+	e := newEnv(t, nil)
+	id, old := readyPhoto(t, e)
+	paused, release := blockRotatePut(e, id, old)
+	rid := e.enqueue("rotate_derived", map[string]string{"photoId": id})
+	done := runAsync(e)
+	waitClosed(t, paused) // the new hash is partly written, not committed
+
+	pid := e.enqueue("purge_derived", map[string]any{"photoId": id, "prefixes": []string{}})
+	e.runOne()
+	if s := e.jobState(pid); s != "queued" {
+		t.Fatalf("purge state %s, want deferred while the rotate runs", s)
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if s := e.jobState(rid); s != "done" {
+		t.Fatalf("rotate state %s", s)
+	}
+	e.st.putErr = nil
+	e.drain()
+	assertComplete(t, e, id)
+}
+
+func (e *env) insertRunning(kind, photo string) {
+	e.t.Helper()
+	// A low id sorts before every UUIDv7 the queue issues, so it is "older".
+	e.exec(`INSERT INTO jobs(id,kind,payload,state,attempts,run_after,lease_until,lease_token,created_at)
+		VALUES(?,?,?,'running',1,?,?,'other',?)`, "00000000-"+kind, kind, `{"photoId":"`+photo+`"}`,
+		e.now.Load(), e.now.Load()+jobs.LeaseMillis, e.now.Load())
+}
+
+func TestPurgeDefersForProcessAndRotate(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		prep func(e *env, id string)
+	}{
+		{"running rotate", func(e *env, id string) { e.insertRunning("rotate_derived", id) }},
+		{"running process", func(e *env, id string) { e.insertRunning("process_photo", id) }},
+		{"due process", func(e *env, id string) {
+			if _, err := e.q.EnqueueAt(context.Background(), "process_photo", map[string]string{"photoId": id}, e.now.Load()); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			e := newEnv(t, nil)
+			id, cur := readyPhoto(t, e)
+			stale := "d/" + id + "/0123456789abcdef/w480.jpg"
+			e.st.put(derB, stale, []byte("x"))
+			// Due before the conflicting job so Claim hands out the purge.
+			pid, err := e.q.EnqueueAt(context.Background(), "purge_derived", map[string]any{"photoId": id, "prefixes": []string{}}, e.now.Load()-1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			c.prep(e, id)
+			e.runOne()
+			if s := e.jobState(pid); s != "queued" {
+				t.Fatalf("purge state %s", s)
+			}
+			if _, ok := e.st.get(derB, stale); !ok {
+				t.Fatal("purge ran while the photo was busy")
+			}
+			if got := e.derivedHashes(id); len(got) != 2 || len(e.cdn.Prefixes()) != 0 {
+				t.Fatalf("hashes %v purged %v (current %s)", got, e.cdn.Prefixes(), cur)
+			}
+		})
+	}
+}
+
+func TestRotateDefersWhilePurgeOrOlderRotateRuns(t *testing.T) {
+	for _, kind := range []string{"purge_derived", "rotate_derived"} {
+		t.Run(kind, func(t *testing.T) {
+			e := newEnv(t, nil)
+			id, old := readyPhoto(t, e)
+			e.insertRunning(kind, id)
+			jid := e.enqueue("rotate_derived", map[string]string{"photoId": id})
+			e.runOne()
+			p, _ := e.photo(id)
+			if e.jobState(jid) != "queued" || p.hash.String != old || p.salt != "salt0" {
+				t.Fatalf("rotate ran while %s was running: %s %+v", kind, e.jobState(jid), p)
+			}
+		})
+	}
+}
+
+func TestPurgeNoopUnlessReady(t *testing.T) {
+	e := newEnv(t, nil)
+	id := e.addPhoto("processing", testJPEG(t, false))
+	keys := []string{"d/" + id + "/0123456789abcdef/w480.jpg", "d/" + id + "/fedcba9876543210-wm0123456789abcdef/w2400.jpg"}
+	for _, k := range keys {
+		e.st.put(derB, k, []byte("x"))
+	}
+	jid := e.enqueue("purge_derived", map[string]any{"photoId": id, "prefixes": []string{}})
+	e.runOne()
+	if e.jobState(jid) != "done" {
+		t.Fatalf("state %s", e.jobState(jid))
+	}
+	for _, k := range keys {
+		if _, ok := e.st.get(derB, k); !ok {
+			t.Fatalf("%s deleted for a non-ready photo", k)
+		}
+	}
+	if len(e.cdn.Prefixes()) != 0 {
+		t.Fatalf("purged %v", e.cdn.Prefixes())
 	}
 }
 
@@ -1368,4 +1513,22 @@ func (s *syncBuffer) String() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.b.String()
+}
+
+// A purge blocked by a long-running writer must wait, not die: deferral does
+// not consume attempts.
+func TestPurgeDeferralNeverExhaustsAttempts(t *testing.T) {
+	e := newEnv(t, nil)
+	id, _ := readyPhoto(t, e)
+	e.insertRunning("rotate_derived", id)
+	pid := e.enqueue("purge_derived", map[string]any{"photoId": id, "prefixes": []string{}})
+	for i := 0; i < jobs.MaxAttempts*2; i++ {
+		e.runOne()
+		if s := e.jobState(pid); s != "queued" {
+			t.Fatalf("round %d: purge state %s, want queued", i, s)
+		}
+		e.now.Add(int64(time.Minute / time.Millisecond))
+		// keep the blocking rotate's lease alive
+		e.exec(`UPDATE jobs SET lease_until=? WHERE id=?`, e.now.Load()+jobs.LeaseMillis, "00000000-rotate_derived")
+	}
 }

@@ -299,6 +299,72 @@ func (q *Queue) Fail(ctx context.Context, j *Job, permanent bool, cause error) e
 	return err
 }
 
+// Defer requeues j to run after delay without consuming an attempt: Claim
+// already counted this run, so attempts is decremented back. Owners use it
+// when a job must wait for a conflicting job rather than because it failed.
+func (q *Queue) Defer(ctx context.Context, j *Job, delay time.Duration, reason string) error {
+	_, err := q.fenced(ctx, "defer", j,
+		`UPDATE jobs SET state='queued', run_after=?, lease_until=NULL, lease_token=NULL, attempts=max(attempts-1,0), last_error=?`,
+		q.now()+delay.Milliseconds(), truncate(reason, maxErrorBytes))
+	return err
+}
+
+// Busy reports whether a job of one of kinds whose payload photoId equals
+// photoID, other than exceptID, is running under a live lease. With due set,
+// jobs that are claimable now also count: queued and due, or running with an
+// expired lease. Owners use it to serialise work on one photo.
+func (q *Queue) Busy(ctx context.Context, kinds []string, photoID, exceptID string, due bool) (bool, error) {
+	if len(kinds) == 0 {
+		return false, nil
+	}
+	now := q.now()
+	args := make([]any, 0, len(kinds)+6)
+	for _, k := range kinds {
+		args = append(args, k)
+	}
+	args = append(args, photoID, exceptID, now)
+	state := `(state='running' AND lease_until>?)`
+	if due {
+		state = `(` + state + ` OR (state='queued' AND run_after<=?) OR (state='running' AND lease_until<=?))`
+		args = append(args, now, now)
+	}
+	var one int
+	err := q.db.QueryRowContext(ctx, `SELECT 1 FROM jobs WHERE kind IN (?`+strings.Repeat(",?", len(kinds)-1)+`)
+		AND json_extract(payload,'$.photoId')=? AND id<>? AND `+state+` LIMIT 1`, args...).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("jobs: busy: %w", err)
+	}
+	return true, nil
+}
+
+// RunningBefore reports whether a job of one of kinds for photoID, created
+// before id (UUIDv7 ids sort by creation), is running under a live lease.
+// It breaks ties when two jobs for one photo must not run together: the
+// older proceeds and the newer defers, so they never defer each other.
+func (q *Queue) RunningBefore(ctx context.Context, kinds []string, photoID, id string) (bool, error) {
+	if len(kinds) == 0 {
+		return false, nil
+	}
+	args := make([]any, 0, len(kinds)+3)
+	for _, k := range kinds {
+		args = append(args, k)
+	}
+	args = append(args, photoID, id, q.now())
+	var one int
+	err := q.db.QueryRowContext(ctx, `SELECT 1 FROM jobs WHERE kind IN (?`+strings.Repeat(",?", len(kinds)-1)+`)
+		AND json_extract(payload,'$.photoId')=? AND id<? AND state='running' AND lease_until>? LIMIT 1`, args...).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("jobs: running before: %w", err)
+	}
+	return true, nil
+}
+
 // PurgeDone deletes done and dead jobs that finished before olderThan (Unix ms)
 // and returns how many were removed.
 func (q *Queue) PurgeDone(ctx context.Context, olderThan int64) (int, error) {
