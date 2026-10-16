@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -26,6 +28,7 @@ import (
 	"github.com/timeStarry/frameMark/internal/mail"
 	"github.com/timeStarry/frameMark/internal/media"
 	"github.com/timeStarry/frameMark/internal/storage"
+	"github.com/timeStarry/frameMark/internal/webui"
 	"github.com/timeStarry/frameMark/internal/worker"
 )
 
@@ -196,7 +199,10 @@ func cmdServe(ctx context.Context, cfg config.Config, role string, log *slog.Log
 
 	var srv *http.Server
 	if role == "api" || role == "all" {
-		h := api.New(api.Deps{DB: d, Identity: id, Storage: store, Jobs: q, Cfg: cfg})
+		h := rootHandler(
+			api.New(api.Deps{DB: d, Identity: id, Storage: store, Jobs: q, Cfg: cfg}),
+			webui.Handler(webui.Options{CDNBase: cfg.CDNBase, ImgHosts: imgHosts(cfg)}),
+		)
 		srv = &http.Server{
 			Addr:              cfg.Listen,
 			Handler:           h,
@@ -248,6 +254,38 @@ func cmdServe(ctx context.Context, cfg config.Config, role string, log *slog.Log
 		return errors.Join(runErr, id.Close(cctx))
 	}
 	return runErr
+}
+
+// rootHandler sends /api/ and /m/ to the API (so their 404s stay JSON) and
+// everything else to the embedded frontend.
+func rootHandler(apiH, web http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/m/") {
+			apiH.ServeHTTP(w, r)
+			return
+		}
+		web.ServeHTTP(w, r)
+	})
+}
+
+// imgHosts returns the origins presigned S3 URLs can point at, for the CSP
+// img-src. Path-style URLs use the endpoint origin; virtual-host style puts
+// the bucket in a subdomain, so each bucket's origin is listed too.
+func imgHosts(cfg config.Config) []string {
+	u, err := url.Parse(cfg.S3Endpoint)
+	if cfg.S3Endpoint == "" || err != nil || u.Scheme == "" || u.Host == "" {
+		return nil
+	}
+	hosts := []string{u.Scheme + "://" + u.Host}
+	// Virtual-host addressing cannot apply to an IP host.
+	if !cfg.S3PathStyle && net.ParseIP(u.Hostname()) == nil {
+		for _, b := range []string{cfg.BucketOriginals, cfg.BucketDerived} {
+			if b != "" {
+				hosts = append(hosts, u.Scheme+"://"+b+"."+u.Host)
+			}
+		}
+	}
+	return hosts
 }
 
 func defaultStr(v, d string) string {

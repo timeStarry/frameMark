@@ -7,16 +7,21 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
 	"testing"
+	"testing/fstest"
 	"time"
 
+	"github.com/timeStarry/frameMark/internal/config"
 	"github.com/timeStarry/frameMark/internal/db"
+	"github.com/timeStarry/frameMark/internal/webui"
 )
 
 func testEnv(dir string, extra ...string) []string {
@@ -128,6 +133,7 @@ func serveAndCheck(t *testing.T, role string, extra ...string) {
 	if code := get(t, base+"/api/auth/session"); code != want {
 		t.Errorf("/api/auth/session = %d, want %d", code, want)
 	}
+	checkComposed(t, base)
 
 	cancel()
 	select {
@@ -143,6 +149,89 @@ func serveAndCheck(t *testing.T, role string, extra ...string) {
 	}
 	if !strings.Contains(logs.String(), "markr starting") {
 		t.Fatalf("no startup log: %s", logs.String())
+	}
+}
+
+// checkComposed asserts the API keeps its JSON 404s and that the frontend
+// answers everything else, whether or not a web build is embedded.
+func checkComposed(t *testing.T, base string) {
+	t.Helper()
+	c := &http.Client{Timeout: 2 * time.Second, Transport: &http.Transport{Proxy: nil}}
+	for _, p := range []string{"/api/nope", "/m/nope"} {
+		resp, err := c.Get(base + p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound || !strings.HasPrefix(resp.Header.Get("Content-Type"), "application/json") {
+			t.Errorf("%s = %d %q %q", p, resp.StatusCode, resp.Header.Get("Content-Type"), body)
+		}
+	}
+	resp, err := c.Get(base + "/c/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/html") {
+		t.Errorf("/c/x Content-Type %q", resp.Header.Get("Content-Type"))
+	}
+	switch resp.StatusCode {
+	case http.StatusOK:
+	case http.StatusServiceUnavailable:
+		if !strings.Contains(string(body), "前端尚未构建") {
+			t.Errorf("/c/x 503 body %q", body)
+		}
+	default:
+		t.Errorf("/c/x = %d", resp.StatusCode)
+	}
+	csp := resp.Header.Get("Content-Security-Policy")
+	if !strings.Contains(csp, "img-src 'self' data: http://127.0.0.1:1;") {
+		t.Errorf("/c/x CSP %q lacks S3 host", csp)
+	}
+}
+
+func TestRootHandlerRouting(t *testing.T) {
+	apiH := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		io.WriteString(w, `{"error":"接口不存在。"}`)
+	})
+	web := webui.HandlerFS(fstest.MapFS{"index.html": {Data: []byte("<!doctype html><title>Markr</title>")}}, webui.Options{})
+	h := rootHandler(apiH, web)
+	for path, wantType := range map[string]string{
+		"/api/nope":  "application/json",
+		"/m/a/b/c":   "application/json",
+		"/c/x":       "text/html",
+		"/":          "text/html",
+		"/apix":      "text/html",
+		"/media/abc": "text/html",
+	} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if !strings.HasPrefix(rec.Header().Get("Content-Type"), wantType) {
+			t.Errorf("%s: Content-Type %q, want %s", path, rec.Header().Get("Content-Type"), wantType)
+		}
+	}
+}
+
+func TestImgHosts(t *testing.T) {
+	cases := []struct {
+		cfg  config.Config
+		want []string
+	}{
+		{config.Config{}, nil},
+		{config.Config{S3Endpoint: "http://127.0.0.1:9000", S3PathStyle: true, BucketOriginals: "o", BucketDerived: "d"}, []string{"http://127.0.0.1:9000"}},
+		{config.Config{S3Endpoint: "https://tos-cn-beijing.volces.com/", BucketOriginals: "orig", BucketDerived: "der"},
+			[]string{"https://tos-cn-beijing.volces.com", "https://orig.tos-cn-beijing.volces.com", "https://der.tos-cn-beijing.volces.com"}},
+		{config.Config{S3Endpoint: "http://127.0.0.1:1", BucketOriginals: "o", BucketDerived: "d"}, []string{"http://127.0.0.1:1"}},
+		{config.Config{S3Endpoint: "not a url"}, nil},
+	}
+	for _, c := range cases {
+		if got := imgHosts(c.cfg); !slices.Equal(got, c.want) {
+			t.Errorf("imgHosts(%q) = %v, want %v", c.cfg.S3Endpoint, got, c.want)
+		}
 	}
 }
 
