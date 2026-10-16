@@ -174,7 +174,7 @@ describe('WheelAccumulator', () => {
   it('triggers again after the lock; events inside the lock are not accumulated', () => {
     const w = new WheelAccumulator()
     expect(w.push({ deltaX: 0, deltaY: 60, deltaMode: 0, t: 0 })).toEqual({ kind: 'frame', dir: 1 })
-    expect(w.push({ deltaX: 0, deltaY: 200, deltaMode: 0, t: 499 })).toBeNull()
+    expect(w.push({ deltaX: 0, deltaY: 199, deltaMode: 0, t: 499 })).toBeNull()
     // the event at 499 rolled the lock to 999; accumulation restarts from 0 after it
     expect(w.push({ deltaX: 0, deltaY: -30, deltaMode: 0, t: 999 })).toBeNull()
     expect(w.push({ deltaX: 0, deltaY: -30, deltaMode: 0, t: 1015 })).toEqual({ kind: 'frame', dir: -1 })
@@ -223,6 +223,48 @@ describe('WheelAccumulator', () => {
     expect(w.push({ deltaX: 25, deltaY: -30, deltaMode: 0, t: 0 })).toBeNull()
     expect(w.push({ deltaX: 25, deltaY: 30, deltaMode: 0, t: 16 })).toBeNull()
     expect(w.push({ deltaX: 25, deltaY: -30, deltaMode: 0, t: 32 })).toBeNull()
+  })
+
+  it('notched mouse wheel (deltaY ±100) pages once per notch, limited by the fixed 500ms lock', () => {
+    const w = new WheelAccumulator()
+    const intents = []
+    for (let t = 0; t <= 1400; t += 350) {
+      const r = w.push({ deltaX: 0, deltaY: 100, deltaMode: 0, t })
+      if (r) intents.push(r)
+    }
+    // t=0 page, 350 swallowed (lock not extended), 700 page, 1050 swallowed, 1400 page
+    expect(intents).toHaveLength(3)
+  })
+
+  it('deltaY multiples of 120 are discrete; line-mode notches do not extend the lock either', () => {
+    const w = new WheelAccumulator()
+    expect(w.push({ deltaX: 0, deltaY: -120, deltaMode: 0, t: 0 })).toEqual({ kind: 'frame', dir: -1 })
+    expect(w.push({ deltaX: 0, deltaY: -240, deltaMode: 0, t: 300 })).toBeNull()
+    expect(w.locked(500)).toBe(false)
+    expect(w.push({ deltaX: 0, deltaY: -120, deltaMode: 0, t: 500 })).toEqual({ kind: 'frame', dir: -1 })
+    const l = new WheelAccumulator()
+    expect(l.push({ deltaX: 0, deltaY: 3, deltaMode: 1, t: 0 })).not.toBeNull()
+    expect(l.push({ deltaX: 0, deltaY: 3, deltaMode: 1, t: 300 })).toBeNull()
+    expect(l.push({ deltaX: 0, deltaY: 3, deltaMode: 1, t: 500 })).not.toBeNull()
+  })
+
+  it('trackpad-like pixel deltas (fractional or not a multiple of 100/120) still extend the lock', () => {
+    const w = new WheelAccumulator()
+    expect(w.push({ deltaX: 0, deltaY: 60, deltaMode: 0, t: 0 })).not.toBeNull()
+    expect(w.push({ deltaX: 0, deltaY: 100.5, deltaMode: 0, t: 300 })).toBeNull()
+    expect(w.locked(799)).toBe(true)
+    expect(w.push({ deltaX: 0, deltaY: 30, deltaMode: 0, t: 700 })).toBeNull()
+    expect(w.locked(1199)).toBe(true)
+  })
+
+  it('reset clears accumulation but not the lock', () => {
+    const w = new WheelAccumulator()
+    expect(w.push({ deltaX: 0, deltaY: 50, deltaMode: 0, t: 0 })).toBeNull()
+    w.reset()
+    expect(w.push({ deltaX: 0, deltaY: 20, deltaMode: 0, t: 16 })).toBeNull()
+    expect(w.push({ deltaX: 0, deltaY: 40, deltaMode: 0, t: 32 })).not.toBeNull()
+    w.reset()
+    expect(w.locked(100)).toBe(true)
   })
 
   it('deltaMode 1 (lines) triggers on a single notch', () => {

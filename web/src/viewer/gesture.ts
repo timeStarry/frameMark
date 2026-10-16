@@ -145,11 +145,13 @@ export class WheelAccumulator {
   }
 
   push(e: WheelSample): Intent | null {
-    // Rolling lock: any event inside it is swallowed (not accumulated) and
-    // extends it, so one flick plus its momentum pages at most once until a
-    // quiet gap of lockMs.
+    // Rolling lock: any trackpad-like event inside it is swallowed (not
+    // accumulated) and extends it, so one flick plus its momentum pages at
+    // most once until a quiet gap of lockMs. Discrete notches (mouse wheel)
+    // are deliberate input: they are swallowed but do not extend the lock,
+    // so a notched wheel pages once per notch, rate-limited to one per lockMs.
     if (e.t < this.lockUntil) {
-      this.lockUntil = e.t + this.lockMs
+      if (!isDiscrete(e)) this.lockUntil = e.t + this.lockMs
       return null
     }
 
@@ -174,12 +176,29 @@ export class WheelAccumulator {
     return null
   }
 
+  /** Drop any partial accumulation (keeps the lock). */
+  reset(): void {
+    this.accX = 0
+    this.accY = 0
+  }
+
   private trigger(kind: Intent['kind'], d: number, t: number): Intent {
     this.lockUntil = t + this.lockMs
     this.accX = 0
     this.accY = 0
     return { kind, dir: d > 0 ? 1 : -1 }
   }
+}
+
+/**
+ * A notched mouse wheel: line/page mode, or pixel mode with an integral
+ * dominant delta that is a multiple of 100 or 120 (Chrome/Edge/Safari notches).
+ * Trackpad deltas are small, fractional or irregular.
+ */
+function isDiscrete(e: WheelSample): boolean {
+  if (e.deltaMode !== 0) return true
+  const d = Math.abs(Math.abs(e.deltaY) >= Math.abs(e.deltaX) ? e.deltaY : e.deltaX)
+  return d > 0 && Number.isInteger(d) && (d % 100 === 0 || d % 120 === 0)
 }
 
 /** A reversal of direction restarts accumulation instead of cancelling out. */

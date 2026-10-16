@@ -193,6 +193,53 @@ describe('bindInputs: pointer', () => {
     expect(handlers.drag).toHaveBeenLastCalledWith('y', 0)
   })
 
+  it('a lostpointercapture bubbling from a child (implicit touch capture moving to el) does not cancel the drag', () => {
+    bind()
+    const img = document.createElement('img')
+    el.appendChild(img)
+    const fire = (type: string, y: number, target: EventTarget = img) =>
+      target.dispatchEvent(new PointerEvent(type, { clientX: 200, clientY: y, pointerId: 1, pointerType: 'touch', bubbles: true }))
+    fire('pointerdown', 600)
+    now += 50
+    fire('pointermove', 580) // axis locks; el.setPointerCapture moves capture off the img
+    fire('lostpointercapture', 580) // fired on the img, bubbles to el
+    now += 50
+    fire('pointermove', 400, el)
+    expect(handlers.drag).toHaveBeenLastCalledWith('y', -200)
+    now += 400
+    fire('pointerup', 400, el)
+    expect(intents).toEqual([{ kind: 'frame', dir: 1 }])
+  })
+
+  it('lostpointercapture on el before capture was taken is ignored', () => {
+    bind()
+    pointer('pointerdown', 200, 600)
+    pointer('lostpointercapture', 200, 600)
+    now += 50
+    pointer('pointerup', 202, 600)
+    expect(handlers.tap).toHaveBeenCalledTimes(1)
+  })
+
+  it('lostpointercapture keeps a still-down pointer active, so a second finger is still multi-touch', () => {
+    bind()
+    touch('pointerdown', 1, 200, 600)
+    now += 50
+    touch('pointermove', 1, 200, 580)
+    touch('lostpointercapture', 1, 200, 580) // e.g. el re-rendered; finger 1 still down
+    touch('pointerdown', 2, 200, 600)
+    now += 50
+    touch('pointermove', 2, 200, 300)
+    now += 50
+    touch('pointerup', 2, 200, 300)
+    expect(intents).toEqual([])
+    touch('pointerup', 1, 200, 580)
+    now += 500
+    touch('pointerdown', 3, 100, 100)
+    now += 50
+    touch('pointerup', 3, 100, 100)
+    expect(handlers.tap).toHaveBeenCalledTimes(1)
+  })
+
   it('captures the pointer only after the axis locks', () => {
     bind()
     const cap = vi.spyOn(el, 'setPointerCapture')
@@ -382,19 +429,52 @@ describe('bindInputs: wheel', () => {
     expect(events.every((e) => e.defaultPrevented)).toBe(true)
   })
 
-  it('wheel deltas scroll inner first; only the residual accumulates', () => {
+  it('wheel deltas scroll inner first; nothing accumulates for the frame while inner consumes', () => {
     const { inner, state } = fakeInner(100)
     bind(inner)
     const e = wheel(80)
     expect(state.pos).toBe(80)
     expect(e.defaultPrevented).toBe(true)
-    expect(intents).toEqual([])
     now += 16
-    wheel(50) // 20 consumed, 30 residual
-    expect(intents).toEqual([])
+    wheel(50) // 20 consumed, 30 residual discarded
     now += 16
-    wheel(30) // 30 more residual: 60 -> page
+    wheel(30) // at the boundary, no quiet gap yet
+    now += 16
+    wheel(30)
+    expect(intents).toEqual([])
+    now += 250 // quiet gap: "a further scroll"
+    wheel(60)
     expect(intents).toEqual([{ kind: 'frame', dir: 1 }])
+  })
+
+  it('trackpad momentum that reaches the bottom of inner gives 0 intents; a new flick after 300ms gives 1', () => {
+    const { inner, state } = fakeInner(300)
+    bind(inner)
+    for (let i = 0; i < 94; i++) {
+      wheel(Math.max(1, Math.round(40 * 0.96 ** i)))
+      now += 16
+    }
+    expect(state.pos).toBe(300)
+    expect(intents).toEqual([])
+    now += 300
+    for (let i = 0; i < 10; i++) {
+      wheel(30)
+      now += 16
+    }
+    expect(intents).toEqual([{ kind: 'frame', dir: 1 }])
+  })
+
+  it('inner consuming a delta clears any stale frame accumulation', () => {
+    const { inner } = fakeInner(100, 100)
+    bind(inner)
+    wheel(50) // at the bottom: accumulates 50
+    now += 16
+    wheel(-20) // inner scrolls back: resets
+    now += 300
+    wheel(20) // inner consumes back to the bottom
+    now += 300
+    wheel(30) // fresh accumulation: 30 < 60
+    expect(intents).toEqual([])
   })
 
   it('swallowed momentum inside the lock does not scroll inner', () => {
@@ -478,7 +558,7 @@ describe('bindInputs: keyboard', () => {
     ])
   })
 
-  it.each([
+  it.each<[string, () => HTMLElement]>([
     ['button', () => document.createElement('button')],
     ['a[href]', () => Object.assign(document.createElement('a'), { href: '/' })],
     ['[role=menuitem]', () => {
@@ -488,6 +568,23 @@ describe('bindInputs: keyboard', () => {
       return d
     }],
     ['summary', () => document.createElement('summary')],
+    ...['checkbox', 'switch', 'radio', 'menuitemcheckbox', 'menuitemradio', 'link', 'combobox', 'spinbutton'].map(
+      (role) =>
+        [
+          `[role=${role}]`,
+          () => {
+            const d = document.createElement('div')
+            d.setAttribute('role', role)
+            d.tabIndex = 0
+            return d
+          },
+        ] as [string, () => HTMLElement],
+    ),
+    ['video[controls]', () => {
+      const v = document.createElement('video')
+      v.setAttribute('controls', '')
+      return v
+    }],
   ])('Space and Enter on a focused %s are left to the element', (_name, make) => {
     bind()
     const btn = make()
@@ -501,7 +598,22 @@ describe('bindInputs: keyboard', () => {
     expect(intents).toEqual([{ kind: 'frame', dir: 1 }])
   })
 
-  it.each(['menu', 'slider'])('arrow keys inside [role=%s] are left to it', (role) => {
+  it('Space and Enter on a [role=option] inside a [role=listbox] are left to it', () => {
+    bind()
+    const box = document.createElement('div')
+    box.setAttribute('role', 'listbox')
+    const opt = document.createElement('div')
+    opt.setAttribute('role', 'option')
+    opt.tabIndex = 0
+    box.appendChild(opt)
+    document.body.appendChild(box)
+    expect(key(' ', opt).defaultPrevented).toBe(false)
+    expect(key('Enter', opt).defaultPrevented).toBe(false)
+    expect(key('ArrowDown', opt).defaultPrevented).toBe(false)
+    expect(intents).toEqual([])
+  })
+
+  it.each(['menu', 'slider', 'listbox', 'tablist', 'radiogroup', 'menubar', 'grid', 'tree'])('arrow keys inside [role=%s] are left to it', (role) => {
     bind()
     const box = document.createElement('div')
     box.setAttribute('role', role)

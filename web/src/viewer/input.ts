@@ -44,7 +44,9 @@ export interface InputHandlers {
  *   past the boundary moves the frame (`drag`). A frame intent fires if the
  *   gesture started with inner already at the boundary (normal distance or
  *   velocity rules), or once the residual exceeds the distance threshold.
- * - Wheel deltas feed inner first; only the residual accumulates toward a page.
+ * - Wheel deltas feed inner first. While inner consumes, nothing accumulates
+ *   for the frame (the residual of the event that hits the boundary is
+ *   dropped). Paging needs a further scroll after a quiet gap of >= 200ms.
  * - Frame keys scroll inner by ±0.9 viewport heights and page only once inner
  *   is at the boundary in that direction.
  * - Horizontal input never goes through inner.
@@ -74,8 +76,38 @@ const KEY_PAGE_RATIO = 0.9
 
 const EDITABLE = 'input, textarea, select, [contenteditable]:not([contenteditable="false"])'
 /** Controls that own Space/Enter. */
-const INTERACTIVE =
-  'button, a[href], input, select, textarea, summary, [role=button], [role=menuitem], [role=slider], [role=tab], [contenteditable]:not([contenteditable="false"])'
+const INTERACTIVE = [
+  'button',
+  'a[href]',
+  'input',
+  'select',
+  'textarea',
+  'summary',
+  'video[controls]',
+  'audio[controls]',
+  '[contenteditable]:not([contenteditable="false"])',
+  ...[
+    'button',
+    'link',
+    'menuitem',
+    'menuitemcheckbox',
+    'menuitemradio',
+    'option',
+    'checkbox',
+    'switch',
+    'radio',
+    'slider',
+    'spinbutton',
+    'combobox',
+    'tab',
+  ].map((r) => `[role=${r}]`),
+].join(', ')
+/** Composite widgets that own the arrow keys. */
+const ARROW_OWNERS = ['listbox', 'tablist', 'radiogroup', 'menubar', 'menu', 'slider', 'grid', 'tree']
+  .map((r) => `[role=${r}]`)
+  .join(', ')
+/** Wheel: after inner stops consuming, frame accumulation needs this quiet gap ("a further scroll"). */
+const INNER_QUIET_MS = 200
 /** Presses here never start a gesture or count as a tap. */
 const NO_GESTURE = `${INTERACTIVE}, label, [data-no-gesture]`
 const ARROWS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'])
@@ -243,6 +275,17 @@ export function bindInputs(el: HTMLElement, handlers: InputHandlers, cfg: InputC
     if (e.pointerId === pointerId) cancelGesture()
   }
 
+  /**
+   * Only el losing a capture we took counts. Touch implicitly captures to the
+   * pointerdown target (usually the <img>); our setPointerCapture moves it to
+   * el and fires a bubbling lostpointercapture on that child, which must not
+   * cancel. The pointer may still be down, so `active` is left to up/cancel.
+   */
+  const onLostCapture = (e: PointerEvent) => {
+    if (e.target !== el || dragAxis === null || e.pointerId !== pointerId) return
+    cancelGesture()
+  }
+
   const onBlur = () => {
     active.clear()
     multi = false
@@ -250,24 +293,33 @@ export function bindInputs(el: HTMLElement, handlers: InputHandlers, cfg: InputC
   }
 
   // --- wheel ---
+  let lastWheelT = -Infinity
+  // Inner consumed wheel input recently: the frame accumulates nothing until a quiet gap.
+  let innerHold = false
+
   const onWheel = (e: WheelEvent) => {
     e.preventDefault()
     const t = now()
+    const gap = t - lastWheelT
+    lastWheelT = t
+    if (innerHold && gap >= INNER_QUIET_MS) innerHold = false
     const mode = e.deltaMode === 1 || e.deltaMode === 2 ? e.deltaMode : 0
-    let sample = { deltaX: e.deltaX, deltaY: e.deltaY, deltaMode: mode as 0 | 1 | 2, t }
     const vertical = Math.abs(e.deltaY) >= Math.abs(e.deltaX) && e.deltaY !== 0
     const scroller = cfg.inner
-    if (vertical && scroller && !wheelAcc.locked(t)) {
+    if (vertical && scroller) {
       const dir: Dir = e.deltaY > 0 ? 1 : -1
-      if (scroller.canScroll(dir)) {
+      if (!wheelAcc.locked(t) && scroller.canScroll(dir)) {
         const px = mode === 0 ? e.deltaY : mode === 1 ? e.deltaY * LINE_PX : dir * viewport().h * KEY_PAGE_RATIO
-        const left = scroller.scrollBy(px)
-        // A notch that moved inner never pages; pixel residual keeps accumulating.
-        if (mode !== 0) return
-        sample = { deltaX: 0, deltaY: left, deltaMode: 0, t }
+        if (scroller.scrollBy(px) !== px) {
+          // Inner consumed input: momentum reaching the boundary must not page.
+          innerHold = true
+          wheelAcc.reset()
+          return
+        }
       }
+      if (innerHold) return
     }
-    const intent = wheelAcc.push(sample)
+    const intent = wheelAcc.push({ deltaX: e.deltaX, deltaY: e.deltaY, deltaMode: mode, t })
     if (intent) handlers.intent(intent)
   }
 
@@ -276,7 +328,7 @@ export function bindInputs(el: HTMLElement, handlers: InputHandlers, cfg: InputC
     if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return
     if (isEditableTarget(e.target)) return
     if ((e.key === ' ' || e.key === 'Spacebar' || e.key === 'Enter') && closestEl(e.target, INTERACTIVE)) return
-    if (ARROWS.has(e.key) && closestEl(e.target, '[role=menu], [role=slider]')) return
+    if (ARROWS.has(e.key) && closestEl(e.target, ARROW_OWNERS)) return
     const intent = keyIntent(e.key, e.shiftKey)
     if (!intent) return
     e.preventDefault()
@@ -289,7 +341,7 @@ export function bindInputs(el: HTMLElement, handlers: InputHandlers, cfg: InputC
   }
 
   el.addEventListener('pointerdown', onPointerDown)
-  el.addEventListener('lostpointercapture', onPointerCancel)
+  el.addEventListener('lostpointercapture', onLostCapture)
   // Move/up/cancel on window: a release outside `el` (no capture yet) still ends the gesture.
   window.addEventListener('pointermove', onPointerMove)
   window.addEventListener('pointerup', onPointerUp)
@@ -300,7 +352,7 @@ export function bindInputs(el: HTMLElement, handlers: InputHandlers, cfg: InputC
 
   return () => {
     el.removeEventListener('pointerdown', onPointerDown)
-    el.removeEventListener('lostpointercapture', onPointerCancel)
+    el.removeEventListener('lostpointercapture', onLostCapture)
     window.removeEventListener('pointermove', onPointerMove)
     window.removeEventListener('pointerup', onPointerUp)
     window.removeEventListener('pointercancel', onPointerCancel)
