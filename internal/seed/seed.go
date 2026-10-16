@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -161,8 +162,17 @@ func resolveImagesDir(imagesDir string) (string, error) {
 	if imagesDir == "" {
 		return "", invalid("images directory is required")
 	}
-	st, err := os.Lstat(imagesDir)
+	// Clean first: a trailing slash (or "/.") would make Lstat follow a
+	// symlinked final component and so hide it.
+	root, err := filepath.Abs(filepath.Clean(imagesDir))
 	if err != nil {
+		return "", err
+	}
+	st, err := os.Lstat(root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", invalid("images directory %s does not exist", imagesDir)
+		}
 		return "", err
 	}
 	if st.Mode()&os.ModeSymlink != 0 {
@@ -171,11 +181,7 @@ func resolveImagesDir(imagesDir string) (string, error) {
 	if !st.IsDir() {
 		return "", invalid("images path is not a directory")
 	}
-	root, err := filepath.Abs(imagesDir)
-	if err != nil {
-		return "", err
-	}
-	return filepath.Clean(root), nil
+	return root, nil
 }
 
 func loadPhotos(root string, m *manifest) ([]preparedPhoto, error) {
@@ -236,13 +242,34 @@ func readImage(root, name string) ([]byte, error) {
 	if !st.Mode().IsRegular() {
 		return nil, invalid("image %s is not a regular file", name)
 	}
-	f, err := os.Open(path)
+	f, err := openRegular(path, st)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
 	// Bound the read so a racing grow cannot fill memory.
 	return io.ReadAll(io.LimitReader(f, maxFileBytes+1))
+}
+
+// openRegular opens path without following a symlink and confirms that the
+// opened file is a regular file and the same file Lstat saw, so a swap
+// between the Lstat and the open cannot redirect the read. O_NONBLOCK keeps
+// a FIFO swapped in from blocking the open; it does not affect regular files.
+func openRegular(path string, lst os.FileInfo) (*os.File, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, invalid("cannot open image %s: %v", filepath.Base(path), err)
+	}
+	st, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	if !st.Mode().IsRegular() || !os.SameFile(st, lst) {
+		f.Close()
+		return nil, invalid("image %s changed while it was being read", filepath.Base(path))
+	}
+	return f, nil
 }
 
 func sniffImage(body []byte) (format, contentType string, err error) {
@@ -367,8 +394,16 @@ func inspect(ctx context.Context, q querier, owner string, photos []preparedPhot
 		}
 		pl.add("photo:"+p.manifest.ID, st)
 	}
+	// Photo uuids that already exist; a new photo has no frame yet, so it
+	// is not expected among a collection's existing frames.
+	existing := map[string]bool{}
+	for _, p := range photos {
+		if pl.states["photo:"+p.manifest.ID] != stateCreate {
+			existing[p.uuid] = true
+		}
+	}
 	for _, c := range colls {
-		st, err := inspectCollection(ctx, q, owner, c)
+		st, err := inspectCollection(ctx, q, owner, c, existing)
 		if err != nil {
 			return nil, err
 		}
@@ -386,10 +421,19 @@ func inspectUser(ctx context.Context, db querier, owner string) (string, error) 
 	if err != nil {
 		return "", err
 	}
-	if id == owner && email == demoEmail {
-		return stateUnchanged, nil
+	if id != owner || email != demoEmail {
+		return stateConflict, nil
 	}
-	return stateConflict, nil
+	// The user and its profile are created together; a user without one is
+	// drift, reported as a conflict rather than repaired.
+	var n int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM profiles WHERE user_id=?`, owner).Scan(&n); err != nil {
+		return "", err
+	}
+	if n != 1 {
+		return stateConflict, nil
+	}
+	return stateUnchanged, nil
 }
 
 func inspectPhoto(ctx context.Context, db querier, owner string, p preparedPhoto) (string, error) {
@@ -417,19 +461,49 @@ func inspectPhoto(ctx context.Context, db querier, owner string, p preparedPhoto
 	return stateConflict, nil
 }
 
-func inspectCollection(ctx context.Context, db querier, owner string, c preparedCollection) (string, error) {
-	var existingOwner string
-	err := db.QueryRowContext(ctx, `SELECT owner_id FROM collections WHERE id=?`, c.uuid).Scan(&existingOwner)
+func inspectCollection(ctx context.Context, db querier, owner string, c preparedCollection, existing map[string]bool) (string, error) {
+	var existingOwner, title, intro string
+	err := db.QueryRowContext(ctx, `SELECT owner_id,title,intro FROM collections WHERE id=?`, c.uuid).Scan(&existingOwner, &title, &intro)
 	if errors.Is(err, sql.ErrNoRows) {
 		return stateCreate, nil
 	}
 	if err != nil {
 		return "", err
 	}
-	if existingOwner == owner {
-		return stateUnchanged, nil
+	if existingOwner != owner || title != c.manifest.Title || intro != c.manifest.Text {
+		return stateConflict, nil
 	}
-	return stateConflict, nil
+	// Frames must still be the seeded ones: one full frame per already
+	// existing photo, in manifest order. Any drift (a missing, extra or
+	// reordered frame) is a conflict, never a silent repair.
+	var want []string
+	for _, pid := range c.photos {
+		if existing[pid] {
+			want = append(want, pid)
+		}
+	}
+	var frames int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM frames WHERE collection_id=?`, c.uuid).Scan(&frames); err != nil {
+		return "", err
+	}
+	if frames != len(want) {
+		return stateConflict, nil
+	}
+	for i, pid := range want {
+		var got string
+		err := db.QueryRowContext(ctx, `SELECT fp.photo_id FROM frames f JOIN frame_photos fp ON fp.frame_id=f.id AND fp.slot=0
+			WHERE f.collection_id=? AND f.position=? AND f.layout='full'`, c.uuid, i).Scan(&got)
+		if errors.Is(err, sql.ErrNoRows) {
+			return stateConflict, nil
+		}
+		if err != nil {
+			return "", err
+		}
+		if got != pid {
+			return stateConflict, nil
+		}
+	}
+	return stateUnchanged, nil
 }
 
 func applySeed(ctx context.Context, d Deps, owner string, m *manifest, photos []preparedPhoto, colls []preparedCollection, pl *plan) (err error) {

@@ -102,6 +102,32 @@ func TestSeedDemoInvalidManifestFails(t *testing.T) {
 	}
 }
 
+// --apply with no originals bucket fails before any storage or DB write.
+func TestSeedDemoApplyRequiresBucket(t *testing.T) {
+	dir := t.TempDir()
+	var logs bytes.Buffer
+	if err := dispatch(context.Background(), []string{"migrate"}, testEnv(dir), &logs, &logs); err != nil {
+		t.Fatal(err)
+	}
+	m, imgs := seedtest.Fixture(t, 8, 2)
+	mp := seedtest.WriteManifest(t, m)
+	var out bytes.Buffer
+	err := dispatch(context.Background(), []string{"seed-demo", "--manifest", mp, "--images", imgs, "--apply"},
+		testEnv(dir, "MARKR_BUCKET_ORIGINALS="), &out, &logs)
+	if err == nil || !strings.Contains(err.Error(), "MARKR_BUCKET_ORIGINALS") {
+		t.Fatalf("err = %v", err)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("printed a report: %s", out.String())
+	}
+	// A dry run does not need the bucket.
+	out.Reset()
+	if err := dispatch(context.Background(), []string{"seed-demo", "--manifest", mp, "--images", imgs},
+		testEnv(dir, "MARKR_BUCKET_ORIGINALS="), &out, &logs); err != nil {
+		t.Fatalf("dry run: %v", err)
+	}
+}
+
 func TestRefuseStorage(t *testing.T) {
 	var s refuseStorage
 	if s.Put(context.Background(), "b", "k", nil, "", "") == nil || s.Delete(context.Background(), "b", "k") == nil {

@@ -49,6 +49,9 @@ func cmdSeedDemo(ctx context.Context, cfg config.Config, args []string, out io.W
 	if err != nil {
 		return err
 	}
+	if a.apply && cfg.BucketOriginals == "" {
+		return errors.New("seed-demo --apply: MARKR_BUCKET_ORIGINALS is required")
+	}
 	path := filepath.Join(cfg.DataDir, dbFile)
 	if _, err := os.Stat(path); err != nil {
 		return fmt.Errorf("database %s: %w (run markr migrate first)", path, err)
