@@ -28,11 +28,15 @@ const emit = defineEmits<{
 }>()
 
 export interface ViewerSlotProps {
+  /** 1-based position in the sequence; `frames + 1` is the end frame. */
   current: number
-  total: number
+  /** Content frames in the collection, end frame excluded (the `12` in `03/12`). */
+  frames: number
+  /** The current frame is the end frame. */
+  atEnd: boolean
   /** The current collection frame, or null on the end frame. */
   frame: Frame | null
-  isEnd: boolean
+  /** Clamped to [1, frames + 1]. */
   go(n: number): void
   step(dir: Dir): void
   exit(): void
@@ -65,9 +69,9 @@ const currentFrame = computed<Frame | null>(() => frames.value[current.value - 1
 
 const slotProps = computed<ViewerSlotProps>(() => ({
   current: current.value,
-  total: total.value,
+  frames: frames.value.length,
+  atEnd: current.value === total.value,
   frame: currentFrame.value,
-  isEnd: current.value === total.value,
   go,
   step,
   exit: () => emit('exit'),
@@ -107,11 +111,10 @@ function setFrameRef(n: number, el: Element | ComponentPublicInstance | null) {
   else frameRefs.delete(n)
 }
 
-/** The current frame's inner scroller, only while it is a stacked pair. */
+/** The current frame's inner scroller: a stacked pair or a text frame, else none. */
 function currentInner(): InnerScroll | undefined {
-  if (!stacked.value || currentFrame.value?.layout !== 'pair') return undefined
   const fv = frameRefs.get(current.value)
-  if (!fv) return undefined
+  if (!fv || !fv.hasInner()) return undefined
   return { canScroll: (d) => fv.canScrollInner(d), scrollBy: (dy) => fv.scrollInner(dy) }
 }
 
@@ -137,7 +140,19 @@ function onDrag(axis: Axis, offset: number) {
   if (axis === 'x' && props.mode === 'preview') return
   if (axis === 'x') dragX.value = offset
   else dragY.value = offset
-  dragging.value = offset !== 0
+  // A zero mid-gesture (offset crossing its origin, inner absorbing the move)
+  // must not re-enable the transition; only the release ends dragging.
+  dragging.value = true
+}
+
+/**
+ * Pointer released: end dragging once this event's dispatch is over, i.e. after
+ * input.ts has sent its final drag(…, 0) or intent, whatever the listener order.
+ */
+function onRelease() {
+  queueMicrotask(() => {
+    dragging.value = false
+  })
 }
 
 let unbind: (() => void) | null = null
@@ -150,7 +165,7 @@ function bind() {
     { intent: onIntent, drag: onDrag, tap: () => {}, doubleTap: () => {} },
     {
       reducedMotion: reducedMotion.value,
-      // Read on every event: inner exists only while the current frame is a stacked pair.
+      // Read on every event: inner exists only while the current frame is a stacked pair or a text frame.
       get inner() {
         return currentInner()
       },
@@ -176,22 +191,32 @@ function describe(n: number): string {
 // --- preload ---
 const preloader = createPreloader()
 let preloadToken = 0
+/** Settles the previous call's wait, so its closure (and detached imgs) can be collected. */
+let abortWait: (() => void) | null = null
 async function preloadAround(n: number) {
   const token = ++preloadToken
+  abortWait?.()
+  const aborted = new Promise<void>((resolve) => {
+    abortWait = resolve
+  })
   const entries = neighborEntries(frames.value, n)
   preloader.prune(entries) // frames that left the neighbourhood drop their links now
   await nextTick()
   const imgs = [...(stageEl.value?.querySelectorAll<HTMLImageElement>(`[data-frame="${n}"] img`) ?? [])]
   // Decode failures still release the neighbours; the error notice handles the current frame.
-  await Promise.all(imgs.map((img) => img.decode().catch(() => undefined)))
+  // An img removed before it loads never settles decode(), hence the race with the abort.
+  await Promise.race([Promise.all(imgs.map((img) => img.decode().catch(() => undefined))), aborted])
   if (token !== preloadToken || unmounted) return
+  abortWait = null
   preloader.set(entries)
 }
 
-watch(current, (n) => {
+watch(current, (n, o) => {
   emit('frame', n)
   announcement.value = describe(n)
   void preloadAround(n)
+  // Enter an inner scroller from the side we came from, so every part of it is shown.
+  void nextTick(() => frameRefs.get(n)?.resetInner(n > o ? 'start' : 'end'))
 })
 
 let unmounted = false
@@ -199,6 +224,9 @@ onMounted(() => {
   stackMQ?.addEventListener('change', onStack)
   reducedMQ?.addEventListener('change', onReduced)
   bind()
+  window.addEventListener('pointerup', onRelease)
+  window.addEventListener('pointercancel', onRelease)
+  window.addEventListener('blur', onRelease)
   void preloadAround(current.value)
 })
 
@@ -206,6 +234,10 @@ onBeforeUnmount(() => {
   unmounted = true
   unbind?.()
   unbind = null
+  abortWait?.()
+  window.removeEventListener('pointerup', onRelease)
+  window.removeEventListener('pointercancel', onRelease)
+  window.removeEventListener('blur', onRelease)
   stackMQ?.removeEventListener('change', onStack)
   reducedMQ?.removeEventListener('change', onReduced)
   preloader.clear()

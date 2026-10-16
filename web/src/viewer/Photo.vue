@@ -22,18 +22,27 @@ watch(
     failed.value = false
   },
 )
+// A transient failure gets one fresh attempt each time the frame re-enters the window.
+watch(
+  () => props.live,
+  (live) => {
+    if (live) failed.value = false
+  },
+)
 
 const media = computed(() => props.photo.media)
 const w = computed(() => media.value?.width || props.photo.width || 3)
 const h = computed(() => media.value?.height || props.photo.height || 2)
 const ratio = computed(() => `${w.value} / ${h.value}`)
+/** Aspect as a CSS variable, so the placeholder can be sized like the image. */
+const boxStyle = computed(() => ({ aspectRatio: ratio.value, '--a': Number((w.value / h.value).toFixed(4)) }))
 const sizes = computed(() => sizesFor(props.layout, props.count))
 const alt = computed(() => props.photo.title || '照片')
 </script>
 
 <template>
-  <div v-if="!live" class="placeholder" :style="{ aspectRatio: ratio }" />
-  <div v-else-if="!media || failed" class="placeholder failed" :style="{ aspectRatio: ratio }">
+  <div v-if="!live" class="placeholder" :style="boxStyle" />
+  <div v-else-if="!media || failed" class="placeholder failed" :style="boxStyle">
     <p class="fail">图片暂时无法加载</p>
   </div>
   <picture v-else>

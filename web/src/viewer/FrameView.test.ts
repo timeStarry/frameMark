@@ -63,15 +63,26 @@ describe('FrameView layouts', () => {
     expect(v.find('.matte').attributes('style')).toContain('width: 80%')
   })
 
-  it('pair lays out photos in a row, flex-grown by aspect ratio', () => {
+  it('pair lays out photos in a row, each weighted by its aspect ratio', () => {
     const v = render(frame('pair', [photo('a'), photo('b', { media: media('b', 4000, 6000) })]))
     const pair = v.find('.pair')
     expect(pair.classes()).not.toContain('stacked')
     const items = v.findAll('.pair-item')
     expect(items).toHaveLength(2)
-    expect(items[0]!.attributes('style')).toContain('flex-grow: 1.5')
-    expect(items[1]!.attributes('style')).toMatch(/flex-grow: 0\.66/)
+    expect(items[0]!.attributes('style')).toContain('--a: 1.5')
+    expect(items[1]!.attributes('style')).toContain('--a: 0.6667')
+    expect(pair.attributes('style')).toContain('--s: 2.1667')
     expect(v.findAll('.pair-item picture')).toHaveLength(2)
+  })
+
+  it('pair passes aspect, sum and gap so the row fits both axes', () => {
+    const portrait = (id: string) => photo(id, { width: 4000, height: 6000, media: media(id, 4000, 6000) })
+    const v = render(frame('pair', [portrait('a'), portrait('b')]))
+    const pairStyle = v.find('.pair').attributes('style')
+    expect(pairStyle).toContain('--s: 1.3333')
+    expect(pairStyle).toContain('--g: 12px')
+    const items = v.findAll('.pair-item')
+    for (const it of items) expect(it.attributes('style')).toContain('--a: 0.6667')
   })
 
   it('pair stacks when the stacked prop is set', () => {
@@ -153,6 +164,17 @@ describe('Photo', () => {
     const ph = v.findAll('.placeholder')
     expect(ph).toHaveLength(2)
     expect(ph[0]!.attributes('style')).toContain('aspect-ratio: 6000 / 4000')
+    expect(ph[0]!.attributes('style')).toContain('--a: 1.5')
+  })
+
+  it('retries a failed image when the frame re-enters the window', async () => {
+    const v = render(frame('full', [photo('a')]))
+    await v.find('img').trigger('error')
+    expect(v.find('img').exists()).toBe(false)
+    await v.setProps({ live: false })
+    await v.setProps({ live: true })
+    expect(v.find('img').exists()).toBe(true)
+    expect(v.text()).not.toContain('图片暂时无法加载')
   })
 })
 
@@ -166,6 +188,52 @@ describe('inner scroll', () => {
     const v = render(frame('pair', [photo('a'), photo('b')]))
     const vm = v.vm as unknown as { canScrollInner(d: 1 | -1): boolean }
     sized(v.find('.pair').element, 2000, 800)
+    expect(vm.canScrollInner(1)).toBe(false)
+  })
+
+  type Inner = {
+    canScrollInner(d: 1 | -1): boolean
+    scrollInner(dy: number): number
+    resetInner(edge: 'start' | 'end'): void
+  }
+
+  it('returns fractional dy untouched at the boundary and 0 mid-range', () => {
+    const v = render(frame('pair', [photo('a'), photo('b')]), { stacked: true })
+    const vm = v.vm as unknown as Inner
+    const el = v.find('.pair').element as HTMLElement
+    sized(el, 2000, 800)
+    expect(vm.scrollInner(600)).toBe(0)
+    expect(vm.scrollInner(0.3)).toBe(0)
+    vm.resetInner('end')
+    expect(el.scrollTop).toBe(1200)
+    expect(vm.scrollInner(0.3)).toBe(0.3)
+    expect(vm.scrollInner(-0.3)).toBe(0)
+    vm.resetInner('start')
+    expect(el.scrollTop).toBe(0)
+    expect(vm.scrollInner(-0.3)).toBe(-0.3)
+  })
+
+  it('treats positions within 0.5px of an edge as the boundary', () => {
+    const v = render(frame('pair', [photo('a'), photo('b')]), { stacked: true })
+    const vm = v.vm as unknown as Inner
+    const el = v.find('.pair').element as HTMLElement
+    sized(el, 2000, 800)
+    el.scrollTop = 1199.6
+    expect(vm.canScrollInner(1)).toBe(false)
+    el.scrollTop = 1199
+    expect(vm.canScrollInner(1)).toBe(true)
+    el.scrollTop = 0.4
+    expect(vm.canScrollInner(-1)).toBe(false)
+  })
+
+  it('a long text frame scrolls through the same contract', () => {
+    const v = render(frame('text', [], { text: '长文'.repeat(400) }))
+    const vm = v.vm as unknown as Inner
+    const el = v.find('.text-wrap').element as HTMLElement
+    sized(el, 1500, 700)
+    expect(vm.canScrollInner(1)).toBe(true)
+    expect(vm.scrollInner(1000)).toBe(200)
+    expect(el.scrollTop).toBe(800)
     expect(vm.canScrollInner(1)).toBe(false)
   })
 

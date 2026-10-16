@@ -125,13 +125,13 @@ describe('Viewer stage', () => {
 
   it('exposes slots for the four edges and the info layer', () => {
     const v = render(fullFrames(3), 2, 'public', {
-      top: '<template #top="p"><b class="t">{{ p.current }}/{{ p.total }}</b></template>',
+      top: '<template #top="p"><b class="t">{{ p.current }}/{{ p.frames }}/{{ p.atEnd }}</b></template>',
       left: '<i class="l" />',
       right: '<i class="r" />',
       bottom: '<i class="b" />',
       info: '<i class="info" />',
     })
-    expect(v.find('.edge-top .t').text()).toBe('2/4')
+    expect(v.find('.edge-top .t').text()).toBe('2/3/false')
     expect(v.find('.edge-left .l').exists()).toBe(true)
     expect(v.find('.edge-right .r').exists()).toBe(true)
     expect(v.find('.edge-bottom .b').exists()).toBe(true)
@@ -163,6 +163,13 @@ describe('Viewer navigation', () => {
     key('ArrowDown')
     await nextTick()
     expect(v.find('[aria-live="polite"]').text()).toBe('第 3 帧，共 3 帧。风停了')
+  })
+
+  it('announces the end frame', async () => {
+    const v = render(fullFrames(3), 3)
+    key('ArrowDown')
+    await nextTick()
+    expect(v.find('[aria-live="polite"]').text()).toBe('结尾，共 3 帧。海边')
   })
 
   it('clamps at the first frame', async () => {
@@ -223,15 +230,143 @@ describe('Viewer navigation', () => {
     expect(v.find('.track').classes()).toContain('dragging')
     t += 400
     window.dispatchEvent(ev('pointerup', 450))
-    await nextTick()
+    await flushPromises()
     // Slow and below 20% of the viewport: springs back.
     expect(v.emitted('frame')).toBeUndefined()
     expect(v.find('.track').attributes('style')).toContain('calc(-100% + 0px)')
     expect(v.find('.track').classes()).not.toContain('dragging')
   })
+
+  it.each([false, true])('keeps the transition off when a drag passes back through zero (rebound: %s)', async (rebound) => {
+    let t = 1000
+    vi.spyOn(performance, 'now').mockImplementation(() => t)
+    const mq = fakeMatchMedia({ 'prefers-reduced-motion': false })
+    const v = render(fullFrames(3), 2)
+    // A reduced-motion change rebinds the inputs, which reorders the window listeners.
+    if (rebound) {
+      mq.fire('prefers-reduced-motion', true)
+      mq.fire('prefers-reduced-motion', false)
+    }
+    const stage = v.find('[role="region"]').element
+    const ev = (type: string, y: number) =>
+      new PointerEvent(type, { clientX: 100, clientY: y, pointerId: 1, isPrimary: true, button: 0, bubbles: true })
+    stage.dispatchEvent(ev('pointerdown', 500))
+    t += 300
+    window.dispatchEvent(ev('pointermove', 470))
+    t += 300
+    window.dispatchEvent(ev('pointermove', 500))
+    await nextTick()
+    expect(v.find('.track').classes()).toContain('dragging')
+    t += 300
+    window.dispatchEvent(ev('pointermove', 480))
+    t += 300
+    window.dispatchEvent(ev('pointerup', 480))
+    await flushPromises()
+    expect(v.find('.track').classes()).not.toContain('dragging')
+  })
 })
 
+function fakeMatchMedia(initial: Record<string, boolean>) {
+  const lists = new Map<string, { matches: boolean; listeners: Set<() => void> }>()
+  const get = (q: string) => {
+    let l = lists.get(q)
+    if (!l) {
+      const key = Object.keys(initial).find((k) => q.includes(k))
+      l = { matches: key ? initial[key]! : false, listeners: new Set() }
+      lists.set(q, l)
+    }
+    return l
+  }
+  vi.stubGlobal('matchMedia', (q: string) => {
+    const l = get(q)
+    return {
+      get matches() {
+        return l.matches
+      },
+      media: q,
+      addEventListener: (_: string, fn: () => void) => l.listeners.add(fn),
+      removeEventListener: (_: string, fn: () => void) => l.listeners.delete(fn),
+    }
+  })
+  return {
+    fire(part: string, matches: boolean) {
+      for (const [q, l] of lists) {
+        if (!q.includes(part)) continue
+        l.matches = matches
+        l.listeners.forEach((fn) => fn())
+      }
+    },
+  }
+}
+
+function pairFrames(): Frame[] {
+  const frames = fullFrames(3)
+  frames[1] = { layout: 'pair', matteRatio: null, text: null, photos: [photo('a'), photo('b')] }
+  return frames
+}
+
+function sizeScroller(el: Element, scrollHeight: number, clientHeight = 768) {
+  Object.defineProperty(el, 'scrollHeight', { configurable: true, value: scrollHeight })
+  Object.defineProperty(el, 'clientHeight', { configurable: true, value: clientHeight })
+}
+
 describe('Viewer inner scroll', () => {
+  it('follows the stacked media query change event', async () => {
+    const mq = fakeMatchMedia({ 'orientation: portrait': false })
+    const v = render(pairFrames(), 2)
+    const pair = v.find('[data-frame="2"] .pair')
+    sizeScroller(pair.element, 2000)
+    expect(pair.classes()).not.toContain('stacked')
+    mq.fire('orientation: portrait', true)
+    await nextTick()
+    expect(pair.classes()).toContain('stacked')
+    key('ArrowDown')
+    await nextTick()
+    expect((pair.element as HTMLElement).scrollTop).toBeGreaterThan(0)
+    expect(v.emitted('frame')).toBeUndefined()
+    mq.fire('orientation: portrait', false)
+    await nextTick()
+    expect(pair.classes()).not.toContain('stacked')
+    key('ArrowDown')
+    await nextTick()
+    expect(v.emitted('frame')).toEqual([[3]])
+  })
+
+  it('enters a stacked pair at the top going forward and at the bottom going back', async () => {
+    fakeMatchMedia({ 'orientation: portrait': true })
+    const v = render(pairFrames(), 3)
+    const el = v.find('[data-frame="2"] .pair').element as HTMLElement
+    sizeScroller(el, 2000)
+    key('ArrowUp')
+    await flushPromises()
+    expect(v.emitted('frame')).toEqual([[2]])
+    expect(el.scrollTop).toBe(1232)
+    key('ArrowUp')
+    await nextTick()
+    expect(v.emitted('frame')).toEqual([[2]])
+    expect(el.scrollTop).toBeLessThan(1232)
+    key('Home')
+    await flushPromises()
+    key('ArrowDown')
+    await flushPromises()
+    expect(el.scrollTop).toBe(0)
+  })
+
+  it('scrolls a long text frame before paging', async () => {
+    const frames = fullFrames(3)
+    frames[1] = { layout: 'text', matteRatio: null, text: '长文'.repeat(400), photos: [] }
+    const v = render(frames, 2)
+    const el = v.find('[data-frame="2"] .text-wrap').element as HTMLElement
+    sizeScroller(el, 1000)
+    key('ArrowDown')
+    await nextTick()
+    expect(el.scrollTop).toBe(232)
+    expect(v.emitted('frame')).toBeUndefined()
+    key('ArrowDown')
+    await nextTick()
+    expect(v.emitted('frame')).toEqual([[3]])
+  })
+
   it('scrolls a stacked pair before paging, only on narrow portrait', async () => {
     vi.stubGlobal('matchMedia', (q: string) => ({
       matches: q.includes('orientation: portrait'),
@@ -269,7 +404,46 @@ describe('Viewer inner scroll', () => {
   })
 })
 
+function deferDecode() {
+  const pending: { src: string; resolve: () => void }[] = []
+  vi.spyOn(HTMLImageElement.prototype, 'decode').mockImplementation(function (this: HTMLImageElement) {
+    return new Promise<void>((resolve) => pending.push({ src: this.getAttribute('src') ?? '', resolve }))
+  })
+  return {
+    resolve(id: string) {
+      for (const p of pending.filter((p) => p.src.includes(`/m/${id}/`))) p.resolve()
+    },
+  }
+}
+
 describe('Viewer preload', () => {
+  it('waits for the current image to decode', async () => {
+    const d = deferDecode()
+    render(fullFrames(12), 6)
+    await flushPromises()
+    expect(preloadSets()).toHaveLength(0)
+    d.resolve('p6')
+    await flushPromises()
+    expect(preloadSets()).toHaveLength(2)
+  })
+
+  it('drops a stale decode after paging on', async () => {
+    const d = deferDecode()
+    render(fullFrames(12), 6)
+    await flushPromises()
+    key('ArrowDown')
+    await flushPromises()
+    d.resolve('p6')
+    await flushPromises()
+    expect(preloadSets()).toHaveLength(0)
+    d.resolve('p7')
+    await flushPromises()
+    const sets = preloadSets()
+    expect(sets).toHaveLength(2)
+    expect(sets.some((s) => s.includes('/m/p6/'))).toBe(true)
+    expect(sets.some((s) => s.includes('/m/p8/'))).toBe(true)
+  })
+
   it('preloads only the adjacent frames once the current image decodes', async () => {
     render(fullFrames(12), 6)
     await flushPromises()
