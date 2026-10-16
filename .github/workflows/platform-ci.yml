@@ -17,3 +17,43 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+  go:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install libvips
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libvips-dev
+      - name: Check vips installation and HEIF support
+        run: vips --version || pkg-config --modversion vips
+      - name: Verify HEIF/AVIF support
+        run: vips -l | grep -q heifsave
+      - name: Start MinIO
+        run: docker run -d --name minio -p 9000:9000 -e MINIO_ROOT_USER=markrtest -e MINIO_ROOT_PASSWORD=markrtest-secret minio/minio:latest server /data
+      - name: Wait for MinIO
+        run: |
+          for i in {1..30}; do
+            if curl -sf http://127.0.0.1:9000/minio/health/live; then
+              echo "MinIO is ready"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "MinIO failed to start"
+          exit 1
+      - name: Check gofmt
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - run: go vet ./...
+      - name: Run tests
+        run: go test -race -count=1 ./...
+        env:
+          MARKR_TEST_S3_ENDPOINT: http://127.0.0.1:9000
+          MARKR_TEST_S3_ACCESS_KEY: markrtest
+          MARKR_TEST_S3_SECRET_KEY: markrtest-secret
+      - name: Build
+        run: go build -o /tmp/markr ./cmd/markr
