@@ -317,3 +317,62 @@ func TestPresignedPutRejectsWrongChecksum(t *testing.T) {
 		t.Fatalf("status %q after failed complete, want uploading", st)
 	}
 }
+
+// Final review I1: switching a public collection to unlisted ends CDN
+// distribution, so the API enqueues rotate_derived, the worker rotates the
+// hash, and purge_derived purges the old CDN prefix.
+func TestPublicToUnlistedRotatesAndPurges(t *testing.T) {
+	s := newStack(t)
+	owner := s.client(s.srv.URL)
+	owner.get("/api/auth/session").want(t, 200)
+	owner.signUp("e2e-unl-" + randHex(t, 4) + "@example.test")
+
+	img := fixtureJPEG(t, 2)
+	r := owner.post("/api/uploads", map[string]any{
+		"filename": "unl.jpg", "bytes": len(img), "sha256": sha(img), "contentType": "image/jpeg",
+	}).want(t, 201)
+	pid := r.str("photoId")
+	upload, _ := r.body["upload"].(map[string]any)
+	if code := s.putPresigned(upload, img); code != 200 {
+		t.Fatalf("presigned PUT: %d", code)
+	}
+	owner.post("/api/uploads/"+pid+"/complete", nil).want(t, 202)
+	s.drain("photo ready", func() bool { st, _, _, _ := s.photoRow(pid); return st == "ready" })
+	_, h0, _, _ := s.photoRow(pid)
+	oldHash := h0.String
+
+	cid := owner.post("/api/collections", map[string]any{"title": "Unlisted"}).want(t, 201).str("id")
+	owner.put("/api/collections/"+cid+"/frames", map[string]any{
+		"frames": []any{map[string]any{"layout": "full", "photoIds": []string{pid}}},
+	}).want(t, 200)
+	body := func(vis string) map[string]any {
+		return map[string]any{"title": "Unlisted", "visibility": vis, "distribute": true, "originalDownload": false}
+	}
+	owner.put("/api/collections/"+cid, body("public")).want(t, 200)
+	owner.post("/api/collections/"+cid+"/publish", nil).want(t, 200)
+	if _, h, _, _ := s.photoRow(pid); h.String != oldHash {
+		t.Fatal("publishing rotated the hash")
+	}
+
+	owner.put("/api/collections/"+cid, body("unlisted")).want(t, 200)
+	s.drain("rotate and purge", func() bool {
+		_, h, _, _ := s.photoRow(pid)
+		return h.Valid && h.String != oldHash && s.idle()
+	})
+	if dead := s.deadJobs(); len(dead) != 0 {
+		t.Fatalf("dead jobs: %v", dead)
+	}
+	if !slices.Contains(s.cdn.Prefixes(), "d/"+pid+"/"+oldHash+"/") {
+		t.Fatalf("cdn purges %v lack old prefix", s.cdn.Prefixes())
+	}
+	if got := s.list(s.cfg.BucketDerived, "d/"+pid+"/"+oldHash+"/"); len(got) != 0 {
+		t.Fatalf("old derived objects remain: %v", got)
+	}
+	// The unlisted link still works and carries the new hash.
+	_, h1, _, _ := s.photoRow(pid)
+	anon := s.client(s.srv.URL)
+	m := mediaOf(t, firstPhoto(t, anon.get("/api/collections/"+cid).want(t, 200)), "w480", "jpeg")
+	if !strings.HasPrefix(m, "/m/"+pid+"/"+h1.String+"/") {
+		t.Fatalf("unlisted media %q, want new hash %s", m, h1.String)
+	}
+}

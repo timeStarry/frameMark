@@ -14,6 +14,7 @@ import (
 	"io"
 	"log/slog"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -769,12 +770,17 @@ func (e *env) collection(photo, status, vis string) {
 	e.exec(`INSERT INTO frame_photos(frame_id,slot,photo_id) VALUES(?,0,?)`, fid, photo)
 }
 
-func TestRotateSkipsWhileExposed(t *testing.T) {
-	for _, vis := range []string{"public", "unlisted"} {
-		t.Run(vis, func(t *testing.T) {
+// rotate_derived is a no-op only while the photo is still CDN-exposed (in a
+// published public collection); an unlisted one alongside changes nothing.
+func TestRotateSkipsWhileCDNExposed(t *testing.T) {
+	for _, extra := range []string{"", "unlisted"} {
+		t.Run("public+"+extra, func(t *testing.T) {
 			e := newEnv(t, nil)
 			id, hash := readyPhoto(t, e)
-			e.collection(id, "published", vis)
+			e.collection(id, "published", "public")
+			if extra != "" {
+				e.collection(id, "published", extra)
+			}
 			jid := e.enqueue("rotate_derived", map[string]string{"photoId": id})
 			e.runOne()
 			p, _ := e.photo(id)
@@ -785,6 +791,29 @@ func TestRotateSkipsWhileExposed(t *testing.T) {
 				t.Fatalf("purged: %v", e.cdn.Prefixes())
 			}
 		})
+	}
+}
+
+// Final review I1: a photo that is only in unlisted collections has left
+// CDN exposure, so rotate_derived rotates it and purges the old prefix.
+func TestRotateUnlistedOnly(t *testing.T) {
+	e := newEnv(t, nil)
+	id, old := readyPhoto(t, e)
+	e.collection(id, "published", "unlisted")
+	jid := e.enqueue("rotate_derived", map[string]string{"photoId": id})
+	e.runOne()
+	p, _ := e.photo(id)
+	if e.jobState(jid) != "done" || p.hash.String == old {
+		t.Fatalf("job %s, hash %s (old %s)", e.jobState(jid), p.hash.String, old)
+	}
+	e.runOne() // purge_derived
+	if !slices.Contains(e.cdn.Prefixes(), "d/"+id+"/"+old+"/") {
+		t.Fatalf("purged %v, want old prefix", e.cdn.Prefixes())
+	}
+	for _, k := range e.st.keys(derB, "d/"+id+"/") {
+		if strings.Contains(k, "/"+old) {
+			t.Fatalf("old object left: %s", k)
+		}
 	}
 }
 

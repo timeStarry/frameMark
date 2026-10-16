@@ -807,7 +807,7 @@ func (w *Worker) rotateDerived(ctx context.Context, j *jobs.Job) error {
 	if row.status != "ready" {
 		return errNoop
 	}
-	exposed, err := exposure.Photo(ctx, w.db, id)
+	exposed, err := exposure.PhotoCDN(ctx, w.db, id)
 	if err != nil {
 		return err
 	}
@@ -890,7 +890,8 @@ func (w *Worker) oldPrefixes(ctx context.Context, id, old string) ([]string, err
 }
 
 // commitRotate swaps salt and hash in one tx after re-checking that the
-// photo is still ready and still not exposed, and enqueues purge_derived
+// photo is still ready and still not CDN-exposed (exposure.PhotoCDN; an
+// unlisted-only photo rotates, final review I1), and enqueues purge_derived
 // for the old prefixes in the same tx, so the old objects are always
 // cleaned up once the new hash is live.
 func (w *Worker) commitRotate(ctx context.Context, id, salt, old, hash string, oldPrefixes []string) (commitOutcome, error) {
@@ -917,7 +918,7 @@ func (w *Worker) commitRotate(ctx context.Context, id, salt, old, hash string, o
 	if status != "ready" || cur.String != old {
 		return commitSkipped, nil
 	}
-	exposed, err := exposure.Photo(ctx, tx, id)
+	exposed, err := exposure.PhotoCDN(ctx, tx, id)
 	if err != nil {
 		return 0, err
 	}

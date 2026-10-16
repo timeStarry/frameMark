@@ -27,13 +27,13 @@ func TestExposureGrid(t *testing.T) {
 	exec(`INSERT INTO users(id,email,password,created_at) VALUES('u1','a@x','!',0),('u2','b@x','!',0)`)
 	cases := []struct {
 		photo, owner, status, vis string
-		want                      bool
+		cdn, hash                 bool
 	}{
-		{"p-pub", "u1", "published", "public", true},
-		{"p-unl", "u1", "published", "unlisted", true},
-		{"p-priv", "u1", "published", "private", false},
-		{"p-draft", "u1", "draft", "public", false},
-		{"p-other", "u2", "published", "public", true},
+		{"p-pub", "u1", "published", "public", true, true},
+		{"p-unl", "u1", "published", "unlisted", false, true},
+		{"p-priv", "u1", "published", "private", false, false},
+		{"p-draft", "u1", "draft", "public", false, false},
+		{"p-other", "u2", "published", "public", true, true},
 	}
 	for i, c := range cases {
 		exec(`INSERT INTO photos(id,owner_id,status,original_key,original_sha256,original_bytes,format,public_fields,
@@ -51,23 +51,31 @@ func TestExposureGrid(t *testing.T) {
 	ctx := context.Background()
 	for _, c := range append(cases, struct {
 		photo, owner, status, vis string
-		want                      bool
-	}{"p-none", "u1", "", "", false}) {
-		got, err := exposure.Photo(ctx, d, c.photo)
-		if err != nil || got != c.want {
-			t.Errorf("Photo(%s) = %v, %v; want %v", c.photo, got, err, c.want)
+		cdn, hash                 bool
+	}{"p-none", "u1", "", "", false, false}) {
+		got, err := exposure.PhotoCDN(ctx, d, c.photo)
+		if err != nil || got != c.cdn {
+			t.Errorf("PhotoCDN(%s) = %v, %v; want %v", c.photo, got, err, c.cdn)
 		}
 	}
-	set, err := exposure.OwnerPhotos(ctx, d, "u1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(set) != 2 {
-		t.Fatalf("OwnerPhotos(u1) = %v", set)
-	}
-	for _, id := range []string{"p-pub", "p-unl"} {
-		if _, ok := set[id]; !ok {
-			t.Errorf("missing %s", id)
+	for name, tc := range map[string]struct {
+		fn   func(context.Context, exposure.Querier, string) (map[string]struct{}, error)
+		want []string
+	}{
+		"OwnerCDN":  {exposure.OwnerCDN, []string{"p-pub"}},
+		"OwnerHash": {exposure.OwnerHash, []string{"p-pub", "p-unl"}},
+	} {
+		set, err := tc.fn(ctx, d, "u1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(set) != len(tc.want) {
+			t.Errorf("%s(u1) = %v, want %v", name, set, tc.want)
+		}
+		for _, id := range tc.want {
+			if _, ok := set[id]; !ok {
+				t.Errorf("%s: missing %s", name, id)
+			}
 		}
 	}
 }

@@ -615,18 +615,18 @@ func TestWithdrawalOnVisibilityChange(t *testing.T) {
 	if got := e.rotated(); !sameIDs(got, sorted(a, b)) {
 		t.Fatalf("rotated %v, want %v", got, sorted(a, b))
 	}
-	// c2 public -> unlisted: still exposed (unlisted links carry the hash).
+	// c2 public -> unlisted: shared leaves CDN exposure (final review I1).
 	if r := u.updateCollection(c2, map[string]any{"visibility": "unlisted"}); r.code != 200 {
 		t.Fatal(r.raw)
 	}
-	if got := e.rotated(); !sameIDs(got, sorted(a, b)) {
+	if got := e.rotated(); !sameIDs(got, sorted(a, b, shared)) {
 		t.Fatalf("rotated %v", got)
 	}
-	// c2 unlisted -> private: shared leaves its last exposed collection.
+	// c2 unlisted -> private: shared leaves hash exposure too, so it rotates again.
 	if r := u.updateCollection(c2, map[string]any{"visibility": "private"}); r.code != 200 {
 		t.Fatal(r.raw)
 	}
-	if got := e.rotated(); !sameIDs(got, sorted(a, b, shared)) {
+	if got := e.rotated(); !sameIDs(got, sorted(a, b, shared, shared)) {
 		t.Fatalf("rotated %v", got)
 	}
 }
@@ -733,9 +733,9 @@ func (c *client) publishUnlisted(cid string) {
 	}
 }
 
-// Unlisted links carry the derived hash, so a published unlisted collection
-// is exposure too (Task 13 ruling I1).
-func TestWithdrawalUnlistedIsExposure(t *testing.T) {
+// Dropping a photo from its only public collection ends CDN exposure even
+// while an unlisted collection still holds it (final review I1).
+func TestWithdrawalLeavingPublicRotatesDespiteUnlisted(t *testing.T) {
 	e := newEnv(t)
 	u := e.user("u1")
 	a := e.readyPhoto("u1")
@@ -745,10 +745,66 @@ func TestWithdrawalUnlistedIsExposure(t *testing.T) {
 	u.mustFrames(unl, full(a))
 	u.publishPublic(pub)
 	u.publishUnlisted(unl)
-	// a stays exposed through the unlisted collection: nothing enqueued.
 	u.mustFrames(pub, textFrame("x"))
-	if got := e.rotated(); len(got) != 0 {
+	if got := e.rotated(); !sameIDs(got, []string{a}) {
 		t.Fatalf("rotated %v", got)
+	}
+}
+
+// Final review I1: a rotate is enqueued when a photo leaves either the
+// CDN-exposed set (published public) or the hash-exposed set (published
+// public or unlisted); one write that leaves both enqueues one rotate.
+func TestWithdrawalExposureTransitions(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		from, to string
+		want     int
+	}{
+		{"public to unlisted", "public", "unlisted", 1},
+		{"unlisted to private", "unlisted", "private", 1},
+		{"public to private once", "public", "private", 1},
+		{"unlisted to public", "unlisted", "public", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+			u := e.user("u1")
+			a := e.readyPhoto("u1")
+			cid := u.newCollection("c")
+			u.mustFrames(cid, full(a))
+			if tc.from == "public" {
+				u.publishPublic(cid)
+			} else {
+				u.publishUnlisted(cid)
+			}
+			if r := u.updateCollection(cid, map[string]any{"visibility": tc.to}); r.code != 200 {
+				t.Fatal(r.raw)
+			}
+			got := e.rotated()
+			if len(got) != tc.want || (tc.want == 1 && got[0] != a) {
+				t.Fatalf("rotated %v, want %d of %s", got, tc.want, a)
+			}
+		})
+	}
+}
+
+// A photo that stays in another published public collection keeps its CDN
+// URLs, so taking one public collection private enqueues nothing for it.
+func TestWithdrawalStillInOtherPublicCollection(t *testing.T) {
+	e := newEnv(t)
+	u := e.user("u1")
+	a := e.readyPhoto("u1")
+	c1, c2 := u.newCollection("one"), u.newCollection("two")
+	u.mustFrames(c1, full(a))
+	u.mustFrames(c2, full(a))
+	u.publishPublic(c1)
+	u.publishPublic(c2)
+	for _, vis := range []string{"unlisted", "private"} {
+		if r := u.updateCollection(c1, map[string]any{"visibility": vis}); r.code != 200 {
+			t.Fatal(r.raw)
+		}
+		if got := e.rotated(); len(got) != 0 {
+			t.Fatalf("%s: rotated %v", vis, got)
+		}
 	}
 }
 

@@ -661,29 +661,54 @@ func (s *server) putOverride(w http.ResponseWriter, r *http.Request) (int, any, 
 
 // --- withdrawal (spec §7 撤回) ---
 
-// exposedPhotos returns the ids of owner's photos that appear in at least
-// one of owner's published public or unlisted collections (exposure.OwnerPhotos,
-// shared with the worker's rotate_derived re-check).
-func exposedPhotos(ctx context.Context, tx *sql.Tx, owner string) (map[string]struct{}, error) {
-	return exposure.OwnerPhotos(ctx, tx, owner)
+// exposed is a snapshot of owner's CDN-exposed and hash-exposed photo sets
+// (package exposure, shared with the worker's rotate_derived re-check).
+type exposed struct {
+	cdn, hash map[string]struct{}
 }
 
-// withdraw enqueues rotate_derived for every photo in before (the
-// exposedPhotos set taken earlier in the same tx) that is no longer
-// exposed, so its old derived URLs stop resolving.
-func (s *server) withdraw(ctx context.Context, tx *sql.Tx, owner string, before map[string]struct{}) error {
-	if len(before) == 0 {
-		return nil
+// drop removes id from both sets, for a photo that is deleted outright
+// rather than rotated.
+func (x exposed) drop(id string) {
+	delete(x.cdn, id)
+	delete(x.hash, id)
+}
+
+func exposedPhotos(ctx context.Context, tx *sql.Tx, owner string) (exposed, error) {
+	cdn, err := exposure.OwnerCDN(ctx, tx, owner)
+	if err != nil {
+		return exposed{}, err
+	}
+	hash, err := exposure.OwnerHash(ctx, tx, owner)
+	if err != nil {
+		return exposed{}, err
+	}
+	return exposed{cdn: cdn, hash: hash}, nil
+}
+
+// withdraw enqueues one rotate_derived for every photo in before (the
+// exposedPhotos snapshot taken earlier in the same tx) that has left the
+// CDN-exposed set, the hash-exposed set, or both (final review I1), so its
+// old derived URLs stop resolving and the CDN prefix is purged.
+func (s *server) withdraw(ctx context.Context, tx *sql.Tx, owner string, before exposed) error {
+	if len(before.hash) == 0 {
+		return nil // CDN-exposed is a subset of hash-exposed
 	}
 	after, err := exposedPhotos(ctx, tx, owner)
 	if err != nil {
 		return err
 	}
-	var gone []string
-	for id := range before {
-		if _, ok := after[id]; !ok {
-			gone = append(gone, id)
+	left := map[string]struct{}{}
+	for _, sets := range [][2]map[string]struct{}{{before.cdn, after.cdn}, {before.hash, after.hash}} {
+		for id := range sets[0] {
+			if _, ok := sets[1][id]; !ok {
+				left[id] = struct{}{}
+			}
 		}
+	}
+	gone := make([]string, 0, len(left))
+	for id := range left {
+		gone = append(gone, id)
 	}
 	sort.Strings(gone)
 	for _, id := range gone {

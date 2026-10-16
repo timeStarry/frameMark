@@ -46,7 +46,7 @@ func (s *server) deletePhoto(w http.ResponseWriter, r *http.Request) (int, any, 
 			return err
 		}
 		// The photo itself is not rotated: its objects are deleted outright.
-		delete(before, id)
+		before.drop(id)
 
 		if _, err := tx.ExecContext(ctx, `DELETE FROM photos WHERE id=? AND owner_id=?`, id, owner); err != nil {
 			return err
