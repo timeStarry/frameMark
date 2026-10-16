@@ -833,7 +833,13 @@ func TestMiddlewareHeadersBodyLimitAndUser(t *testing.T) {
 	if r := c.bootstrap(); r.header.Get("Cache-Control") != "private, no-store" {
 		t.Fatalf("cache-control: %q", r.header.Get("Cache-Control"))
 	}
-	big := `{"email":"` + strings.Repeat("a", 129<<10) + `"}`
+	// The cap is 2 MiB (final review M1): 1.5 MiB passes the reader and
+	// fails validation, 2 MiB + 1 KiB is rejected as too large.
+	under := `{"email":"` + strings.Repeat("a", 1536<<10) + `"}`
+	if r := c.post("/api/auth/register", under); r.code == 413 {
+		t.Fatalf("body under the cap rejected: %d", r.code)
+	}
+	big := `{"email":"` + strings.Repeat("a", 2<<20+1<<10) + `"}`
 	if r := c.post("/api/auth/register", big); r.code != 413 {
 		t.Fatalf("oversized body: %d", r.code)
 	}

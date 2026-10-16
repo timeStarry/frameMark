@@ -579,7 +579,7 @@ func TestBytesTypeValidation(t *testing.T) {
 func TestOversizedBodyIs413(t *testing.T) {
 	e := newEnv(t)
 	u := e.user("u1")
-	body := `{"filename":"` + strings.Repeat("a", 200<<10) + `","bytes":1,"sha256":"` + shaA + `","contentType":"image/jpeg"}`
+	body := `{"filename":"` + strings.Repeat("a", 2<<20+1<<10) + `","bytes":1,"sha256":"` + shaA + `","contentType":"image/jpeg"}`
 	for _, path := range []string{"/api/uploads", "/api/uploads/" + newID() + "/complete"} {
 		if r := u.post(path, body); r.code != 413 {
 			t.Errorf("%s: %d %s", path, r.code, r.raw)

@@ -851,3 +851,30 @@ func TestWithdrawalUnlistedToPublicNoRotate(t *testing.T) {
 		t.Fatalf("rotated %v", got)
 	}
 }
+
+// Final review M1: the maximum frame sequence (200 text frames of 2000 CJK
+// runes, about 1.2 MB of JSON) fits under the request body cap.
+func TestSetFramesMaxCJKTextFits(t *testing.T) {
+	e := newEnv(t)
+	u := e.user("u1")
+	cid := u.newCollection("long")
+	frames := make([]frameIn, maxFramesTest)
+	for i := range frames {
+		frames[i] = textFrame(strings.Repeat("字", 2000))
+	}
+	b, err := json.Marshal(map[string]any{"frames": frames})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(b) < 1_200_000 {
+		t.Fatalf("body is only %d bytes", len(b))
+	}
+	if r := u.put("/api/collections/"+cid+"/frames", string(b)); r.code != 200 {
+		t.Fatalf("%d %.200s", r.code, r.raw)
+	}
+	if got := e.framesOf(cid); len(got) != maxFramesTest {
+		t.Fatalf("%d frames stored", len(got))
+	}
+}
+
+const maxFramesTest = 200
