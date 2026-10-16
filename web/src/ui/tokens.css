@@ -1,0 +1,26 @@
+/* Darkroom tokens, spec §3. */
+:root {
+  --bg-view: #000;
+  --bg-wall: #0b0b0c;
+  --fg: #e8e6e1;
+  --fg-muted: #9a978f;
+  --fg-faint: #5c5a55; /* decorative only */
+  --accent: #c9cfc0;
+  --line: rgba(232, 230, 225, 0.14);
+
+  --font-title: "Songti SC", "Noto Serif SC", "Source Han Serif SC", "Iowan Old Style", Georgia, serif;
+  --font-body: system-ui, -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+
+  --ease-move: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --dur-move: 280ms;
+  --dur-fade: 180ms;
+
+  --space-4: 4px;
+  --space-8: 8px;
+  --space-12: 12px;
+  --space-16: 16px;
+  --space-24: 24px;
+  --space-32: 32px;
+  --space-48: 48px;
+}
