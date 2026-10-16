@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -260,5 +261,71 @@ func TestSecondSignalForcesExit(t *testing.T) {
 	case <-exited:
 	case <-time.After(3 * time.Second):
 		t.Fatal("second SIGINT did not terminate the child")
+	}
+}
+
+// Final review I2: a listener that cannot bind makes serve return an error
+// (non-zero exit), not nil.
+func TestServeFailsWhenPortTaken(t *testing.T) {
+	for _, role := range []string{"api", "all"} {
+		t.Run(role, func(t *testing.T) {
+			l, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer l.Close()
+			done := make(chan error, 1)
+			go func() {
+				done <- run(context.Background(), []string{"serve", "--role=" + role},
+					testEnv(t.TempDir(), "MARKR_LISTEN="+l.Addr().String(), "MARKR_IDENTITY_ENABLED=true"), io.Discard)
+			}()
+			select {
+			case err := <-done:
+				if err == nil || !strings.Contains(err.Error(), "address already in use") {
+					t.Fatalf("serve = %v, want bind error", err)
+				}
+			case <-time.After(40 * time.Second):
+				t.Fatal("serve did not return")
+			}
+		})
+	}
+}
+
+// Final review I3: worker and all refuse to start when the libvips
+// self-check fails; api does not run it.
+func TestServeRefusesWithoutMediaFormats(t *testing.T) {
+	orig := mediaSelfCheck
+	t.Cleanup(func() { mediaSelfCheck = orig })
+	calls := 0
+	mediaSelfCheck = func() error { calls++; return errors.New("media self-check: libvips cannot encode AVIF") }
+	for _, role := range []string{"worker", "all"} {
+		// Bounded: without the check these roles would serve until cancelled.
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err := run(ctx, []string{"serve", "--role=" + role}, testEnv(t.TempDir(), "MARKR_LISTEN="+freeAddr(t)), io.Discard)
+		cancel()
+		if err == nil || !strings.Contains(err.Error(), "AVIF") {
+			t.Fatalf("%s: serve = %v", role, err)
+		}
+	}
+	if calls != 2 {
+		t.Fatalf("self-check calls = %d", calls)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	addr := freeAddr(t)
+	go func() {
+		done <- run(ctx, []string{"serve", "--role=api"}, testEnv(t.TempDir(), "MARKR_LISTEN="+addr), io.Discard)
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for get(t, "http://"+addr+"/api/square") != http.StatusOK {
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatal("api role never came up")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancel()
+	if err := <-done; err != nil || calls != 2 {
+		t.Fatalf("api: %v, calls %d", err, calls)
 	}
 }

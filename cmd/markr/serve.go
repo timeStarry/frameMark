@@ -24,11 +24,15 @@ import (
 	"github.com/timeStarry/frameMark/internal/identity"
 	"github.com/timeStarry/frameMark/internal/jobs"
 	"github.com/timeStarry/frameMark/internal/mail"
+	"github.com/timeStarry/frameMark/internal/media"
 	"github.com/timeStarry/frameMark/internal/storage"
 	"github.com/timeStarry/frameMark/internal/worker"
 )
 
 const dbFile = "markr.db"
+
+// mediaSelfCheck is media.SelfCheck; tests replace it.
+var mediaSelfCheck = media.SelfCheck
 
 func run(ctx context.Context, args []string, environ []string, logs io.Writer) error {
 	log := slog.New(slog.NewTextHandler(logs, nil))
@@ -98,6 +102,14 @@ func openDB(cfg config.Config) (*sql.DB, error) {
 
 func cmdServe(ctx context.Context, cfg config.Config, role string, log *slog.Logger) error {
 	log.Info("markr starting", "config", cfg.Redacted(), "role", role)
+
+	// Spec §10: the worker refuses to start when libvips cannot write
+	// every derived format (AVIF needs heifsave).
+	if role == "worker" || role == "all" {
+		if err := mediaSelfCheck(); err != nil {
+			return err
+		}
+	}
 
 	d, err := openDB(cfg)
 	if err != nil {
@@ -202,6 +214,9 @@ func cmdServe(ctx context.Context, cfg config.Config, role string, log *slog.Log
 		}()
 	}
 
+	// runErr is the listener or worker failure that ended serve; it is
+	// returned (joined with any close error) so the process exits non-zero.
+	var runErr error
 	select {
 	case <-ctx.Done():
 		// Unregister the signals: a second Ctrl-C now exits at once with
@@ -212,6 +227,7 @@ func cmdServe(ctx context.Context, cfg config.Config, role string, log *slog.Log
 		stop()
 		if err != nil {
 			log.Error("serve", "err", err)
+			runErr = err
 		}
 	}
 
@@ -229,9 +245,9 @@ func cmdServe(ctx context.Context, cfg config.Config, role string, log *slog.Log
 	if id != nil {
 		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer cancel()
-		return id.Close(cctx)
+		return errors.Join(runErr, id.Close(cctx))
 	}
-	return nil
+	return runErr
 }
 
 func defaultStr(v, d string) string {
