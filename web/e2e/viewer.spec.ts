@@ -1,0 +1,303 @@
+// Acceptance for the collection viewer (spec §9 table). Every API and media
+// request is served by e2e/mock.ts.
+import { expect, test, type Page } from '@playwright/test'
+import { mockAPI } from './mock'
+
+const current = (page: Page) => page.locator('.frame-slot:not([aria-hidden])')
+
+async function frameNo(page: Page): Promise<string | null> {
+  return current(page).getAttribute('data-frame')
+}
+
+async function waitFrame(page: Page, n: number) {
+  await expect(current(page)).toHaveAttribute('data-frame', String(n))
+  // Let the 280ms move settle before geometry checks.
+  await page.waitForTimeout(350)
+}
+
+async function screen(page: Page, name: string) {
+  const w = page.viewportSize()?.width ?? 0
+  await page.screenshot({ path: `test-results/screens/${test.info().project.name}-${w}-${name}.png` })
+}
+
+test.describe('layouts at four widths', () => {
+  for (const width of [360, 390, 768, 1440]) {
+    test(`frames fit the safe area at ${width}px`, async ({ page }) => {
+      const height = width < 768 ? 780 : 900
+      await page.setViewportSize({ width, height })
+      await mockAPI(page)
+      await page.goto('/c/main')
+      const names = ['land', 'port', 'pano', 'pair', 'text', 'land2']
+      for (let n = 1; n <= 6; n++) {
+        if (n > 1) {
+          await page.keyboard.press('ArrowDown')
+          // A stacked pair or a long text scrolls internally first.
+          for (let i = 0; i < 4 && (await frameNo(page)) !== String(n); i++) await page.keyboard.press('ArrowDown')
+        }
+        await waitFrame(page, n)
+        const imgs = current(page).locator('img')
+        const count = await imgs.count()
+        const stacked = await current(page).locator('.pair.stacked').count()
+        for (let i = 0; i < count; i++) {
+          await expect(imgs.nth(i)).toHaveJSProperty('complete', true)
+          if (stacked) continue // stacked pairs scroll; they need not fit at once
+          const b = (await imgs.nth(i).boundingBox())!
+          expect(b.x).toBeGreaterThanOrEqual(-0.5)
+          expect(b.y).toBeGreaterThanOrEqual(-0.5)
+          expect(b.x + b.width).toBeLessThanOrEqual(width + 0.5)
+          expect(b.y + b.height).toBeLessThanOrEqual(height + 0.5)
+          expect(b.width).toBeGreaterThan(50)
+        }
+        const scrollW = await page.evaluate(() => document.documentElement.scrollWidth)
+        expect(scrollW).toBeLessThanOrEqual(width)
+        await screen(page, names[n - 1]!)
+      }
+    })
+  }
+})
+
+test('keyboard-only: page through, open info, next collection, back', async ({ page, browserName }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await mockAPI(page)
+  await page.goto('/')
+  await page.goto('/c/main')
+  await waitFrame(page, 1)
+  await page.keyboard.press('i')
+  const dialog = page.getByRole('dialog')
+  await expect(dialog).toBeVisible()
+  await expect(dialog).toBeFocused()
+  await page.keyboard.press('i')
+  await expect(dialog).toHaveCount(0)
+  await page.keyboard.press('End')
+  await waitFrame(page, 7)
+  await expect(page.getByText('下一组')).toBeVisible()
+  await page.keyboard.press('ArrowRight')
+  await expect(page).toHaveURL(/\/c\/next/)
+  await expect(page).toHaveTitle('山中 · 林 — Markr')
+  // Tab reaches a visible edge control with a focus ring.
+  // Safari only tabs to buttons and links with Option+Tab by default.
+  await page.keyboard.press(browserName === 'webkit' ? 'Alt+Tab' : 'Tab')
+  const focused = page.locator(':focus')
+  await expect(focused).toBeVisible()
+  const outline = await focused.evaluate((el) => getComputedStyle(el).outlineStyle)
+  expect(outline).not.toBe('none')
+  await page.keyboard.press('Escape')
+  await expect(page).toHaveURL(/\/$/)
+})
+
+test('wheel: one burst pages exactly one frame', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await mockAPI(page)
+  await page.goto('/c/main')
+  await waitFrame(page, 1)
+  await page.mouse.move(720, 450)
+  for (let i = 0; i < 20; i++) {
+    await page.mouse.wheel(0, 30)
+    await page.waitForTimeout(16)
+  }
+  await waitFrame(page, 2)
+  await page.waitForTimeout(600)
+  await page.mouse.wheel(0, 120)
+  await waitFrame(page, 3)
+})
+
+test.describe('touch @touch', () => {
+  async function swipe(page: Page, from: [number, number], to: [number, number], steps = 6, stepMs = 16) {
+    await page.evaluate(
+      async ({ from, to, steps, stepMs }) => {
+        // Start on the topmost element (usually the <img>): implicit capture must not kill the swipe.
+        const target = document.elementFromPoint(from[0], from[1])!
+        const fire = (type: string, x: number, y: number, t: EventTarget) =>
+          t.dispatchEvent(
+            new PointerEvent(type, { pointerId: 7, pointerType: 'touch', isPrimary: true, clientX: x, clientY: y, bubbles: true, cancelable: true, buttons: type === 'pointerup' ? 0 : 1 }),
+          )
+        fire('pointerdown', from[0], from[1], target)
+        for (let i = 1; i <= steps; i++) {
+          const x = from[0] + ((to[0] - from[0]) * i) / steps
+          const y = from[1] + ((to[1] - from[1]) * i) / steps
+          await new Promise((r) => setTimeout(r, stepMs))
+          fire('pointermove', x, y, target)
+        }
+        fire('pointerup', to[0], to[1], target)
+      },
+      { from, to, steps, stepMs },
+    )
+  }
+
+  test('swipe up from the image pages; slow short drag springs back; swipe left changes collection; tap toggles edges', async ({ page }) => {
+    await mockAPI(page)
+    await page.goto('/c/main')
+    await waitFrame(page, 1)
+    const vp = page.viewportSize()!
+    const cx = vp.width / 2
+    const cy = vp.height / 2
+    const hit = await page.evaluate(([x, y]) => document.elementFromPoint(x!, y!)?.tagName, [cx, cy])
+    expect(hit).toBe('IMG')
+    await swipe(page, [cx, cy + 150], [cx, cy - 150])
+    await waitFrame(page, 2)
+    await swipe(page, [cx, cy + 20], [cx, cy - 40], 10, 60)
+    await waitFrame(page, 2)
+    await expect(page.locator('.edge-top')).not.toHaveClass(/shown/)
+    await page.touchscreen.tap(cx, cy)
+    await expect(page.locator('.edge-top')).toHaveClass(/shown/)
+    await page.waitForTimeout(400)
+    await swipe(page, [cx + 120, cy], [cx - 120, cy])
+    await expect(page).toHaveURL(/\/c\/next/)
+  })
+})
+
+test('edges: left scale appears near the edge; all hide after 2s idle with cursor none', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await mockAPI(page)
+  await page.goto('/c/main')
+  await waitFrame(page, 1)
+  await page.mouse.move(700, 450)
+  await page.mouse.move(20, 450)
+  await expect(page.locator('.edge-left')).toHaveClass(/shown/)
+  await expect(page.getByRole('button', { name: '跳到第 1 帧' })).toBeVisible()
+  await page.waitForTimeout(2300)
+  await expect(page.locator('.edge-left')).not.toHaveClass(/shown/)
+  const cursor = await page.locator('.stage').evaluate((el) => getComputedStyle(el).cursor)
+  expect(cursor).toBe('none')
+})
+
+test.describe('info layer', () => {
+  test('wide: panel narrows the stage without covering the photo; histogram toggles', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await mockAPI(page)
+    await page.goto('/c/main')
+    await waitFrame(page, 1)
+    await page.keyboard.press('i')
+    const dialog = page.getByRole('dialog')
+    await expect(dialog).toBeVisible()
+    await page.waitForTimeout(350)
+    const d = (await dialog.boundingBox())!
+    expect(Math.round(d.width)).toBe(360)
+    const img = (await current(page).locator('img').boundingBox())!
+    expect(img.x + img.width).toBeLessThanOrEqual(d.x + 0.5)
+    const luma = dialog.getByRole('button', { name: '亮度' })
+    const rgb = dialog.getByRole('button', { name: 'RGB' })
+    await expect(luma).toHaveAttribute('aria-pressed', 'true')
+    await rgb.click()
+    await expect(rgb).toHaveAttribute('aria-pressed', 'true')
+    await expect(dialog.locator('svg[aria-label="直方图"] path')).toHaveCount(3)
+    await screen(page, 'info-panel')
+  })
+
+  test('narrow: drawer; a photo with no public fields has no parameter line', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 780 })
+    await mockAPI(page)
+    await page.goto('/c/main?f=3')
+    await waitFrame(page, 3)
+    await expect(page.locator('.edge-right button')).toHaveCount(0)
+    await page.keyboard.press('i')
+    const dialog = page.getByRole('dialog')
+    await expect(dialog).toHaveClass(/drawer/)
+    const d = (await dialog.boundingBox())!
+    expect(d.height).toBeLessThanOrEqual(780 * 0.6 + 1)
+    await screen(page, 'info-drawer')
+  })
+})
+
+test('reduced motion: no transition when paging', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await mockAPI(page)
+  await page.goto('/c/main')
+  await waitFrame(page, 1)
+  const dur = await page.locator('.track').evaluate((el) => getComputedStyle(el).transitionDuration)
+  expect(dur.split(',').every((d) => parseFloat(d) === 0)).toBe(true)
+})
+
+test('slow media stays black, a failed image shows a notice and paging still works', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await mockAPI(page, { mediaDelayMs: 1500 })
+  await page.goto('/c/broken')
+  await expect(current(page)).toHaveAttribute('data-frame', '1')
+  const bg = await page.locator('.viewer').evaluate((el) => getComputedStyle(el).backgroundColor)
+  expect(bg).toBe('rgb(0, 0, 0)')
+  await expect(current(page).getByText('图片暂时无法加载')).toBeVisible({ timeout: 5000 })
+  await page.keyboard.press('ArrowDown')
+  await waitFrame(page, 2)
+})
+
+test('end frame: entries work and continuing down enters the next collection', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await mockAPI(page)
+  await page.goto('/c/main?f=7')
+  await waitFrame(page, 7)
+  const end = current(page)
+  await expect(end.getByText('从头再看')).toBeVisible()
+  await expect(end.getByRole('link', { name: '作者主页' })).toHaveAttribute('href', '/u/u1')
+  await expect(end.getByText('山中')).toBeVisible()
+  await end.getByRole('button', { name: '从头再看' }).click()
+  await waitFrame(page, 1)
+  await page.keyboard.press('End')
+  await waitFrame(page, 7)
+  await page.keyboard.press('ArrowDown')
+  await expect(page).toHaveURL(/\/c\/next/)
+})
+
+test('cross-author switch shows the new author and announces it', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await mockAPI(page)
+  await page.goto('/c/main')
+  await waitFrame(page, 1)
+  await page.keyboard.press('ArrowRight')
+  await expect(page).toHaveURL(/\/c\/next/)
+  await expect(page.locator('.edge-top.shown')).toContainText('林')
+  // The outgoing viewer keeps its own (empty) live region until its leave transition ends.
+  await expect(page.locator('[aria-live="polite"]').filter({ hasText: '林 的「山中」' })).toHaveCount(1)
+})
+
+test('URL: reload keeps the frame and the shared link has no wall', async ({ page, context, browserName }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await mockAPI(page)
+  await page.goto('/c/main?wall=square')
+  await waitFrame(page, 1)
+  await page.keyboard.press('ArrowDown')
+  await waitFrame(page, 2)
+  await expect(page).toHaveURL(/f=2/)
+  await page.reload()
+  await waitFrame(page, 2)
+  if (browserName === 'chromium') await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+  const shared = await page.evaluate(async () => {
+    const calls: string[] = []
+    Object.defineProperty(navigator, 'share', { configurable: true, value: undefined })
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (s: string) => void calls.push(s) } })
+    ;(window as unknown as { __calls: string[] }).__calls = calls
+    return true
+  })
+  expect(shared).toBe(true)
+  await page.mouse.move(700, 10)
+  await page.getByRole('button', { name: '更多' }).click({ timeout: 5000 })
+  await page.getByRole('menuitem', { name: '复制链接' }).click({ timeout: 5000 })
+  await expect(page.getByText('已复制链接')).toBeVisible()
+  const url = await page.evaluate(() => (window as unknown as { __calls: string[] }).__calls[0])
+  expect(url).toMatch(/\/c\/main\?f=2$/)
+  expect(url).not.toContain('wall')
+})
+
+test('privacy: no location, no original keys and no original prefetch', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  const mock = await mockAPI(page)
+  await page.goto('/c/main')
+  await waitFrame(page, 1)
+  await page.keyboard.press('i')
+  for (let i = 0; i < 8; i++) await page.keyboard.press('ArrowDown')
+  await page.waitForTimeout(500)
+  const text = (await page.content()).toLowerCase()
+  for (const s of ['latitude', 'longitude', '/o/']) {
+    expect(text).not.toContain(s)
+    expect(mock.requests.some((u) => u.toLowerCase().includes(s))).toBe(false)
+  }
+  expect(mock.requests.some((u) => u.includes('/original'))).toBe(false)
+  const preloads = await page.locator('link[rel="preload"]').evaluateAll((ls) => ls.map((l) => l.getAttribute('imagesrcset') ?? ''))
+  expect(preloads.some((s) => s.includes('original'))).toBe(false)
+})
+
+test('404 collection shows the missing screen', async ({ page }) => {
+  await mockAPI(page)
+  await page.goto('/c/gone')
+  await expect(page.getByText('这组照片不存在或已不再公开')).toBeVisible()
+})

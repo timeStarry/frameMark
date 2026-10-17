@@ -499,7 +499,9 @@ const sequence = computed(() => Array.from({ length: total.value }, (_, i) => i 
   opacity: 1;
 }
 
-.edge.shown > :deep(*) {
+/* Only the controls take pointer events: an edge's layout box (the full-height
+   right column, the full-width top bar) must not cover its neighbours or the photo. */
+.edge.shown :deep(:is(button, a, [role='slider'], [role='menu'], [data-edge-hit])) {
   pointer-events: auto;
 }
 
