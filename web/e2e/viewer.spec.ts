@@ -447,7 +447,9 @@ test('collection switch: the next collection slides in from the right and .route
           scroll.push(route.scrollLeft)
           const incoming = [...route.querySelectorAll('.viewer')].find((v) => v !== first)
           if (incoming) x.push(incoming.getBoundingClientRect().left)
-          if (performance.now() - t0 < 400) requestAnimationFrame(tick)
+          // Sample past the 280ms transition; slow CI runners can deliver
+          // only a handful of frames, so the window is time-based and long.
+          if (performance.now() - t0 < 900) requestAnimationFrame(tick)
           else resolve({ scroll, x })
         }
         requestAnimationFrame(tick)
@@ -455,7 +457,7 @@ test('collection switch: the next collection slides in from the right and .route
   )
   await page.keyboard.press('ArrowRight')
   const { scroll, x } = await arm
-  expect(scroll.length).toBeGreaterThan(5)
+  expect(scroll.length).toBeGreaterThanOrEqual(3)
   expect(scroll.every((s) => s === 0), `route scrollLeft samples: ${scroll.join(',')}`).toBe(true)
   expect(x.length).toBeGreaterThan(2)
   for (let i = 1; i < x.length; i++) expect(x[i]!, `incoming x samples: ${x.join(',')}`).toBeLessThanOrEqual(x[i - 1]!)
