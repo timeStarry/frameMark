@@ -18,3 +18,11 @@ export function recall(wall: string): string | null {
     return null
   }
 }
+
+export function forget(wall: string): void {
+  try {
+    sessionStorage.removeItem(key(wall))
+  } catch {
+    // ignore
+  }
+}
