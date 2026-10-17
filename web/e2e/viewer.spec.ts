@@ -181,6 +181,54 @@ test('cover strip: every card is reachable at 360px', async ({ page }) => {
   expect(last.x + last.width).toBeLessThanOrEqual(s.x + s.width + 0.5)
 })
 
+/** Every point ±21px from the control's centre hits the control (44×44 hit area, §6.2). */
+async function expectHit44(page: Page, sel: string, nth = 0) {
+  const misses = await page.locator(sel).nth(nth).evaluate((el) => {
+    const r = el.getBoundingClientRect()
+    const cx = r.left + r.width / 2
+    const cy = r.top + r.height / 2
+    const out: string[] = []
+    for (const [dx, dy] of [[0, 0], [-21, 0], [21, 0], [0, -21], [0, 21]] as const) {
+      const hit = document.elementFromPoint(cx + dx, cy + dy)
+      if (!hit || !(hit === el || el.contains(hit))) out.push(`${dx},${dy}`)
+    }
+    return out
+  })
+  expect(misses, sel).toEqual([])
+}
+
+test('touch targets are at least 44×44px at 390px', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 780 })
+  await mockAPI(page)
+  await page.goto('/c/main')
+  await waitFrame(page, 1)
+  await page.mouse.move(195, 400)
+  await page.mouse.move(10, 400)
+  await expect(page.locator('.edge-left')).toHaveClass(/shown/)
+  const col = (await page.locator('.edge-left .ticks').boundingBox())!
+  expect(col.width).toBeGreaterThanOrEqual(44)
+  // 6 ticks: each one is its own 44px target.
+  await expectHit44(page, '.edge-left .tick', 0)
+  await expectHit44(page, '.edge-left .tick', 5)
+  await page.mouse.move(380, 400)
+  await expectHit44(page, '.edge-right .params')
+  await page.keyboard.press('i')
+  const dialog = page.getByRole('dialog')
+  await expect(dialog).toBeVisible()
+  await page.waitForTimeout(350)
+  await expectHit44(page, '[role=dialog] button[aria-label="关闭"]')
+  await expectHit44(page, '[role=dialog] .modes button', 0)
+  await expectHit44(page, '[role=dialog] .modes button', 1)
+  await page.keyboard.press('Escape')
+  await page.goto('/c/main?f=4')
+  await waitFrame(page, 4)
+  await page.keyboard.press('i')
+  await expect(page.getByRole('dialog')).toBeVisible()
+  await page.waitForTimeout(350)
+  await expectHit44(page, '[role=dialog] .switch button', 0)
+  await expectHit44(page, '[role=dialog] .switch button', 1)
+})
+
 test.describe('info layer', () => {
   test('wide: panel narrows the stage without covering the photo; histogram toggles', async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 })

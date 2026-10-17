@@ -220,8 +220,9 @@ onBeforeUnmount(() => window.removeEventListener('resize', onResize))
 .close {
   display: grid;
   place-items: center;
-  width: 40px;
-  height: 40px;
+  width: 44px;
+  height: 44px;
+  margin: -2px -10px -2px 0;
   border: 0;
   border-radius: 50%;
   background: transparent;
@@ -276,14 +277,25 @@ onBeforeUnmount(() => window.removeEventListener('resize', onResize))
   font-size: 13px;
 }
 
+/* 44×44 targets (spec §6.2) around the 32px ring. */
 .switch button {
-  width: 32px;
-  height: 32px;
-  border: 1px solid var(--line);
-  border-radius: 50%;
+  position: relative;
+  width: 44px;
+  height: 44px;
+  margin: -6px;
+  border: 0;
   background: transparent;
   color: var(--fg);
+  font: inherit;
   cursor: pointer;
+}
+
+.switch button::before {
+  content: '';
+  position: absolute;
+  inset: 6px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
 }
 
 .switch button:disabled {

@@ -257,6 +257,23 @@ describe('EdgeLeft', () => {
     expect(w.emitted('go')).toEqual([[3]])
   })
 
+  it('more than 12 ticks: one 44px hit column maps the click y to a frame', async () => {
+    w = mount(EdgeLeft, { props: { current: 1, frames: 20, atEnd: false } })
+    const hit = w.get('[data-edge-hit]')
+    Object.defineProperty(hit.element, 'getBoundingClientRect', {
+      value: () => ({ top: 100, bottom: 290, height: 190, left: 0, right: 44, width: 44, x: 0, y: 100 }),
+    })
+    hit.element.dispatchEvent(new MouseEvent('click', { clientY: 100 + 190 * 0.5, bubbles: true }))
+    expect(w.emitted('go')).toEqual([[11]])
+    // The ticks stay buttons for the keyboard.
+    expect(w.findAll('button[aria-label^="跳到第"]')).toHaveLength(20)
+  })
+
+  it('12 ticks or fewer have no hit column', () => {
+    w = mount(EdgeLeft, { props: { current: 1, frames: 12, atEnd: false } })
+    expect(w.find('[data-edge-hit]').exists()).toBe(false)
+  })
+
   it('uses a slider when there are more than 40 frames', async () => {
     w = mount(EdgeLeft, { props: { current: 10, frames: 41, atEnd: false } })
     expect(w.findAll('button[aria-label^="跳到第"]')).toHaveLength(0)

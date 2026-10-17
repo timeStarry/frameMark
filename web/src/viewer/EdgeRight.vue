@@ -36,6 +36,8 @@ const parts = computed(() => {
 
 .params {
   writing-mode: vertical-rl;
+  min-width: 44px;
+  justify-content: center;
   display: flex;
   align-items: center;
   gap: var(--space-8);

@@ -67,10 +67,13 @@ svg {
 .modes {
   display: flex;
   gap: var(--space-4);
-  margin-top: var(--space-8);
+  margin-top: var(--space-16);
 }
 
+/* The ::after stretches the hit area to 44px tall (spec §6.2). */
 .modes button {
+  position: relative;
+  min-width: 44px;
   padding: var(--space-4) var(--space-8);
   border: 1px solid var(--line);
   border-radius: 4px;
@@ -79,6 +82,16 @@ svg {
   font: inherit;
   font-size: 12px;
   cursor: pointer;
+}
+
+.modes button::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 0;
+  right: 0;
+  height: 44px;
+  margin-top: -22px;
 }
 
 .modes button[aria-pressed='true'] {
