@@ -47,12 +47,17 @@ type ownerRef struct {
 
 // cardView is a collection on a wall: square, user wall, album, neighbor strip.
 type cardView struct {
-	ID    string     `json:"id"`
-	Title string     `json:"title"`
-	Owner ownerRef   `json:"owner"`
-	Count int        `json:"count"`
-	Cover *mediaView `json:"cover"`
+	ID       string       `json:"id"`
+	Title    string       `json:"title"`
+	Owner    ownerRef     `json:"owner"`
+	Count    int          `json:"count"`
+	Cover    *mediaView   `json:"cover"`
+	Previews []*mediaView `json:"previews"`
 }
+
+// maxPreviews bounds cardView.Previews: the first distinct photos in frame
+// order that have ready media.
+const maxPreviews = 5
 
 // publicPhotoView is a photo as read inside one collection. EXIF and the
 // histogram are filtered by domain.EffectivePublicFields for that
@@ -280,7 +285,39 @@ func (b *cardBuilder) card(c collRow) (cardView, error) {
 	if ok {
 		v.Cover = b.s.mediaFor(src, &c.Collection)
 	}
+	if v.Previews, err = b.previews(c); err != nil {
+		return cardView{}, err
+	}
 	return v, nil
+}
+
+// previews returns media for the first maxPreviews distinct photos of c in
+// frame order (position, then slot), skipping photos without ready media.
+// It never returns nil.
+func (b *cardBuilder) previews(c collRow) ([]*mediaView, error) {
+	out := []*mediaView{}
+	rows, err := b.s.db.QueryContext(b.ctx, `SELECT p.id,p.status,p.width,p.height,p.derived_hash
+		FROM frame_photos fp JOIN frames f ON f.id=fp.frame_id JOIN photos p ON p.id=fp.photo_id
+		WHERE f.collection_id=? ORDER BY f.position, fp.slot`, c.ID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	seen := map[string]bool{}
+	for len(out) < maxPreviews && rows.Next() {
+		var m mediaSource
+		if err := rows.Scan(&m.ID, &m.Status, &m.Width, &m.Height, &m.Hash); err != nil {
+			return nil, err
+		}
+		if seen[m.ID] {
+			continue
+		}
+		seen[m.ID] = true
+		if mv := b.s.mediaFor(m, &c.Collection); mv != nil {
+			out = append(out, mv)
+		}
+	}
+	return out, rows.Err()
 }
 
 func (b *cardBuilder) list(cs []collRow) ([]cardView, error) {
@@ -469,7 +506,7 @@ func (s *server) readNeighbors(w http.ResponseWriter, r *http.Request) (int, any
 	wall := r.URL.Query().Get("wall")
 	var list []collRow
 	idx := -1
-	used := wallUser
+	var used string
 	switch {
 	case wall == wallSquare && inSquare(cur):
 		list, idx, err = s.squareAround(ctx, cur)
@@ -484,12 +521,13 @@ func (s *server) readNeighbors(w http.ResponseWriter, r *http.Request) (int, any
 		return 0, nil, err
 	}
 	if idx < 0 {
-		// Unknown, invalid or unreadable wall: fall back to the owner's wall.
+		// Unknown, invalid, unreadable or user wall: the owner's wall,
+		// reported as user:{ownerId}. "user" and any "user:{id}" land here.
 		list, idx, err = s.userAround(ctx, cur, viewer)
 		if err != nil {
 			return 0, nil, err
 		}
-		used = wallUser
+		used = wallUser + ":" + cur.OwnerID
 	}
 	b := s.cards(ctx)
 	v := neighborsView{Wall: used, Strip: []cardView{}}

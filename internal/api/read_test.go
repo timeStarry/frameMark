@@ -283,7 +283,7 @@ func TestSquare(t *testing.T) {
 		t.Errorf("default page %s", r.raw)
 	}
 	c := r.body["items"].([]any)[0].(map[string]any)
-	if len(c) != 5 || c["count"] != 1.0 || c["cover"] == nil || c["owner"].(map[string]any)["id"] != "u1" {
+	if pv, _ := c["previews"].([]any); len(c) != 6 || c["count"] != 1.0 || c["cover"] == nil || len(pv) != 1 || c["owner"].(map[string]any)["id"] != "u1" {
 		t.Errorf("card %v", c)
 	}
 
@@ -318,6 +318,57 @@ func TestSquare(t *testing.T) {
 			t.Errorf("cursor %q: %d", c, r.code)
 		}
 	}
+}
+
+func TestCardPreviews(t *testing.T) {
+	e := newEnv(t)
+	u1, _, anon := viewers(e)
+	var ps []string
+	for i := 0; i < 7; i++ {
+		ps = append(ps, e.mediaPhoto("u1", fmt.Sprint(i)))
+	}
+	np := e.readyPhoto("u1") // ready but without derived media: never a preview
+	id := u1.coll("published", "public", nil, ps...)
+	// frames: 0 | pair(1,2) | 0 again (dup) | no-media | 3 4 5 6 → 0 1 2 3 4, capped at 5
+	u1.mustFrames(id, full(ps[0]), pair(ps[1], ps[2]), full(ps[0]), full(np),
+		full(ps[3]), full(ps[4]), full(ps[5]), full(ps[6]))
+	r := anon.get("/api/square")
+	var c map[string]any
+	for _, it := range r.body["items"].([]any) {
+		if m := it.(map[string]any); m["id"] == id {
+			c = m
+		}
+	}
+	if c == nil {
+		t.Fatalf("card missing: %s", r.raw)
+	}
+	pv := c["previews"].([]any)
+	if len(pv) != 5 {
+		t.Fatalf("previews %d: %v", len(pv), pv)
+	}
+	for i, want := range ps[:5] {
+		jpeg := pv[i].(map[string]any)["tiers"].(map[string]any)["w480"].(map[string]any)["jpeg"].(string)
+		if !strings.Contains(jpeg, want) {
+			t.Errorf("preview %d = %s, want photo %s", i, jpeg, want)
+		}
+	}
+	if strings.Contains(r.raw, np) {
+		t.Errorf("photo without media leaked into previews")
+	}
+
+	// a collection without frames has previews [] (not null)
+	empty := u1.coll("draft", "private", nil)
+	for _, it := range u1.get("/api/u/u1").body["collections"].([]any) {
+		m := it.(map[string]any)
+		if m["id"] != empty {
+			continue
+		}
+		if pv, ok := m["previews"].([]any); !ok || len(pv) != 0 {
+			t.Errorf("empty previews %#v", m["previews"])
+		}
+		return
+	}
+	t.Errorf("empty collection not on owner wall")
 }
 
 func TestUserWall(t *testing.T) {
@@ -462,8 +513,14 @@ func TestNeighbors(t *testing.T) {
 		t.Errorf("square head: %s %s %s", w, p, n)
 	}
 	// user: wall_rank a b c
-	if w, p, n, s := nb(u2, b, "user"); w != "user" || p != a || n != c || len(s) != 3 {
+	if w, p, n, s := nb(u2, b, "user"); w != "user:u1" || p != a || n != c || len(s) != 3 {
 		t.Errorf("user: %s %s %s %v", w, p, n, s)
+	}
+	// legacy "user", id-scoped "user:{owner}" and a foreign "user:{other}" all resolve to the owner's wall
+	for _, in := range []string{"user", "user:u1", "user:u3", "user:"} {
+		if w, p, n, _ := nb(u2, b, in); w != "user:u1" || p != a || n != c {
+			t.Errorf("%q: %s %s %s", in, w, p, n)
+		}
 	}
 	// owner's own user wall includes unlisted and private
 	if _, _, n, s := nb(u1, c, "user"); n != hidden || len(s) != 5 {
@@ -483,16 +540,16 @@ func TestNeighbors(t *testing.T) {
 	privAlbum := u1.post("/api/albums", jsonBody(map[string]any{"title": "P", "visibility": "private"})).body["id"].(string)
 	u1.put("/api/albums/"+privAlbum+"/items", jsonBody(map[string]any{"collectionIds": []string{a, b}}))
 	for _, wall := range []string{"", "bogus", "album:", "album:nope", "album:" + newID(), "album:" + privAlbum, "square%20"} {
-		if w, p, n, _ := nb(anon, b, wall); w != "user" || p != a || n != c {
+		if w, p, n, _ := nb(anon, b, wall); w != "user:u1" || p != a || n != c {
 			t.Errorf("fallback %q: %s %s %s", wall, w, p, n)
 		}
 	}
 	// album that does not contain the collection falls back too
-	if w, _, _, _ := nb(anon, x, "album:"+al); w != "user" {
+	if w, _, _, _ := nb(anon, x, "album:"+al); w != "user:u3" {
 		t.Errorf("album without member: %s", w)
 	}
 	// unlisted collection: not in square, not on the non-owner wall
-	if w, p, n, s := nb(anon, hidden, "square"); w != "user" || p != "" || n != "" || len(s) != 3 {
+	if w, p, n, s := nb(anon, hidden, "square"); w != "user:u1" || p != "" || n != "" || len(s) != 3 {
 		t.Errorf("unlisted: %s %s %s %v", w, p, n, s)
 	}
 	// strip is bounded and centered
