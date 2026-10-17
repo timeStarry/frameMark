@@ -21,8 +21,14 @@ export interface InputHandlers {
    * of a double tap also fires `tap`; the edge toggle it drives is idempotent
    * across the pair (toggle + toggle), so this is accepted.
    */
-  tap(): void
-  doubleTap(): void
+  tap(pointerType: string): void
+  doubleTap(pointerType: string): void
+  /**
+   * Keys the viewer handles beyond navigation (i, f, Escape). Called after the
+   * editable-target check and before navigation; return true when handled, so
+   * the key is preventDefault'ed and goes no further.
+   */
+  key?(e: KeyboardEvent): boolean
 }
 
 /**
@@ -139,6 +145,7 @@ export function bindInputs(el: HTMLElement, handlers: InputHandlers, cfg: InputC
   let maxDist = 0
   let dragAxis: Axis | null = null
   let lastTapT = -Infinity
+  let downType = ''
   // inner-scroll routing for the current y gesture
   let inner: InnerScroll | undefined
   let lastY = 0
@@ -207,6 +214,7 @@ export function bindInputs(el: HTMLElement, handlers: InputHandlers, cfg: InputC
     downX = e.clientX
     downY = e.clientY
     downT = now()
+    downType = e.pointerType
     maxDist = 0
     lastY = downY
     gesture.start(downX, downY, downT)
@@ -262,10 +270,10 @@ export function bindInputs(el: HTMLElement, handlers: InputHandlers, cfg: InputC
     if (isTap) {
       if (t - lastTapT <= DOUBLE_TAP_MS) {
         lastTapT = -Infinity
-        handlers.doubleTap()
+        handlers.doubleTap(downType)
       } else {
         lastTapT = t
-        handlers.tap()
+        handlers.tap(downType)
       }
     }
   }
@@ -329,6 +337,10 @@ export function bindInputs(el: HTMLElement, handlers: InputHandlers, cfg: InputC
     if (isEditableTarget(e.target)) return
     if ((e.key === ' ' || e.key === 'Spacebar' || e.key === 'Enter') && closestEl(e.target, INTERACTIVE)) return
     if (ARROWS.has(e.key) && closestEl(e.target, ARROW_OWNERS)) return
+    if (handlers.key?.(e)) {
+      e.preventDefault()
+      return
+    }
     const intent = keyIntent(e.key, e.shiftKey)
     if (!intent) return
     e.preventDefault()

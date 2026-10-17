@@ -483,3 +483,76 @@ describe('Viewer preload', () => {
     expect(preloadSets()).toHaveLength(0)
   })
 })
+
+describe('Viewer with default edges (Task 6)', () => {
+  function mountWith(props: Record<string, unknown> = {}) {
+    w = mount(Viewer, {
+      props: { collection: collection(fullFrames(3)), neighbors: null, initialFrame: 1, mode: 'public', ...props },
+      attachTo: document.body,
+    })
+    return w
+  }
+
+  it('Esc closes the menu, then the info layer, then exits', async () => {
+    const v = mountWith()
+    await v.get('button[aria-haspopup="menu"]').trigger('click')
+    key('i')
+    await nextTick()
+    expect(v.find('[role="dialog"]').exists()).toBe(true)
+    key('Escape')
+    await nextTick()
+    expect(v.get('button[aria-haspopup="menu"]').attributes('aria-expanded')).toBe('false')
+    expect(v.find('[role="dialog"]').exists()).toBe(true)
+    key('Escape')
+    await nextTick()
+    expect(v.find('[role="dialog"]').exists()).toBe(false)
+    expect(v.emitted('exit')).toBeUndefined()
+    key('Escape')
+    expect(v.emitted('exit')).toHaveLength(1)
+  })
+
+  it('i toggles the info layer', async () => {
+    const v = mountWith()
+    key('i')
+    await nextTick()
+    expect(v.find('[role="dialog"]').exists()).toBe(true)
+    key('i')
+    await nextTick()
+    expect(v.find('[role="dialog"]').exists()).toBe(false)
+  })
+
+  it('flashes the top edge and announces the author when arriving from another author', async () => {
+    vi.useFakeTimers()
+    try {
+      const v = mountWith({ fromOwnerId: 'u0' })
+      await nextTick()
+      expect(v.find('.edge-top').classes()).toContain('shown')
+      expect(v.find('[aria-live]').text()).toBe('阿树 的「海边」')
+      vi.advanceTimersByTime(1500)
+      await nextTick()
+      expect(v.find('.edge-top').classes()).not.toContain('shown')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not flash for the same author', async () => {
+    const v = mountWith({ fromOwnerId: 'u1' })
+    await nextTick()
+    expect(v.find('.edge-top').classes()).not.toContain('shown')
+    expect(v.find('[aria-live]').text()).toBe('')
+  })
+
+  it('renders the default end frame and its restart goes to frame 1', async () => {
+    const v = mountWith({ initialFrame: 4 })
+    const restart = v.findAll('[data-frame="4"] button').find((b) => b.text().includes('从头再看'))!
+    await restart.trigger('click')
+    expect(v.emitted('frame')).toEqual([[1]])
+  })
+
+  it('never emits jump or navigate from the end frame in preview mode', () => {
+    const v = mountWith({ initialFrame: 4, mode: 'preview' })
+    expect(v.find('[data-frame="4"]').text()).not.toContain('回到墙')
+    expect(v.find('.edge-bottom button').exists()).toBe(false)
+  })
+})

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // Collection viewer: stage, frame track, windowing, preload and the a11y live
-// region (spec §5.1, §6.1, §6.2, §8). Edges, info layer and end-frame content
-// are slots filled by Task 6.
+// region (spec §5.1, §6.1, §6.2, §8), plus the default edges, info layer and
+// end frame (§5.2–§5.4). Each slot overrides its default content.
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch, type ComponentPublicInstance } from 'vue'
 import type { Collection, Frame, Neighbors } from '../api/types'
 import type { Axis, Dir, ViewerIntent } from './gesture'
@@ -9,6 +9,14 @@ import { bindInputs, type InnerScroll } from './input'
 import { createPreloader, neighborEntries } from './preload'
 import { useViewerState } from './useViewerState'
 import FrameView from './FrameView.vue'
+import EdgeTop from './EdgeTop.vue'
+import EdgeLeft from './EdgeLeft.vue'
+import EdgeRight from './EdgeRight.vue'
+import EdgeBottom from './EdgeBottom.vue'
+import InfoLayer from './InfoLayer.vue'
+import EndFrame from './EndFrame.vue'
+import { useEdges } from './useEdges'
+import { useFullscreen } from './useFullscreen'
 
 const props = defineProps<{
   collection: Collection
@@ -16,6 +24,12 @@ const props = defineProps<{
   /** 1-based; clamped to [1, frames.length + 1]. */
   initialFrame: number
   mode: 'public' | 'preview'
+  /**
+   * Owner of the collection shown before this one (horizontal navigation).
+   * When it differs from this collection's owner, the top edge flashes and the
+   * new author is announced (spec §5.2).
+   */
+  fromOwnerId?: string | null
 }>()
 
 const emit = defineEmits<{
@@ -23,8 +37,10 @@ const emit = defineEmits<{
   frame: [n: number]
   /** Horizontal move to the adjacent collection. Never emitted in preview mode. */
   navigate: [dir: Dir]
-  /** Leave the viewer. Emitted by Task 6 controls through the slot props. */
+  /** Leave the viewer (back button, Esc, 回到墙). */
   exit: []
+  /** A strip card was chosen. Never emitted in preview mode. */
+  jump: [collectionId: string]
 }>()
 
 export interface ViewerSlotProps {
@@ -97,6 +113,59 @@ const trackStyle = computed(() => ({
   transform: `translate3d(${dragX.value}px, calc(${-(current.value - 1) * 100}% + ${dragY.value}px), 0)`,
 }))
 
+// --- edges, info layer, fullscreen ---
+const rootEl = ref<HTMLElement | null>(null)
+const edges = useEdges()
+const fullscreen = useFullscreen(rootEl)
+const infoOpen = ref(false)
+watch(infoOpen, (open) => (open ? edges.pin('info') : edges.unpin('info')))
+
+const currentPhoto = computed(() => {
+  const f = currentFrame.value
+  return f && f.layout !== 'text' ? (f.photos[0] ?? null) : null
+})
+
+function onTap(pointerType: string) {
+  // Mouse users reveal edges by moving to them; a touch or pen tap toggles all four.
+  if (pointerType !== 'mouse') edges.toggleAll()
+}
+
+function onDoubleTap() {
+  void fullscreen.toggle()
+}
+
+/** i / f / Esc (spec §6.2). An open menu handles Esc itself, before this runs. */
+function onKey(e: KeyboardEvent): boolean {
+  if (e.key === 'i' || e.key === 'I') {
+    infoOpen.value = !infoOpen.value
+    return true
+  }
+  if ((e.key === 'f' || e.key === 'F') && fullscreen.supported) {
+    void fullscreen.toggle()
+    return true
+  }
+  if (e.key === 'Escape') {
+    if (infoOpen.value) infoOpen.value = false
+    else if (fullscreen.active.value) void fullscreen.toggle()
+    else emit('exit')
+    return true
+  }
+  return false
+}
+
+function onJump(id: string) {
+  if (props.mode === 'public') emit('jump', id)
+}
+
+function onEndNavigate() {
+  if (props.mode === 'public') emit('navigate', 1)
+}
+
+function announceAuthor() {
+  edges.flashTop(1500)
+  announcement.value = `${props.collection.owner.name} 的「${props.collection.title}」`
+}
+
 function resetDrag() {
   dragX.value = 0
   dragY.value = 0
@@ -162,7 +231,7 @@ function bind() {
   if (!el) return
   unbind = bindInputs(
     el,
-    { intent: onIntent, drag: onDrag, tap: () => {}, doubleTap: () => {} },
+    { intent: onIntent, drag: onDrag, tap: onTap, doubleTap: onDoubleTap, key: onKey },
     {
       reducedMotion: reducedMotion.value,
       // Read on every event: inner exists only while the current frame is a stacked pair or a text frame.
@@ -219,8 +288,18 @@ watch(current, (n, o) => {
   void nextTick(() => frameRefs.get(n)?.resetInner(n > o ? 'start' : 'end'))
 })
 
+// In-place collection swaps (Task 7 normally remounts with :key, see fromOwnerId).
+watch(
+  () => props.collection.owner.id,
+  (id, old) => {
+    if (id !== old) announceAuthor()
+  },
+)
+
 let unmounted = false
 onMounted(() => {
+  if (stageEl.value) edges.attach(stageEl.value)
+  if (props.fromOwnerId && props.fromOwnerId !== props.collection.owner.id) announceAuthor()
   stackMQ?.addEventListener('change', onStack)
   reducedMQ?.addEventListener('change', onReduced)
   bind()
@@ -232,6 +311,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   unmounted = true
+  edges.stop()
   unbind?.()
   unbind = null
   abortWait?.()
@@ -247,7 +327,7 @@ const sequence = computed(() => Array.from({ length: total.value }, (_, i) => i 
 </script>
 
 <template>
-  <div class="viewer">
+  <div ref="rootEl" class="viewer">
     <div
       ref="stageEl"
       class="stage"
@@ -275,18 +355,68 @@ const sequence = computed(() => Array.from({ length: total.value }, (_, i) => i 
             :stacked="stacked"
           />
           <div v-else class="end-frame">
-            <slot name="end" v-bind="slotProps" />
+            <slot name="end" v-bind="slotProps">
+              <EndFrame
+                :collection="collection"
+                :neighbors="neighbors"
+                :mode="mode"
+                @go="go"
+                @navigate="onEndNavigate"
+                @exit="emit('exit')"
+              />
+            </slot>
           </div>
         </div>
       </div>
 
-      <div class="edge edge-top"><slot name="top" v-bind="slotProps" /></div>
-      <div class="edge edge-left"><slot name="left" v-bind="slotProps" /></div>
-      <div class="edge edge-right"><slot name="right" v-bind="slotProps" /></div>
-      <div class="edge edge-bottom"><slot name="bottom" v-bind="slotProps" /></div>
+      <div class="edge edge-top" data-edge="top" :class="{ shown: edges.visible.top }">
+        <slot name="top" v-bind="slotProps">
+          <EdgeTop
+            :collection="collection"
+            :photo="currentPhoto"
+            :frame-index="slotProps.atEnd ? undefined : current"
+            :pin="edges.pin"
+            :unpin="edges.unpin"
+            :fullscreen="{ supported: fullscreen.supported, active: fullscreen.active.value }"
+            @exit="emit('exit')"
+            @fullscreen="fullscreen.toggle()"
+          />
+        </slot>
+      </div>
+      <div class="edge edge-left" data-edge="left" :class="{ shown: edges.visible.left }">
+        <slot name="left" v-bind="slotProps">
+          <EdgeLeft :current="current" :frames="slotProps.frames" :at-end="slotProps.atEnd" @go="go" />
+        </slot>
+      </div>
+      <div class="edge edge-right" data-edge="right" :class="{ shown: edges.visible.right }">
+        <slot name="right" v-bind="slotProps">
+          <EdgeRight :frame="currentFrame" @open="infoOpen = true" />
+        </slot>
+      </div>
+      <div class="edge edge-bottom" data-edge="bottom" :class="{ shown: edges.visible.bottom }">
+        <slot name="bottom" v-bind="slotProps">
+          <EdgeBottom
+            v-if="mode === 'public' && neighbors"
+            :collection-id="collection.id"
+            :strip="neighbors.strip"
+            @jump="onJump"
+          />
+        </slot>
+      </div>
     </div>
 
-    <div class="info-layer"><slot name="info" v-bind="slotProps" /></div>
+    <div class="info-layer">
+      <slot name="info" v-bind="slotProps">
+        <InfoLayer
+          :open="infoOpen"
+          :collection="collection"
+          :frame="currentFrame"
+          :current="current"
+          :frames="slotProps.frames"
+          @close="infoOpen = false"
+        />
+      </slot>
+    </div>
 
     <div class="sr-only" aria-live="polite" aria-atomic="true">{{ announcement }}</div>
   </div>
@@ -355,15 +485,26 @@ const sequence = computed(() => Array.from({ length: total.value }, (_, i) => i 
   justify-content: center;
 }
 
-/* Edge regions: positioned containers only; Task 6 owns their content and visibility. */
+/* Edge regions: hidden until revealed (spec §5.2). Hidden edges stay
+   focusable; focusing one reveals it. */
 .edge {
   position: absolute;
   z-index: 1;
   pointer-events: none;
+  opacity: 0;
+  transition: opacity var(--dur-fade);
 }
 
-.edge > :deep(*) {
+.edge.shown {
+  opacity: 1;
+}
+
+.edge.shown > :deep(*) {
   pointer-events: auto;
+}
+
+.stage[data-idle] {
+  cursor: none;
 }
 
 .edge-top {
@@ -388,6 +529,11 @@ const sequence = computed(() => Array.from({ length: total.value }, (_, i) => i 
   top: 0;
   bottom: 0;
   right: 0;
+}
+
+.info-layer {
+  flex: none;
+  height: 100%;
 }
 
 .info-layer:empty {
