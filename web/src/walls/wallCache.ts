@@ -6,7 +6,13 @@ export function save<T>(wall: string, data: T, now = Date.now()): void {
   try {
     sessionStorage.setItem(key(wall), JSON.stringify({ savedAt: now, data }))
   } catch {
-    // ignore
+    // Quota or a blocked store: drop any older snapshot for this wall, so a
+    // return never restores from data the visitor has scrolled past.
+    try {
+      sessionStorage.removeItem(key(wall))
+    } catch {
+      // ignore
+    }
   }
 }
 

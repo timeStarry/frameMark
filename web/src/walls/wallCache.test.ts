@@ -35,6 +35,18 @@ describe('wallCache', () => {
     expect(() => save('square', [1])).not.toThrow()
   })
 
+  it('drops the older snapshot when a save fails, so it is never restored', () => {
+    save('square', { pages: 1 }, 1000)
+    // happy-dom's sessionStorage does not go through Storage.prototype.setItem.
+    vi.spyOn(sessionStorage, 'setItem').mockImplementation(() => {
+      throw new Error('quota')
+    })
+    save('square', { pages: 9 }, 2000)
+    vi.restoreAllMocks()
+    expect(sessionStorage.getItem('markr:wallCache:square')).toBeNull()
+    expect(load('square', 2000)).toBeNull()
+  })
+
   it('returns null when getItem throws', () => {
     vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
       throw new Error('denied')
