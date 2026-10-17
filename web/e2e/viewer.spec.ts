@@ -140,6 +140,41 @@ test.describe('touch @touch', () => {
     )
   }
 
+  test('a horizontal drag shows the next collection cover beside the photo', async ({ page }) => {
+    await mockAPI(page)
+    await page.goto('/c/main')
+    await waitFrame(page, 1)
+    await page.waitForTimeout(300)
+    const vp = page.viewportSize()!
+    const cx = vp.width / 2
+    const cy = vp.height / 2
+    const mid = await page.evaluate(
+      async ({ cx, cy }) => {
+        const target = document.elementFromPoint(cx, cy)!
+        const fire = (type: string, x: number) =>
+          target.dispatchEvent(new PointerEvent(type, { pointerId: 8, pointerType: 'touch', isPrimary: true, clientX: x, clientY: cy, bubbles: true, cancelable: true, buttons: 1 }))
+        fire('pointerdown', cx)
+        for (let i = 1; i <= 6; i++) {
+          await new Promise((r) => setTimeout(r, 30))
+          fire('pointermove', cx - i * 15)
+        }
+        await new Promise((r) => requestAnimationFrame(() => r(null)))
+        const peek = document.querySelector('.peek-next')
+        const r = peek?.getBoundingClientRect()
+        const img = peek?.querySelector('img')
+        const out = { peek: !!peek, left: r?.left ?? null, src: img?.currentSrc || img?.getAttribute('src') || '' }
+        fire('pointercancel', cx - 90)
+        return out
+      },
+      { cx, cy },
+    )
+    expect(mid.peek).toBe(true)
+    expect(mid.left).toBeCloseTo(vp.width - 90, 0)
+    expect(mid.src).toContain('next-cover')
+    await expect(page.locator('.peek')).toHaveCount(0)
+    await expect(page).toHaveURL(/\/c\/main/)
+  })
+
   test('swipe up from the bottom edge opens info; drag the drawer down closes it', async ({ page }) => {
     await mockAPI(page)
     // A photo with no public fields: no right edge, so this is the only way in on a phone.

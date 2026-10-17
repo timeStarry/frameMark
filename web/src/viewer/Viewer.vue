@@ -3,7 +3,7 @@
 // region (spec §5.1, §6.1, §6.2, §8), plus the default edges, info layer and
 // end frame (§5.2–§5.4). Each slot overrides its default content.
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch, type ComponentPublicInstance } from 'vue'
-import type { Collection, Frame, Neighbors } from '../api/types'
+import type { Card, Collection, Frame, Neighbors } from '../api/types'
 import type { Axis, Dir, ViewerIntent } from './gesture'
 import { bindInputs, type InnerScroll } from './input'
 import { createPreloader, neighborEntries } from './preload'
@@ -17,6 +17,7 @@ import InfoLayer from './InfoLayer.vue'
 import EndFrame from './EndFrame.vue'
 import { useEdges } from './useEdges'
 import { useFullscreen } from './useFullscreen'
+import { srcset } from './media'
 
 const props = withDefaults(defineProps<{
   collection: Collection
@@ -122,6 +123,8 @@ const onStack = () => {
 const dragX = ref(0)
 const dragY = ref(0)
 const dragging = ref(false)
+/** A horizontal drag is in progress: the neighbour covers peek in from the sides (spec §6.1). */
+const draggingX = ref(false)
 const trackStyle = computed(() => ({
   transform: `translate3d(${dragX.value}px, calc(${-(current.value - 1) * 100}% + ${dragY.value}px), 0)`,
 }))
@@ -185,7 +188,22 @@ function resetDrag() {
   dragX.value = 0
   dragY.value = 0
   dragging.value = false
+  draggingX.value = false
 }
+
+/** Neighbour covers at ±100% x, moved by dragX. Public mode only, only mid-drag. */
+const peeks = computed(() => {
+  if (props.mode !== 'public' || !draggingX.value) return []
+  const nb = props.neighbors
+  const out: { side: 'prev' | 'next'; cover: NonNullable<Card['cover']>; style: Record<string, string> }[] = []
+  for (const side of ['prev', 'next'] as const) {
+    const cover = nb?.[side]?.cover
+    if (!cover) continue
+    const base = side === 'next' ? '100%' : '-100%'
+    out.push({ side, cover, style: { transform: `translate3d(calc(${base} + ${dragX.value}px), 0, 0)` } })
+  }
+  return out
+})
 
 // --- input ---
 const stageEl = ref<HTMLElement | null>(null)
@@ -226,8 +244,10 @@ function onIntent(i: ViewerIntent) {
 
 function onDrag(axis: Axis, offset: number) {
   if (axis === 'x' && props.mode === 'preview') return
-  if (axis === 'x') dragX.value = offset
-  else dragY.value = offset
+  if (axis === 'x') {
+    dragX.value = offset
+    draggingX.value = true
+  } else dragY.value = offset
   // A zero mid-gesture (offset crossing its origin, inner absorbing the move)
   // must not re-enable the transition; only the release ends dragging.
   dragging.value = true
@@ -240,6 +260,7 @@ function onDrag(axis: Axis, offset: number) {
 function onRelease() {
   queueMicrotask(() => {
     dragging.value = false
+    draggingX.value = false
   })
 }
 
@@ -429,6 +450,21 @@ const sequence = computed(() => Array.from({ length: total.value }, (_, i) => i 
         </div>
       </div>
 
+      <div
+        v-for="p in peeks"
+        :key="p.side"
+        class="peek"
+        :class="`peek-${p.side}`"
+        :style="p.style"
+        aria-hidden="true"
+      >
+        <picture>
+          <source type="image/avif" :srcset="srcset(p.cover, 'avif')" sizes="100vw" />
+          <source type="image/webp" :srcset="srcset(p.cover, 'webp')" sizes="100vw" />
+          <img :src="p.cover.tiers.w1280.jpeg" alt="" decoding="async" />
+        </picture>
+      </div>
+
       <div class="edge edge-top" data-edge="top" :class="{ shown: edges.visible.top }">
         <slot name="top" v-bind="slotProps">
           <EdgeTop
@@ -519,6 +555,25 @@ const sequence = computed(() => Array.from({ length: total.value }, (_, i) => i 
 
 .track.dragging {
   transition: none;
+}
+
+/* Neighbour cover beside the dragged track (spec §6.1); follows dragX with no transition. */
+.peek {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-16);
+  pointer-events: none;
+  will-change: transform;
+}
+
+.peek img {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
 }
 
 .frame-slot {

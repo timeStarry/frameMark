@@ -604,6 +604,53 @@ describe('Viewer with default edges (Task 6)', () => {
     expect(v.find('[role="dialog"]').exists()).toBe(false)
   })
 
+  it('a horizontal drag reveals the neighbour covers at ±100%, only while dragging', async () => {
+    const cover = (id: string): Media => media(id)
+    const nb = {
+      wall: 'square',
+      prev: { id: 'p', title: '前', owner: { id: 'u1', name: '阿树' }, count: 2, cover: cover('prevc') },
+      next: { id: 'n', title: '后', owner: { id: 'u2', name: '林' }, count: 2, cover: cover('nextc') },
+      strip: [],
+    }
+    const v = mountWith({ neighbors: nb })
+    expect(v.find('.peek').exists()).toBe(false)
+    const stage = v.find('[role="region"]').element
+    const ev = (type: string, x: number) =>
+      new PointerEvent(type, { clientX: x, clientY: 300, pointerId: 4, pointerType: 'touch', isPrimary: true, bubbles: true })
+    stage.dispatchEvent(ev('pointerdown', 300))
+    window.dispatchEvent(ev('pointermove', 240))
+    await nextTick()
+    const next = v.get('.peek-next')
+    const prev = v.get('.peek-prev')
+    expect(next.attributes('style')).toContain('translate3d(calc(100% + -60px)')
+    expect(prev.attributes('style')).toContain('translate3d(calc(-100% + -60px)')
+    expect(next.get('img').attributes('src')).toBe('/m/nextc/w1280.jpg')
+    expect(next.get('source[type="image/avif"]').attributes('srcset')).toContain('/m/nextc/w480.avif')
+    expect(prev.get('img').attributes('src')).toBe('/m/prevc/w1280.jpg')
+    window.dispatchEvent(ev('pointerup', 240))
+    await flushPromises()
+    expect(v.find('.peek').exists()).toBe(false)
+  })
+
+  it('no peek for a vertical drag or in preview mode', async () => {
+    const nb = { wall: 'square', prev: null, next: { id: 'n', title: '后', owner: { id: 'u2', name: '林' }, count: 2, cover: media('nextc') }, strip: [] }
+    const v = mountWith({ neighbors: nb, mode: 'preview' })
+    const stage = v.find('[role="region"]').element
+    const ev = (type: string, x: number, y = 300) =>
+      new PointerEvent(type, { clientX: x, clientY: y, pointerId: 5, pointerType: 'touch', isPrimary: true, bubbles: true })
+    stage.dispatchEvent(ev('pointerdown', 300))
+    window.dispatchEvent(ev('pointermove', 240))
+    await nextTick()
+    expect(v.find('.peek').exists()).toBe(false)
+    window.dispatchEvent(ev('pointerup', 240))
+    await v.setProps({ mode: 'public' })
+    stage.dispatchEvent(ev('pointerdown', 300, 300))
+    window.dispatchEvent(ev('pointermove', 300, 240))
+    await nextTick()
+    expect(v.find('.peek').exists()).toBe(false)
+    window.dispatchEvent(ev('pointerup', 300, 240))
+  })
+
   it('renders the default end frame and its restart goes to frame 1', async () => {
     const v = mountWith({ initialFrame: 4 })
     const restart = v.findAll('[data-frame="4"] button').find((b) => b.text().includes('从头再看'))!
