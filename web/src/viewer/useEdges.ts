@@ -23,6 +23,14 @@ export interface Edges {
   stop(): void
 }
 
+function isFocusVisible(t: EventTarget | null): boolean {
+  try {
+    return t instanceof Element && t.matches(':focus-visible')
+  } catch {
+    return true // no :focus-visible support: treat every focus as keyboard focus
+  }
+}
+
 function edgeOf(t: EventTarget | null): Edge | null {
   const v = t instanceof Element ? t.closest('[data-edge]')?.getAttribute('data-edge') : null
   return v && (EDGES as readonly string[]).includes(v) ? (v as Edge) : null
@@ -41,9 +49,15 @@ export function useEdges(initial?: HTMLElement): Edges {
     else el.removeAttribute('data-idle')
   }
 
+  const focusPin = (edge: Edge) => `focus:${edge}`
+  /** Pins that hold every edge (menu, info layer); a focus pin holds only its own edge. */
+  const holdsAll = () => [...pins].some((p) => !p.startsWith('focus:'))
+  /** The edge may fade now: nothing holds it. */
+  const mayHide = (edge: Edge) => !holdsAll() && !pins.has(focusPin(edge)) && !(edge === 'top' && flashTimer)
+
   function hideAll() {
-    if (pins.size > 0) return
-    for (const e of EDGES) visible[e] = false
+    if (holdsAll()) return
+    for (const e of EDGES) if (mayHide(e)) visible[e] = false
     setIdle(true)
   }
 
@@ -71,7 +85,7 @@ export function useEdges(initial?: HTMLElement): Edges {
     }
     for (const edge of EDGES) {
       if (near[edge] || over === edge) visible[edge] = true
-      else if (!pins.has(`focus:${edge}`) && pins.size === 0) visible[edge] = false
+      else if (mayHide(edge)) visible[edge] = false
     }
     setIdle(false)
     armIdle()
@@ -80,9 +94,12 @@ export function useEdges(initial?: HTMLElement): Edges {
   const onFocusIn = (e: FocusEvent) => {
     const edge = edgeOf(e.target)
     if (!edge) return
+    // Only keyboard focus pins: Chromium focuses a button on mouse click too,
+    // and that must not hold the edge or block the idle fade (spec §5.2).
+    if (!isFocusVisible(e.target)) return
     visible[edge] = true
     setIdle(false)
-    pin(`focus:${edge}`)
+    pin(focusPin(edge))
   }
 
   const onFocusOut = (e: FocusEvent) => {
@@ -90,7 +107,7 @@ export function useEdges(initial?: HTMLElement): Edges {
     if (!edge) return
     // Focus moving within the same edge keeps it pinned.
     if (edgeOf(e.relatedTarget) === edge) return
-    unpin(`focus:${edge}`)
+    unpin(focusPin(edge))
   }
 
   function pin(reason: string) {
@@ -100,13 +117,16 @@ export function useEdges(initial?: HTMLElement): Edges {
 
   function unpin(reason: string) {
     if (!pins.delete(reason)) return
-    if (pins.size === 0) armIdle()
+    if (!holdsAll()) armIdle()
   }
 
   function toggleAll() {
     const show = !EDGES.some((e) => visible[e])
     for (const e of EDGES) visible[e] = show
-    if (show) setIdle(false)
+    if (show) {
+      setIdle(false)
+      armIdle() // a tap reveal fades after the same 2s (spec §5.2)
+    }
   }
 
   function flashTop(ms: number) {
@@ -115,7 +135,7 @@ export function useEdges(initial?: HTMLElement): Edges {
     if (flashTimer) clearTimeout(flashTimer)
     flashTimer = setTimeout(() => {
       flashTimer = null
-      if (pins.size === 0) visible.top = false
+      if (mayHide('top')) visible.top = false
     }, ms)
   }
 

@@ -88,6 +88,55 @@ describe('useEdges', () => {
     expect(edges.visible.top).toBe(false)
   })
 
+  it('a mouse focus (not :focus-visible) does not pin the edge', () => {
+    const btn = document.createElement('button')
+    const wrap = document.createElement('div')
+    wrap.setAttribute('data-edge', 'left')
+    wrap.appendChild(btn)
+    el.appendChild(wrap)
+    const matches = btn.matches.bind(btn)
+    btn.matches = (sel: string) => (sel === ':focus-visible' ? false : matches(sel))
+    pointer(window, 'pointermove', 10, 300)
+    btn.focus()
+    expect(edges.pinned('focus:left')).toBe(false)
+    vi.advanceTimersByTime(2000)
+    expect(edges.visible.left).toBe(false)
+    expect(el.getAttribute('data-idle')).toBe('')
+  })
+
+  it('a keyboard focus pin keeps only its own edge; the others still hide', () => {
+    const btn = document.createElement('button')
+    const wrap = document.createElement('div')
+    wrap.setAttribute('data-edge', 'left')
+    wrap.appendChild(btn)
+    el.appendChild(wrap)
+    btn.focus()
+    pointer(window, 'pointermove', 400, 10)
+    expect(edges.visible.top).toBe(true)
+    pointer(window, 'pointermove', 400, 300)
+    expect(edges.visible.top).toBe(false)
+    expect(edges.visible.left).toBe(true)
+    pointer(window, 'pointermove', 400, 590)
+    vi.advanceTimersByTime(2000)
+    expect(edges.visible.bottom).toBe(false)
+    expect(edges.visible.left).toBe(true)
+  })
+
+  it('a mouse move during the author flash keeps the top edge up', () => {
+    edges.flashTop(1500)
+    pointer(window, 'pointermove', 400, 300)
+    expect(edges.visible.top).toBe(true)
+    vi.advanceTimersByTime(1500)
+    expect(edges.visible.top).toBe(false)
+  })
+
+  it('edges shown by a touch tap fade after 2s', () => {
+    edges.toggleAll()
+    expect(edges.visible.top).toBe(true)
+    vi.advanceTimersByTime(2000)
+    expect(edges.visible).toEqual({ top: false, left: false, right: false, bottom: false })
+  })
+
   it('toggleAll shows then hides every edge', () => {
     expect(edges.visible.top).toBe(false)
     edges.toggleAll()
