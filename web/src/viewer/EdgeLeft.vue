@@ -1,7 +1,27 @@
+<script lang="ts">
+/** One tick is a 44×44 target (spec §6.2). */
+export const TICK_PX = 44
+/** Above this many ticks the scale always uses the tap column. */
+export const HIT_COLUMN_OVER = 12
+/** Height of the nav kept for the count and gaps; mirrors `.ticks { max-height: calc(100% - 96px) }`. */
+export const TICK_RESERVE_PX = 96
+
+/**
+ * The ticks become 12px marks under one 44px tap column (y maps to a frame)
+ * when there are more than 12, or when `frames × 44px` does not fit the
+ * scale's measured height, so no tick is ever clipped. `available` is null
+ * before the first measurement.
+ */
+export function needsTapColumn(frames: number, available: number | null): boolean {
+  if (frames > HIT_COLUMN_OVER) return true
+  return available !== null && frames * TICK_PX > available
+}
+</script>
+
 <script setup lang="ts">
 // Left edge (spec §5.2): the position scale. Up to 40 frames get one tick
 // button each; longer collections get a proportional slider.
-import { computed } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 const props = defineProps<{
   current: number
@@ -13,8 +33,23 @@ const props = defineProps<{
 const emit = defineEmits<{ go: [n: number] }>()
 
 const MAX_TICKS = 40
-/** Above this many ticks each one is too short to be a 44px target: one hit column maps y to a frame. */
-const HIT_COLUMN_OVER = 12
+
+// Measure the space the scale can use, so ticks that would not fit switch to the tap column.
+const nav = ref<HTMLElement | null>(null)
+const available = ref<number | null>(null)
+let ro: ResizeObserver | null = null
+function measure() {
+  const h = nav.value?.clientHeight ?? 0
+  available.value = h > 0 ? Math.max(0, h - TICK_RESERVE_PX) : null
+}
+onMounted(() => {
+  if (typeof ResizeObserver !== 'function' || !nav.value) return
+  ro = new ResizeObserver(measure)
+  ro.observe(nav.value)
+  measure()
+})
+onBeforeUnmount(() => ro?.disconnect())
+const tapColumn = computed(() => needsTapColumn(props.frames, available.value))
 
 const ticks = computed(() => Array.from({ length: props.frames }, (_, i) => i + 1))
 const shown = computed(() => Math.min(props.current, props.frames))
@@ -57,13 +92,13 @@ function onSliderClick(e: MouseEvent) {
 </script>
 
 <template>
-  <nav class="left" aria-label="帧位置">
+  <nav ref="nav" class="left" aria-label="帧位置">
     <p class="count">
       <template v-if="atEnd">结尾</template>
       <template v-else>{{ pad(shown) }}</template>
       <span class="total"> / {{ pad(frames) }}</span>
     </p>
-    <div v-if="frames <= MAX_TICKS" class="ticks" :class="{ dense: frames > HIT_COLUMN_OVER }">
+    <div v-if="frames <= MAX_TICKS" class="ticks" :class="{ dense: tapColumn }">
       <button
         v-for="n in ticks"
         :key="n"
@@ -74,7 +109,7 @@ function onSliderClick(e: MouseEvent) {
         @click="clampGo(n)"
       />
       <!-- Pointer target only; the ticks under it stay the keyboard targets. -->
-      <div v-if="frames > HIT_COLUMN_OVER" class="hit" data-edge-hit aria-hidden="true" @click="onColumnClick" />
+      <div v-if="tapColumn" class="hit" data-edge-hit aria-hidden="true" @click="onColumnClick" />
     </div>
     <div
       v-else

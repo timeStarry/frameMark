@@ -300,6 +300,25 @@ test('touch targets are at least 44×44px at 390px', async ({ page }) => {
   await expectHit44(page, '[role=dialog] .switch button', 1)
 })
 
+test('short landscape: a scale that does not fit becomes a tap column and the last frame is reachable', async ({ page }) => {
+  await page.setViewportSize({ width: 844, height: 390 })
+  await mockAPI(page)
+  await page.goto('/c/many')
+  await waitFrame(page, 1)
+  await page.mouse.move(400, 200)
+  await page.mouse.move(10, 200)
+  await expect(page.locator('.edge-left')).toHaveClass(/shown/)
+  const hit = page.locator('.edge-left [data-edge-hit]')
+  await expect(hit).toHaveCount(1)
+  const b = (await hit.boundingBox())!
+  expect(b.width).toBeGreaterThanOrEqual(44)
+  // The column is fully inside the viewport: nothing clipped.
+  expect(b.y).toBeGreaterThanOrEqual(0)
+  expect(b.y + b.height).toBeLessThanOrEqual(390)
+  await page.mouse.click(b.x + b.width / 2, b.y + b.height - 2)
+  await waitFrame(page, 10)
+})
+
 test.describe('info layer', () => {
   test('wide: panel narrows the stage without covering the photo; histogram toggles', async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 })

@@ -4,7 +4,7 @@ import { mount, type VueWrapper } from '@vue/test-utils'
 import { bindInputs, type InputHandlers } from './input'
 import { useEdges } from './useEdges'
 import EdgeTop from './EdgeTop.vue'
-import EdgeLeft from './EdgeLeft.vue'
+import EdgeLeft, { needsTapColumn } from './EdgeLeft.vue'
 import EdgeRight from './EdgeRight.vue'
 import EdgeBottom from './EdgeBottom.vue'
 import { collection, fullFrame, neighbors, photo, EXIF, card } from './testFixtures'
@@ -278,6 +278,46 @@ describe('EdgeLeft', () => {
     expect(w.emitted('go')).toEqual([[11]])
     // The ticks stay buttons for the keyboard.
     expect(w.findAll('button[aria-label^="跳到第"]')).toHaveLength(20)
+  })
+
+  it('needsTapColumn: ticks that do not fit at 44px each switch to the tap column', () => {
+    expect(needsTapColumn(10, 300)).toBe(true)
+    expect(needsTapColumn(6, 400)).toBe(false)
+    expect(needsTapColumn(6, 264)).toBe(false)
+    expect(needsTapColumn(6, 263)).toBe(true)
+    expect(needsTapColumn(13, 2000)).toBe(true)
+    // Not measured yet: keep the >12 rule only.
+    expect(needsTapColumn(10, null)).toBe(false)
+  })
+
+  it('switches to the tap column when a ResizeObserver reports a short scale', async () => {
+    let cb: ResizeObserverCallback | null = null
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        constructor(fn: ResizeObserverCallback) {
+          cb = fn
+        }
+        observe() {}
+        disconnect() {}
+      },
+    )
+    try {
+      w = mount(EdgeLeft, { props: { current: 1, frames: 10, atEnd: false } })
+      expect(w.find('[data-edge-hit]').exists()).toBe(false)
+      const nav = w.get('nav').element as HTMLElement
+      Object.defineProperty(nav, 'clientHeight', { configurable: true, value: 300 + 96 })
+      cb!([], {} as ResizeObserver)
+      await nextTick()
+      expect(w.find('[data-edge-hit]').exists()).toBe(true)
+      expect(w.get('.ticks').classes()).toContain('dense')
+      Object.defineProperty(nav, 'clientHeight', { configurable: true, value: 800 + 96 })
+      cb!([], {} as ResizeObserver)
+      await nextTick()
+      expect(w.find('[data-edge-hit]').exists()).toBe(false)
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 
   it('12 ticks or fewer have no hit column', () => {

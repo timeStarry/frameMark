@@ -108,7 +108,10 @@ const NEIGHBORS: Record<string, unknown> = {
 export const LONG = collection('long', '长带', SHU, [full(photo('l1', 'land'))])
 const LONG_STRIP = [card(LONG, 'land'), ...Array.from({ length: 9 }, (_, i) => card(collection(`s${i}`, `带${i}`, SHU, []), 'land'))]
 NEIGHBORS.long = { wall: 'square', prev: null, next: null, strip: LONG_STRIP }
-const COLLECTIONS: Record<string, unknown> = { main: MAIN, next: NEXT, solo: SOLO, broken: BROKEN, long: LONG }
+/** Ten frames: on a short landscape phone the ticks do not fit at 44px each. */
+export const MANY = collection('many', '十帧', SHU, Array.from({ length: 10 }, (_, i) => full(photo(`m${i + 1}`, 'land'))))
+NEIGHBORS.many = { wall: 'square', prev: null, next: null, strip: [] }
+const COLLECTIONS: Record<string, unknown> = { main: MAIN, next: NEXT, solo: SOLO, broken: BROKEN, long: LONG, many: MANY }
 
 export interface Mock {
   requests: string[]
