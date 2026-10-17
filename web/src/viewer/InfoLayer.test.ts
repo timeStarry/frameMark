@@ -171,6 +171,40 @@ describe('InfoLayer', () => {
     expect(cap).toHaveBeenCalledTimes(1)
   })
 
+  it('paging keys inside the panel scroll its body and never reach the viewer', () => {
+    const v = render(col.frames[0]!)
+    const body = v.get('.body').element as HTMLElement
+    Object.defineProperty(body, 'clientHeight', { configurable: true, value: 200 })
+    Object.defineProperty(body, 'scrollHeight', { configurable: true, value: 1000 })
+    const dialog = v.get('[role="dialog"]').element
+    const seen: string[] = []
+    const onWin = (e: KeyboardEvent) => !e.defaultPrevented && seen.push(e.key)
+    window.addEventListener('keydown', onWin)
+    try {
+      for (const k of ['ArrowDown', 'PageDown', ' ', 'ArrowUp', 'End', 'Home']) {
+        dialog.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true }))
+        if (k === 'ArrowDown') expect(body.scrollTop).toBe(40)
+        if (k === 'PageDown') expect(body.scrollTop).toBe(220)
+        if (k === 'End') expect(body.scrollTop).toBe(800)
+      }
+      expect(body.scrollTop).toBe(0)
+      expect(seen).toEqual([])
+      // i, Esc and ← → still go to the viewer.
+      for (const k of ['i', 'Escape', 'ArrowRight']) dialog.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true }))
+      expect(seen).toEqual(['i', 'Escape', 'ArrowRight'])
+    } finally {
+      window.removeEventListener('keydown', onWin)
+    }
+  })
+
+  it('Space on a button inside the panel is left to the button', () => {
+    const v = render(col.frames[0]!)
+    const btn = v.get('button[aria-label="关闭"]').element
+    const e = new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true })
+    btn.dispatchEvent(e)
+    expect(e.defaultPrevented).toBe(false)
+  })
+
   it('emits close from the close button', async () => {
     const v = render(col.frames[0]!)
     await v.get('button[aria-label="关闭"]').trigger('click')

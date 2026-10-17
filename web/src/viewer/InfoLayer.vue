@@ -90,6 +90,35 @@ function onDragEnd() {
   if (close) emit('close')
 }
 
+// Vertical paging keys inside the panel scroll its body (M8). Preventing them
+// stops the viewer from paging: input.ts skips handled keys. ← → i Esc still
+// reach the viewer; Space/Enter on a control stay with the control.
+const body = ref<HTMLElement | null>(null)
+const LINE_PX = 40
+function onKey(e: KeyboardEvent) {
+  if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return
+  const el = body.value
+  if (!el) return
+  const space = e.key === ' ' || e.key === 'Spacebar'
+  if (space && e.target instanceof Element && e.target.closest('button, a[href]')) return
+  const page = el.clientHeight * 0.9
+  const max = Math.max(0, el.scrollHeight - el.clientHeight)
+  const delta: Record<string, number> = {
+    ArrowDown: LINE_PX,
+    ArrowUp: -LINE_PX,
+    PageDown: page,
+    PageUp: -page,
+  }
+  let next: number
+  if (e.key in delta) next = el.scrollTop + delta[e.key]!
+  else if (space) next = el.scrollTop + (e.shiftKey ? -page : page)
+  else if (e.key === 'Home') next = 0
+  else if (e.key === 'End') next = max
+  else return
+  e.preventDefault()
+  el.scrollTop = Math.min(max, Math.max(0, next))
+}
+
 onMounted(() => window.addEventListener('resize', onResize))
 onBeforeUnmount(() => window.removeEventListener('resize', onResize))
 </script>
@@ -106,6 +135,7 @@ onBeforeUnmount(() => window.removeEventListener('resize', onResize))
     tabindex="-1"
     :style="wide ? undefined : { maxHeight: '60vh', transform: dragOffset ? `translateY(${dragOffset}px)` : undefined }"
     data-no-gesture
+    @keydown="onKey"
   >
     <header
       class="head"
@@ -121,7 +151,7 @@ onBeforeUnmount(() => window.removeEventListener('resize', onResize))
       </button>
     </header>
 
-    <div class="body">
+    <div ref="body" class="body">
       <p v-if="photo?.caption" class="caption">{{ photo.caption }}</p>
       <p class="meta">
         <a :href="`/u/${encodeURIComponent(collection.owner.id)}`">{{ collection.owner.name }}</a>
