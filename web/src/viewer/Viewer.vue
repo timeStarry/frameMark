@@ -35,7 +35,9 @@ const props = withDefaults(defineProps<{
    * mounted for 280ms): inputs are unbound, edges stopped, no emits.
    */
   active?: boolean
-}>(), { active: true, fromOwnerId: null })
+  /** Move focus to the stage on mount: after a collection switch the focused control is gone (M6). */
+  focusOnMount?: boolean
+}>(), { active: true, fromOwnerId: null, focusOnMount: false })
 
 const rawEmit = defineEmits<{
   /** Current frame changed (1-based; frames.length + 1 is the end frame). Not emitted for the initial frame. */
@@ -338,6 +340,7 @@ let unmounted = false
 onMounted(() => {
   if (!props.active) inactive = true
   if (stageEl.value && !inactive) edges.attach(stageEl.value)
+  if (!inactive && props.focusOnMount) stageEl.value?.focus({ preventScroll: true })
   if (!inactive && props.fromOwnerId && props.fromOwnerId !== props.collection.owner.id) announceAuthor()
   stackMQ?.addEventListener('change', onStack)
   reducedMQ?.addEventListener('change', onReduced)
@@ -373,6 +376,7 @@ const sequence = computed(() => Array.from({ length: total.value }, (_, i) => i 
       role="region"
       aria-roledescription="合集观看"
       :aria-label="collection.title"
+      tabindex="-1"
       style="touch-action: none"
     >
       <div class="track" :class="{ dragging }" :style="trackStyle">
@@ -481,6 +485,11 @@ const sequence = computed(() => Array.from({ length: total.value }, (_, i) => i 
   overflow: hidden;
   user-select: none;
   -webkit-user-select: none;
+}
+
+/* Focus target after a collection switch only; a ring around the whole photo is noise. */
+.stage:focus {
+  outline: none;
 }
 
 .track {

@@ -38,6 +38,8 @@ const fromOwnerId = ref<string | null>(null)
 const slide = ref<Dir>(1)
 /** Initial frame for the mounted Viewer; read when the collection changes. */
 const initialFrame = ref(1)
+/** This route instance has shown another collection before: the new Viewer takes focus. */
+const switched = ref(false)
 
 const reducedMotion = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches
 const transitionName = computed(() => (reducedMotion ? 'none' : slide.value > 0 ? 'slide-next' : 'slide-prev'))
@@ -62,7 +64,10 @@ async function load(id: string) {
   const cached = collectionCache.get(id)
   if (cached) collection.value = cached
   else collection.value = null
-  if (prev && prev.id !== id) fromOwnerId.value = prev.owner.id
+  if (prev && prev.id !== id) {
+    fromOwnerId.value = prev.owner.id
+    switched.value = true
+  }
 
   const nbP = getNeighbors(id, readState(route).wall, c.signal)
   if (!cached) {
@@ -207,6 +212,7 @@ onBeforeUnmount(() => {
         :initial-frame="initialFrame"
         :from-owner-id="fromOwnerId"
         :active="collection.id === id"
+        :focus-on-mount="switched"
         mode="public"
         v-bind="listeners"
       />

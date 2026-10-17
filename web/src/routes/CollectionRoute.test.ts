@@ -199,6 +199,23 @@ describe('CollectionRoute', () => {
     expect(router.currentRoute.value.path).toBe('/c/a')
   })
 
+  it('moves focus to the new stage after a collection switch', async () => {
+    serve(A, nbA)
+    serve(B, neighbors({ wall: 'square', prev: card('a', '海边') }))
+    serve(Z, neighbors({ wall: 'square' }))
+    const router = await open('/c/a?wall=square')
+    const strip = w!.findAll('.edge-bottom button')
+    const target = strip.find((b) => b.attributes('aria-label')?.startsWith('山中'))!
+    ;(target.element as HTMLElement).focus()
+    await target.trigger('click')
+    await flushPromises()
+    await flushPromises()
+    expect(router.currentRoute.value.path).toBe('/c/b')
+    const active = document.activeElement as HTMLElement
+    expect(active.getAttribute('role')).toBe('region')
+    expect(active.getAttribute('aria-label')).toBe('山中')
+  })
+
   it('remembers the last viewed collection per wall when leaving', async () => {
     serve(A, nbA)
     const router = await open('/c/a?wall=square')
