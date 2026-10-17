@@ -140,10 +140,17 @@ export const SQUARE_P2 = {
 /** Wall order on `/` once both pages are in. */
 export const SQUARE_ORDER = [...SQUARE_P1.featured, ...SQUARE_P1.items, ...SQUARE_P2.items].map((c) => c.id)
 
+/**
+ * Location stuffed into a wall card on purpose (as MAIN's a1 does for the
+ * viewer): the real wall endpoints never send it, and no wall page may render
+ * it (privacy test). The values are distinctive so the DOM check can find them.
+ */
+export const CARD_LOCATION = { latitude: 31.2304, longitude: 121.4737 }
+
 /** u1: salon; `main` is the second card. */
 export const USER_U1 = {
   profile: { id: 'u1', name: '阿树', bio: '海边与礁石。', wallLayout: 'salon' },
-  collections: [card(SOLO, 'land'), card(MAIN, 'land'), ...Array.from({ length: 6 }, (_, i) => dummy(`t${i + 1}`, SHU, i))],
+  collections: [{ ...card(SOLO, 'land'), ...CARD_LOCATION }, card(MAIN, 'land'), ...Array.from({ length: 6 }, (_, i) => dummy(`t${i + 1}`, SHU, i))],
   albums: [{ id: 'al1', title: '海岸', intro: '', count: 3, cover: media('al1-cover', 'land') }],
 }
 /** u2: grid. */

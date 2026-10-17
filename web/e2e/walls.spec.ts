@@ -1,7 +1,7 @@
 // Acceptance for the walls (SP3 spec §9, task-6 addendum). Every API and media
 // request is served by e2e/mock.ts.
 import { expect, test, type Page } from '@playwright/test'
-import { mockAPI, SQUARE_ORDER, USER_U2 } from './mock'
+import { CARD_LOCATION, mockAPI, SQUARE_ORDER, USER_U2 } from './mock'
 
 const cards = (page: Page) => page.locator('a.card[data-card-id]')
 const cardById = (page: Page, id: string) => page.locator(`a.card[data-card-id="${id}"]`)
@@ -180,8 +180,11 @@ test('wall to wall: a new wall opens at its top, Back returns to the previous of
   await expect(album).toBeInViewport()
 })
 
-test('sweep: three bands show three previews, leaving shows the cover; box height fixed; preview tiers capped', async ({ page }) => {
-  await page.setViewportSize({ width: 1440, height: 900 })
+test('sweep: three bands show three previews, leaving shows the cover; box height fixed; preview tiers capped', async ({ browser }) => {
+  // DPR 3: the salon's 33vw (~475px) needs ~1425 device px, so an uncapped
+  // srcset would pick w2400 and the tier check below could fail.
+  const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 3 })
+  const page = await ctx.newPage()
   const mock = await mockAPI(page)
   await page.goto('/u/u1')
   // `main`: previews are land / port / land, cover land.
@@ -210,6 +213,7 @@ test('sweep: three bands show three previews, leaving shows the cover; box heigh
   const previews = mock.requests.filter((u) => /\/main-p\d\//.test(u))
   expect(previews.length).toBeGreaterThan(0)
   for (const u of previews) expect(u).toMatch(/\/(w480|w1280)\./)
+  await ctx.close()
 })
 
 test.describe('touch @touch', () => {
@@ -288,6 +292,9 @@ test('privacy: wall pages fetch no originals and render no location', async ({ p
     const text = (await page.content()).toLowerCase()
     expect(text).not.toContain('latitude')
     expect(text).not.toContain('longitude')
+    // `solo` on /u/u1 carries CARD_LOCATION in its raw payload.
+    expect(text).not.toContain(String(CARD_LOCATION.latitude))
+    expect(text).not.toContain(String(CARD_LOCATION.longitude))
   }
   expect(mock.requests.some((u) => u.includes('/original'))).toBe(false)
 })
