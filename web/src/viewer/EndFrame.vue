@@ -2,6 +2,7 @@
 // End frame (spec §5.4): name · count, then 从头再看 / 作者主页 / 下一组
 // (or 回到墙 without a next). Preview mode offers only 从头再看.
 import { computed } from 'vue'
+import { RouterLink } from 'vue-router'
 import type { Collection, Neighbors } from '../api/types'
 import { srcset } from './media'
 
@@ -30,7 +31,7 @@ const next = computed(() => props.neighbors?.next ?? null)
     <div class="actions">
       <button type="button" class="action" @click="emit('go', 1)">从头再看</button>
       <template v-if="mode === 'public'">
-        <a class="action" :href="`/u/${encodeURIComponent(collection.owner.id)}`">作者主页</a>
+        <RouterLink class="action" :to="`/u/${encodeURIComponent(collection.owner.id)}`">作者主页</RouterLink>
         <button v-if="next" type="button" class="action next" @click="emit('navigate', 1)">
           <picture v-if="next.cover">
             <source type="image/avif" :srcset="srcset(next.cover, 'avif')" sizes="120px" />

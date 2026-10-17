@@ -7,7 +7,9 @@ import EdgeTop from './EdgeTop.vue'
 import EdgeLeft, { needsTapColumn } from './EdgeLeft.vue'
 import EdgeRight from './EdgeRight.vue'
 import EdgeBottom from './EdgeBottom.vue'
-import { collection, fullFrame, neighbors, photo, EXIF, card } from './testFixtures'
+import { collection, fullFrame, neighbors, photo, EXIF, card, useTestRouter } from './testFixtures'
+
+useTestRouter()
 import type { Collection } from '../api/types'
 
 const RECT = { x: 0, y: 0, top: 0, left: 0, right: 800, bottom: 600, width: 800, height: 600, toJSON() {} }

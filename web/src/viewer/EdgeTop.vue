@@ -2,6 +2,7 @@
 // Top edge (spec §5.2): back, title · author, the ⋯ menu (copy link, download
 // original when the current photo allows it, author home) and fullscreen.
 import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { RouterLink } from 'vue-router'
 import type { Collection, PhotoView } from '../api/types'
 import { originalURL } from '../api/client'
 import { shareURL } from './urlState'
@@ -164,7 +165,7 @@ onBeforeUnmount(() => {
           @click="closeMenu(false)"
           >下载原图</a
         >
-        <a role="menuitem" tabindex="-1" :href="`/u/${encodeURIComponent(collection.owner.id)}`">作者主页</a>
+        <RouterLink role="menuitem" tabindex="-1" :to="`/u/${encodeURIComponent(collection.owner.id)}`">作者主页</RouterLink>
       </div>
     </div>
     <p class="toast" role="status">{{ toast }}</p>

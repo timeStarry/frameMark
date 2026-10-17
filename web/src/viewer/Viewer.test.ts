@@ -3,6 +3,9 @@ import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import type { Collection, Frame, Media, PhotoView, Tier } from '../api/types'
 import Viewer from './Viewer.vue'
+import { useTestRouter } from './testFixtures'
+
+useTestRouter()
 
 function media(id: string): Media {
   const tiers = {} as Media['tiers']

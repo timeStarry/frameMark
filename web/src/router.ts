@@ -5,7 +5,11 @@ export function createAppRouter(history: RouterHistory = createWebHistory()): Ro
   return createRouter({
     history,
     routes: [
-      { path: '/', name: 'home', component: () => import('./routes/Home.vue') },
+      { path: '/', name: 'square', component: () => import('./routes/SquareRoute.vue') },
+      { path: '/u/:id', name: 'user', component: () => import('./routes/UserRoute.vue'), props: true },
+      { path: '/a/:id', name: 'album', component: () => import('./routes/AlbumRoute.vue'), props: true },
+      { path: '/tools', name: 'tools', component: () => import('./routes/Placeholder.vue') },
+      { path: '/me', name: 'me', component: () => import('./routes/Placeholder.vue') },
       {
         path: '/c/:id',
         name: 'collection',

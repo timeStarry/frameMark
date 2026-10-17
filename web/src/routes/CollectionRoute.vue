@@ -8,6 +8,7 @@ import type { Collection, Neighbors } from '../api/types'
 import { getCollection, getNeighbors } from '../api/client'
 import { frameQuery, readState } from '../viewer/urlState'
 import { remember } from '../viewer/lastViewed'
+import { wallRoute } from '../walls/wallRoute'
 import { createPreloader, neighborEntries } from '../viewer/preload'
 import type { Dir } from '../viewer/gesture'
 import Viewer from '../viewer/Viewer.vue'
@@ -152,7 +153,8 @@ function onExit() {
   const st = historyState()
   // Back past every collection pushed in the viewer to the wall itself.
   if (st.fromWall) router.go(-((st.viewerDepth ?? 0) + 1))
-  else void router.push('/')
+  // Direct entry: go to the wall itself; unknown owner (load failed) goes home.
+  else void router.push(collection.value ? wallRoute(wall.value, collection.value.owner.id) : '/')
 }
 
 /**

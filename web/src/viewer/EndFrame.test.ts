@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { mount, type VueWrapper } from '@vue/test-utils'
 import EndFrame from './EndFrame.vue'
-import { card, collection, fullFrame, neighbors, photo } from './testFixtures'
+import { card, collection, fullFrame, neighbors, photo, useTestRouter } from './testFixtures'
+
+useTestRouter()
 
 const col = collection([fullFrame(photo('p1')), fullFrame(photo('p2'))])
 

@@ -1,4 +1,6 @@
 // Test-only fixtures shared by the viewer component tests. Never imported by app code.
+import { config } from '@vue/test-utils'
+import { createMemoryHistory, createRouter } from 'vue-router'
 import type { Card, Collection, Exif, Frame, Histogram, Media, Neighbors, PhotoView, Tier } from '../api/types'
 
 export function media(id: string, width = 6000, height = 4000): Media {
@@ -85,4 +87,14 @@ export function card(id: string, title: string, ownerName = '阿树', ownerId = 
 
 export function neighbors(over: Partial<Neighbors> = {}): Neighbors {
   return { wall: 'square', prev: null, next: null, strip: [], ...over }
+}
+
+/**
+ * Installs a catch-all memory router for every mount in the calling test file,
+ * so components with RouterLink render without a real app router.
+ */
+export function useTestRouter(): void {
+  config.global.plugins = [
+    createRouter({ history: createMemoryHistory(), routes: [{ path: '/:p(.*)*', component: { render: () => null } }] }),
+  ]
 }

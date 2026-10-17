@@ -224,12 +224,34 @@ describe('CollectionRoute', () => {
     expect(sessionStorage.getItem('markr:lastViewed:square')).toBe('a')
   })
 
-  it('exit goes home when not entered from a wall', async () => {
-    serve(A, nbA)
+  it.each([
+    ['square', '/'],
+    ['user:u1', '/u/u1'],
+    ['album:a1', '/a/a1'],
+    ['', '/u/u1'],
+  ])('direct entry: exit with wall %j goes to %s', async (wall, path) => {
+    serve(A, neighbors({ wall }))
     const router = await open('/c/a')
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
-    await flushPromises()
-    expect(router.currentRoute.value.path).toBe('/')
+    // The target route is lazy: wait for its chunk before the navigation commits.
+    await vi.waitFor(() => expect(router.currentRoute.value.path).toBe(path))
+  })
+
+  it('author links are router links to the owner page', async () => {
+    serve(A, nbA)
+    const router = await open('/c/a')
+    const push = vi.spyOn(router, 'push')
+    // The end frame link is a RouterLink too.
+    expect(w!.findAll('a.action').some((a) => a.attributes('href') === '/u/u1')).toBe(true)
+    await w!.find('button[aria-label="更多"]').trigger('click')
+    const link = w!.find('a[role="menuitem"][href="/u/u1"]')
+    expect(link.attributes('href')).toBe('/u/u1')
+    expect(link.attributes('role')).toBe('menuitem')
+    expect(link.attributes('tabindex')).toBe('-1')
+    expect(link.text()).toBe('作者主页')
+    await link.trigger('click', { button: 0 })
+    expect(push).toHaveBeenCalled()
+    await vi.waitFor(() => expect(router.currentRoute.value.path).toBe('/u/u1'))
   })
 
   it('exit goes back past viewer pushes when entered from a wall', async () => {
