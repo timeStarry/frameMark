@@ -29,8 +29,9 @@ jobs:
           cache: true
       - name: Install libvips
         # libheif + an AV1 encoder plugin give libvips heifsave (AVIF output),
-        # which the media pipeline requires.
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libvips-dev libheif-dev libheif-plugin-aomenc
+        # which the media pipeline requires. libvips-tools provides the `vips`
+        # CLI used by the checks below.
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libvips-dev libvips-tools libheif-dev libheif-plugin-aomenc
       - name: Check vips installation and HEIF support
         run: vips --version || pkg-config --modversion vips
       - name: Verify HEIF/AVIF support
