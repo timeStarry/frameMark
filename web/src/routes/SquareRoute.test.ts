@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises } from '@vue/test-utils'
 import { card } from '../viewer/testFixtures'
 import type { SquarePage } from '../api/types'
@@ -129,6 +129,27 @@ describe('SquareRoute', () => {
     env.routes['/api/square'] = { status: 200, body: { featured: [], items: [], nextCursor: null } }
     const { w } = await open('/')
     expect(w.text()).toContain('还没有公开的照片')
+  })
+
+  it('scrolls to the top before restoring, so the restore wins', async () => {
+    env.routes['/api/square'] = { status: 200, body: page1 }
+    const { router } = await open('/')
+    await router.push('/tools')
+    await flushPromises()
+    expect(sessionStorage.getItem('markr:wallCache:square')).not.toBeNull()
+    sessionStorage.setItem('markr:lastViewed:square', 'c3')
+    const order: string[] = []
+    const spy = vi.spyOn(window, 'scrollTo').mockImplementation(() => void order.push('top'))
+    const push = env.scrolled.push.bind(env.scrolled)
+    env.scrolled.push = (...ids: string[]) => (order.push(...ids), push(...ids))
+    try {
+      await router.push('/')
+      await flushPromises()
+      await flushPromises()
+      expect(order).toEqual(['top', 'c3'])
+    } finally {
+      spy.mockRestore()
+    }
   })
 
   it('sets scrollRestoration to manual', async () => {

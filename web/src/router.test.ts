@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest'
-import { createMemoryHistory } from 'vue-router'
-import { createAppRouter } from './router'
+import { describe, expect, it, vi } from 'vitest'
+import { createMemoryHistory, type RouteLocationNormalized } from 'vue-router'
+import { createAppRouter, scrollTarget } from './router'
 
 describe('router', () => {
   const router = createAppRouter(createMemoryHistory())
@@ -40,5 +40,40 @@ describe('router', () => {
 
   it('resolves unknown paths to not-found', () => {
     expect(router.resolve('/no/such/page').name).toBe('not-found')
+  })
+})
+
+describe('scrollTarget', () => {
+  const r = createAppRouter(createMemoryHistory())
+  // resolve() gives the same name/path a navigation would; that is all scrollTarget reads.
+  const at = (p: string) => r.resolve(p) as unknown as RouteLocationNormalized
+
+  it('returns the saved position on Back/Forward', () => {
+    const saved = { left: 0, top: 812 }
+    expect(scrollTarget(at('/u/u1'), at('/a/al1'), saved)).toEqual(saved)
+  })
+
+  it('leaves scroll alone for the viewer and for query-only changes', () => {
+    expect(scrollTarget(at('/c/x'), at('/u/u1'), null)).toBe(false)
+    expect(scrollTarget(at('/c/x?f=2'), at('/c/x?f=1'), null)).toBe(false)
+    expect(scrollTarget(at('/?x=1'), at('/'), null)).toBe(false)
+  })
+
+  it('scrolls a new wall to the top', () => {
+    expect(scrollTarget(at('/a/al1'), at('/u/u1'), null)).toEqual({ top: 0 })
+    expect(scrollTarget(at('/'), at('/a/al1'), null)).toEqual({ top: 0 })
+  })
+
+  it('scrolls the window itself and returns false', () => {
+    const spy = vi.spyOn(window, 'scrollTo').mockImplementation(() => {})
+    try {
+      expect(r.options.scrollBehavior!(at('/a/al1'), at('/u/u1'), null)).toBe(false)
+      expect(spy).toHaveBeenCalledWith({ left: 0, top: 0 })
+      spy.mockClear()
+      expect(r.options.scrollBehavior!(at('/c/x'), at('/u/u1'), null)).toBe(false)
+      expect(spy).not.toHaveBeenCalled()
+    } finally {
+      spy.mockRestore()
+    }
   })
 })

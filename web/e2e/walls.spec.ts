@@ -160,6 +160,26 @@ test('direct link with a user wall: 返回 lands on the owner page', async ({ pa
   await expect(page.getByRole('heading', { name: '阿树' })).toBeVisible()
 })
 
+test('wall to wall: a new wall opens at its top, Back returns to the previous offset', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await mockAPI(page)
+  await page.goto('/u/u1')
+  const album = page.locator('a.album[href="/a/al1"]')
+  await album.scrollIntoViewIfNeeded()
+  await expect(album).toBeInViewport()
+  const before = await page.evaluate(() => window.scrollY)
+  expect(before).toBeGreaterThan(100)
+  await album.click()
+  await expect(page).toHaveURL(/\/a\/al1$/)
+  await expect(page.getByRole('heading', { level: 1, name: '海岸' })).toBeInViewport()
+  expect(await page.evaluate(() => window.scrollY)).toBe(0)
+  await page.goBack()
+  await expect(page).toHaveURL(/\/u\/u1$/)
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(before - 50)
+  expect(Math.abs((await page.evaluate(() => window.scrollY)) - before)).toBeLessThanOrEqual(50)
+  await expect(album).toBeInViewport()
+})
+
 test('sweep: three bands show three previews, leaving shows the cover; box height fixed; preview tiers capped', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 })
   const mock = await mockAPI(page)
