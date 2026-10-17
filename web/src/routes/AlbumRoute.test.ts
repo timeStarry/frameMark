@@ -18,7 +18,10 @@ describe('AlbumRoute', () => {
   it('shows a missing page on 404', async () => {
     const { w } = await open('/a/nope')
     expect(w.text()).toContain('这组照片不存在或已不再公开')
-    expect(w.find('a[href="/"]').text()).toBe('回首页')
+    expect(w.findAll('a').some((a) => a.text() === '回首页' && a.attributes('href') === '/')).toBe(true)
+    expect(w.find('h1').text()).toBe('这组照片不存在或已不再公开')
+    expect(w.find('nav[aria-label="站点"]').exists()).toBe(true)
+    expect(document.title).toBe('未找到 — Markr')
   })
 
   it('renders the title, intro, owner link and member wall', async () => {

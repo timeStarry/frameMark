@@ -17,7 +17,12 @@ describe('UserRoute', () => {
   it('shows a missing page on 404', async () => {
     const { w } = await open('/u/nobody')
     expect(w.text()).toContain('这位摄影师不存在')
-    expect(w.find('a[href="/"]').text()).toBe('回首页')
+    expect(w.findAll('a').some((a) => a.text() === '回首页' && a.attributes('href') === '/')).toBe(true)
+    // A landmark heading, the site nav and a title of its own (final M6).
+    expect(w.find('h1').text()).toBe('这位摄影师不存在')
+    expect(w.find('main').attributes('aria-labelledby')).toBe(w.find('h1').attributes('id'))
+    expect(w.find('nav[aria-label="站点"]').exists()).toBe(true)
+    expect(document.title).toBe('未找到 — Markr')
   })
 
   it('renders the profile, the wall in its layout and the albums', async () => {

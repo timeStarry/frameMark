@@ -1,21 +1,26 @@
 <script setup lang="ts">
 // Full-page 404 for wall routes (spec §8).
 import { RouterLink } from 'vue-router'
+import WallNav from '../walls/WallNav.vue'
 
 defineProps<{ message: string }>()
+// The wall route resets the title to `Markr` when it unmounts.
+document.title = '未找到 — Markr'
 </script>
 
 <template>
-  <main class="wall-missing">
-    <p class="msg">{{ message }}</p>
+  <WallNav />
+  <main class="wall-missing" aria-labelledby="wall-missing-title">
+    <h1 id="wall-missing-title" class="msg">{{ message }}</h1>
     <RouterLink to="/">回首页</RouterLink>
   </main>
 </template>
 
 <style scoped>
 .wall-missing {
-  min-height: 100vh;
-  min-height: 100dvh;
+  /* Fill the viewport below the 44px WallNav. */
+  min-height: calc(100vh - 45px);
+  min-height: calc(100dvh - 45px);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -29,6 +34,7 @@ defineProps<{ message: string }>()
   margin: 0;
   font-family: var(--font-title);
   font-size: 18px;
+  font-weight: 400;
 }
 a {
   min-height: 44px;
