@@ -97,18 +97,23 @@ function prefetchNeighbors(nb: Neighbors) {
   })
 }
 
+// Before the id watcher, and immediate: a cache hit sets collection synchronously during setup.
 watch(
-  () => props.id,
-  (id, old) => {
-    if (old && collection.value) remember(wall.value ?? '', old)
-    void load(id)
+  collection,
+  (c) => {
+    document.title = c ? `${c.title} · ${c.owner.name} — ${BASE_TITLE}` : BASE_TITLE
   },
   { immediate: true },
 )
 
-watch(collection, (c) => {
-  document.title = c ? `${c.title} · ${c.owner.name} — ${BASE_TITLE}` : BASE_TITLE
-})
+watch(
+  () => props.id,
+  (id, old) => {
+    if (old && collection.value && wall.value) remember(wall.value, old)
+    void load(id)
+  },
+  { immediate: true },
+)
 
 function onFrame(n: number) {
   void router.replace({ query: { ...route.query, ...frameQuery(n) } })

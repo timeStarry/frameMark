@@ -105,6 +105,30 @@ describe('CollectionRoute', () => {
     expect(document.title).toBe('Markr')
   })
 
+  it('sets the title when reopening a cached collection', async () => {
+    serve(A, nbA)
+    const router = await open('/c/a')
+    await router.push('/')
+    await flushPromises()
+    expect(document.title).toBe('Markr')
+    expect(collectionCache.get('a')).toBeTruthy()
+    await router.push('/c/a')
+    await flushPromises()
+    await flushPromises()
+    expect(document.title).toBe('海边 · 阿树 — Markr')
+  })
+
+  it('does not write a wall-less lastViewed key when moving without a wall', async () => {
+    serve(A, neighbors({ wall: '', next: card('b', '山中', '林', 'u2') }))
+    serve(B, neighbors({ wall: '' }))
+    const router = await open('/c/a')
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }))
+    await flushPromises()
+    await flushPromises()
+    expect(router.currentRoute.value.path).toBe('/c/b')
+    expect(sessionStorage.getItem('markr:lastViewed:')).toBeNull()
+  })
+
   it('shows the missing screen on 404', async () => {
     await open('/c/nope')
     expect(w!.text()).toContain('这组照片不存在或已不再公开')
