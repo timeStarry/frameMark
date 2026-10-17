@@ -5,7 +5,8 @@
 export type Axis = 'y' | 'x'
 export type Dir = 1 | -1
 export type Intent = { kind: 'frame'; dir: Dir } | { kind: 'collection'; dir: Dir }
-export type ViewerIntent = Intent | { kind: 'home' } | { kind: 'end' }
+/** `info`: a touch swipe up from the bottom edge opens the info layer (spec §5.3). */
+export type ViewerIntent = Intent | { kind: 'home' } | { kind: 'end' } | { kind: 'info' }
 
 export interface GestureConfig {
   viewportW: number

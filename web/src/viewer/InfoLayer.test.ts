@@ -205,6 +205,41 @@ describe('InfoLayer', () => {
     expect(e.defaultPrevented).toBe(false)
   })
 
+  it('an open drawer dragged down past 30% of its height closes; less snaps back', async () => {
+    const v = render(col.frames[0]!, 390)
+    const d = v.get('[role="dialog"]').element as HTMLElement
+    Object.defineProperty(d, 'offsetHeight', { configurable: true, value: 400 })
+    const head = v.get('header').element as HTMLElement
+    head.setPointerCapture = () => {}
+    const ev = (type: string, y: number) => new PointerEvent(type, { clientY: y, pointerId: 1, bubbles: true })
+    head.dispatchEvent(ev('pointerdown', 300))
+    head.dispatchEvent(ev('pointermove', 400))
+    await nextTick()
+    expect(d.style.transform).toBe('translateY(100px)')
+    head.dispatchEvent(ev('pointermove', 340))
+    await nextTick()
+    expect(d.style.transform).toBe('translateY(40px)')
+    head.dispatchEvent(ev('pointerup', 340))
+    await nextTick()
+    expect(v.emitted('close')).toBeUndefined()
+    expect(d.style.transform).toBe('')
+    head.dispatchEvent(ev('pointerdown', 300))
+    head.dispatchEvent(ev('pointermove', 430))
+    head.dispatchEvent(ev('pointerup', 430))
+    expect(v.emitted('close')).toHaveLength(1)
+  })
+
+  it('renders a closed drawer while pulled up, translated by the pull', () => {
+    setWidth(390)
+    w = mount(InfoLayer, {
+      props: { open: false, pull: -120, collection: col, frame: col.frames[0]!, current: 1, frames: 3 },
+      attachTo: document.body,
+    })
+    const d = w.get('[role="dialog"]').element as HTMLElement
+    expect(d.style.transform).toBe('translateY(max(0px, calc(100% + -120px)))')
+    expect(document.activeElement).not.toBe(d)
+  })
+
   it('emits close from the close button', async () => {
     const v = render(col.frames[0]!)
     await v.get('button[aria-label="关闭"]').trigger('click')

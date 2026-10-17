@@ -11,6 +11,7 @@ let handlers: {
   drag: Mock<InputHandlers['drag']>
   tap: Mock<InputHandlers['tap']>
   doubleTap: Mock<InputHandlers['doubleTap']>
+  sheet: Mock<NonNullable<InputHandlers['sheet']>>
 }
 
 function pointer(type: string, x: number, y: number, extra: PointerEventInit = {}) {
@@ -76,6 +77,7 @@ beforeEach(() => {
     drag: vi.fn<InputHandlers['drag']>(),
     tap: vi.fn<InputHandlers['tap']>(),
     doubleTap: vi.fn<InputHandlers['doubleTap']>(),
+    sheet: vi.fn<NonNullable<InputHandlers['sheet']>>(),
   }
 })
 
@@ -271,6 +273,91 @@ describe('bindInputs: pointer', () => {
     expect(handlers.drag).not.toHaveBeenCalled()
     expect(intents).toEqual([])
     expect(cap).not.toHaveBeenCalled()
+  })
+})
+
+describe('bindInputs: swipe up from the bottom edge (info layer)', () => {
+  // viewport 400×800: the bottom zone is y ≥ 772; the drawer is 60% = 480px, 30% of it = 144px.
+  it('a touch swipe up starting within 28px of the bottom opens info instead of paging', () => {
+    bind()
+    touch('pointerdown', 1, 200, 790)
+    now += 50
+    touch('pointermove', 1, 200, 700)
+    expect(handlers.sheet).toHaveBeenLastCalledWith(-90)
+    now += 50
+    touch('pointermove', 1, 200, 600)
+    now += 50
+    touch('pointerup', 1, 200, 600)
+    expect(intents).toEqual([{ kind: 'info' }])
+    expect(handlers.drag).not.toHaveBeenCalled()
+  })
+
+  it('the pull follows the finger back down; released short of 30% it springs back', () => {
+    bind()
+    touch('pointerdown', 1, 200, 790)
+    now += 50
+    touch('pointermove', 1, 200, 590)
+    expect(handlers.sheet).toHaveBeenLastCalledWith(-200)
+    now += 50
+    touch('pointermove', 1, 200, 700)
+    expect(handlers.sheet).toHaveBeenLastCalledWith(-90)
+    now += 50
+    touch('pointermove', 1, 200, 800)
+    expect(handlers.sheet).toHaveBeenLastCalledWith(0)
+    touch('pointermove', 1, 200, 700)
+    touch('pointerup', 1, 200, 700)
+    expect(intents).toEqual([])
+    expect(handlers.sheet).toHaveBeenLastCalledWith(0)
+  })
+
+  it('a pointercancel during the pull springs back', () => {
+    bind()
+    touch('pointerdown', 1, 200, 790)
+    now += 50
+    touch('pointermove', 1, 200, 500)
+    touch('pointercancel', 1, 200, 500)
+    expect(handlers.sheet).toHaveBeenLastCalledWith(0)
+    expect(intents).toEqual([])
+  })
+
+  it('a touch swipe up starting higher than 28px pages as usual', () => {
+    bind()
+    touch('pointerdown', 1, 200, 760)
+    now += 50
+    touch('pointermove', 1, 200, 500)
+    touch('pointerup', 1, 200, 500)
+    expect(intents).toEqual([{ kind: 'frame', dir: 1 }])
+    expect(handlers.sheet).not.toHaveBeenCalled()
+  })
+
+  it('a mouse drag from the bottom edge pages as usual', () => {
+    bind()
+    pointer('pointerdown', 200, 790, { pointerType: 'mouse' })
+    now += 50
+    pointer('pointermove', 200, 500, { pointerType: 'mouse' })
+    pointer('pointerup', 200, 500, { pointerType: 'mouse' })
+    expect(intents).toEqual([{ kind: 'frame', dir: 1 }])
+    expect(handlers.sheet).not.toHaveBeenCalled()
+  })
+
+  it('a bottom-edge touch that locks horizontally changes collection', () => {
+    bind()
+    touch('pointerdown', 1, 300, 790)
+    now += 50
+    touch('pointermove', 1, 100, 785)
+    touch('pointerup', 1, 100, 785)
+    expect(intents).toEqual([{ kind: 'collection', dir: 1 }])
+    expect(handlers.sheet).not.toHaveBeenCalled()
+  })
+
+  it('reduced motion does not follow but still opens past the threshold', () => {
+    bind(undefined, true)
+    touch('pointerdown', 1, 200, 790)
+    now += 50
+    touch('pointermove', 1, 200, 600)
+    expect(handlers.sheet).toHaveBeenLastCalledWith(0)
+    touch('pointerup', 1, 200, 600)
+    expect(intents).toEqual([{ kind: 'info' }])
   })
 })
 

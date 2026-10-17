@@ -131,6 +131,8 @@ const rootEl = ref<HTMLElement | null>(null)
 const edges = useEdges()
 const fullscreen = useFullscreen(rootEl)
 const infoOpen = ref(false)
+/** Bottom-edge swipe-up pull of the info drawer, px (≤ 0). */
+const sheetPull = ref(0)
 watch(infoOpen, (open) => (open ? edges.pin('info') : edges.unpin('info')))
 
 const currentPhoto = computed(() => {
@@ -215,6 +217,10 @@ function onIntent(i: ViewerIntent) {
     case 'end':
       go(total.value)
       break
+    case 'info':
+      sheetPull.value = 0
+      infoOpen.value = true
+      break
   }
 }
 
@@ -246,7 +252,17 @@ function bind() {
   if (!el) return
   unbind = bindInputs(
     el,
-    { intent: onIntent, drag: onDrag, tap: onTap, doubleTap: onDoubleTap, key: onKey },
+    {
+      intent: onIntent,
+      drag: onDrag,
+      tap: onTap,
+      doubleTap: onDoubleTap,
+      key: onKey,
+      sheet: (offset) => {
+        // An open drawer is already up; the pull only matters while closed.
+        sheetPull.value = infoOpen.value ? 0 : offset
+      },
+    },
     {
       reducedMotion: reducedMotion.value,
       // Read on every event: inner exists only while the current frame is a stacked pair or a text frame.
@@ -319,6 +335,7 @@ function deactivate() {
   unbind = null
   edges.stop()
   infoOpen.value = false
+  sheetPull.value = 0
   resetDrag()
 }
 
@@ -452,6 +469,7 @@ const sequence = computed(() => Array.from({ length: total.value }, (_, i) => i 
       <slot name="info" v-bind="slotProps">
         <InfoLayer
           :open="infoOpen"
+          :pull="sheetPull"
           :collection="collection"
           :frame="currentFrame"
           :current="current"

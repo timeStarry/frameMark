@@ -566,6 +566,44 @@ describe('Viewer with default edges (Task 6)', () => {
     expect(v.emitted('frame')).toBeUndefined()
   })
 
+  it('a touch swipe up from the bottom edge pulls the drawer with the finger, then opens info', async () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 })
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 800 })
+    window.dispatchEvent(new Event('resize'))
+    const v = mountWith()
+    const stage = v.find('[role="region"]').element
+    const ev = (type: string, y: number) =>
+      new PointerEvent(type, { clientX: 200, clientY: y, pointerId: 3, pointerType: 'touch', isPrimary: true, bubbles: true })
+    stage.dispatchEvent(ev('pointerdown', 790))
+    window.dispatchEvent(ev('pointermove', 700))
+    await nextTick()
+    const d = v.get('[role="dialog"]')
+    expect(d.classes()).toContain('drawer')
+    expect((d.element as HTMLElement).style.transform).toContain('-90px')
+    expect(v.find('.track').attributes('style')).toContain('+ 0px)')
+    window.dispatchEvent(ev('pointermove', 550))
+    window.dispatchEvent(ev('pointerup', 550))
+    await flushPromises()
+    expect(v.find('[role="dialog"]').exists()).toBe(true)
+    expect((v.get('[role="dialog"]').element as HTMLElement).style.transform).toBe('')
+    expect(v.emitted('frame')).toBeUndefined()
+  })
+
+  it('a short bottom-edge pull springs back and leaves info closed', async () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 })
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 800 })
+    window.dispatchEvent(new Event('resize'))
+    const v = mountWith()
+    const stage = v.find('[role="region"]').element
+    const ev = (type: string, y: number) =>
+      new PointerEvent(type, { clientX: 200, clientY: y, pointerId: 3, pointerType: 'touch', isPrimary: true, bubbles: true })
+    stage.dispatchEvent(ev('pointerdown', 790))
+    window.dispatchEvent(ev('pointermove', 720))
+    window.dispatchEvent(ev('pointerup', 720))
+    await flushPromises()
+    expect(v.find('[role="dialog"]').exists()).toBe(false)
+  })
+
   it('renders the default end frame and its restart goes to frame 1', async () => {
     const v = mountWith({ initialFrame: 4 })
     const restart = v.findAll('[data-frame="4"] button').find((b) => b.text().includes('从头再看'))!

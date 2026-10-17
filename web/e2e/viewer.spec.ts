@@ -140,6 +140,26 @@ test.describe('touch @touch', () => {
     )
   }
 
+  test('swipe up from the bottom edge opens info; drag the drawer down closes it', async ({ page }) => {
+    await mockAPI(page)
+    // A photo with no public fields: no right edge, so this is the only way in on a phone.
+    await page.goto('/c/main?f=3')
+    await waitFrame(page, 3)
+    await expect(page.locator('.edge-right button')).toHaveCount(0)
+    const vp = page.viewportSize()!
+    const cx = vp.width / 2
+    await swipe(page, [cx, vp.height - 6], [cx, vp.height - 320], 8, 16)
+    const dialog = page.getByRole('dialog')
+    await expect(dialog).toBeVisible()
+    await expect(dialog).toHaveClass(/drawer/)
+    await page.waitForTimeout(350)
+    await expect(current(page)).toHaveAttribute('data-frame', '3')
+    const d = (await dialog.boundingBox())!
+    await swipe(page, [cx, d.y + 20], [cx, d.y + 20 + d.height * 0.5], 8, 16)
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+    await expect(current(page)).toHaveAttribute('data-frame', '3')
+  })
+
   test('swipe up from the image pages; slow short drag springs back; swipe left changes collection; tap toggles edges', async ({ page }) => {
     await mockAPI(page)
     await page.goto('/c/main')

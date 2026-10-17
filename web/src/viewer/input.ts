@@ -8,7 +8,6 @@ import {
   keyIntent,
   type Axis,
   type Dir,
-  type Intent,
   type ViewerIntent,
 } from './gesture'
 
@@ -23,6 +22,12 @@ export interface InputHandlers {
    */
   tap(pointerType: string): void
   doubleTap(pointerType: string): void
+  /**
+   * Swipe up from the bottom edge (touch only): the info drawer's pull, in px,
+   * negative while it rises with the finger. 0 on spring-back, cancel or before
+   * the `info` intent that opens it.
+   */
+  sheet?(offset: number): void
   /**
    * Keys the viewer handles beyond navigation (i, f, Escape). Called after the
    * editable-target check and before navigation; return true when handled, so
@@ -75,6 +80,11 @@ export interface InputConfig {
 export const TAP_MAX_PX = 10
 export const TAP_MAX_MS = 250
 export const DOUBLE_TAP_MS = 300
+/** A touch that starts this close to the bottom edge and moves up pulls the info drawer. */
+export const SHEET_EDGE_PX = 28
+/** The drawer is at most 60% of the viewport tall; release past 30% of that opens it. */
+const SHEET_HEIGHT_RATIO = 0.6
+const SHEET_COMMIT_RATIO = 0.3
 /** Pixels per line for `deltaMode = 1` wheel events routed to inner. */
 const LINE_PX = 40
 /** Keyboard and page-mode wheel scroll inner by this share of the viewport height. */
@@ -146,6 +156,8 @@ export function bindInputs(el: HTMLElement, handlers: InputHandlers, cfg: InputC
   let dragAxis: Axis | null = null
   let lastTapT = -Infinity
   let downType = ''
+  let fromBottom = false // touch started in the bottom SHEET_EDGE_PX
+  let sheet = false // this gesture pulls the info drawer instead of paging
   // inner-scroll routing for the current y gesture
   let inner: InnerScroll | undefined
   let lastY = 0
@@ -157,6 +169,8 @@ export function bindInputs(el: HTMLElement, handlers: InputHandlers, cfg: InputC
     gesture = null
     pointerId = null
     dragAxis = null
+    fromBottom = false
+    sheet = false
     inner = undefined
     residual = 0
     innerMoved = false
@@ -165,8 +179,10 @@ export function bindInputs(el: HTMLElement, handlers: InputHandlers, cfg: InputC
   /** Abort the current gesture and spring the frame back. */
   const cancelGesture = () => {
     const axis = dragAxis
+    const wasSheet = sheet
     resetGesture()
-    if (axis !== null) handlers.drag(axis, 0)
+    if (wasSheet) handlers.sheet?.(0)
+    else if (axis !== null) handlers.drag(axis, 0)
   }
 
   /** Route a forward-positive vertical step through inner; returns the frame offset. */
@@ -215,6 +231,7 @@ export function bindInputs(el: HTMLElement, handlers: InputHandlers, cfg: InputC
     downY = e.clientY
     downT = now()
     downType = e.pointerType
+    fromBottom = e.pointerType === 'touch' && downY >= vp.h - SHEET_EDGE_PX
     maxDist = 0
     lastY = downY
     gesture.start(downX, downY, downT)
@@ -232,9 +249,15 @@ export function bindInputs(el: HTMLElement, handlers: InputHandlers, cfg: InputC
       } catch {
         // best-effort; window listeners still see the release
       }
-      if (r.axis === 'y') inner = cfg.inner
+      // Decided as the axis locks: up from the bottom edge pulls the info drawer.
+      sheet = fromBottom && r.axis === 'y' && e.clientY < downY
+      if (r.axis === 'y' && !sheet) inner = cfg.inner
     }
     dragAxis = r.axis
+    if (sheet) {
+      handlers.sheet?.(cfg.reducedMotion ? 0 : Math.min(0, e.clientY - downY))
+      return
+    }
     if (r.axis === 'y' && inner) {
       const offset = stepInner(lastY - e.clientY, inner)
       lastY = e.clientY
@@ -255,12 +278,17 @@ export function bindInputs(el: HTMLElement, handlers: InputHandlers, cfg: InputC
     if (!gesture || e.pointerId !== pointerId) return
     const t = now()
     maxDist = Math.max(maxDist, Math.hypot(e.clientX - downX, e.clientY - downY))
-    let intent: Intent | null = gesture.end(e.clientX, e.clientY, t)
-    if (inner && innerMoved) {
+    let intent: ViewerIntent | null = gesture.end(e.clientX, e.clientY, t)
+    if (sheet) {
+      const pull = downY - e.clientY
+      const commit = viewport().h * SHEET_HEIGHT_RATIO * SHEET_COMMIT_RATIO
+      intent = pull > commit ? { kind: 'info' } : null
+      if (!intent) handlers.sheet?.(0)
+    } else if (inner && innerMoved) {
       // Inner scrolled during this gesture: page only on a residual past the threshold.
       intent = Math.abs(residual) > threshold(viewport().h) ? { kind: 'frame', dir: residual > 0 ? 1 : -1 } : null
     }
-    const axis = dragAxis
+    const axis = sheet ? null : dragAxis
     const isTap = !wasMulti && maxDist < TAP_MAX_PX && t - downT < TAP_MAX_MS
     resetGesture()
 

@@ -15,6 +15,11 @@ const props = defineProps<{
   frame: Frame | null
   current: number
   frames: number
+  /**
+   * Swipe-up pull from the viewer's bottom edge, in px (≤ 0). While negative
+   * and closed, the drawer is shown rising with the finger (spec §5.3).
+   */
+  pull?: number
 }>()
 
 const emit = defineEmits<{ close: [] }>()
@@ -59,13 +64,24 @@ watch(
   },
 )
 
-// Drawer: drag down on the handle or header to close. Presses on the close
+const dragOffset = ref(0)
+const pulling = computed(() => !props.open && !wide.value && (props.pull ?? 0) < 0)
+const shown = computed(() => props.open || pulling.value)
+const drawerStyle = computed(() => {
+  if (wide.value) return undefined
+  let transform: string | undefined
+  if (pulling.value) transform = `translateY(max(0px, calc(100% + ${props.pull}px)))`
+  else if (dragOffset.value) transform = `translateY(${dragOffset.value}px)`
+  return { maxHeight: '60vh', transform }
+})
+
+// Drawer: drag down on the handle or header to close; it follows the finger
+// both ways and closes when released past 30% of its height. Presses on the close
 // button (or any control) never start a drag, and capture is taken only once
 // the pointer has moved: a capturing parent retargets the child's click.
 const CAPTURE_PX = 4
 let dragStart: number | null = null
 let captured = false
-const dragOffset = ref(0)
 function onDragStart(e: PointerEvent) {
   if (wide.value) return
   if (e.target instanceof Element && e.target.closest('button, a')) return
@@ -81,9 +97,11 @@ function onDragMove(e: PointerEvent) {
   }
   dragOffset.value = Math.max(0, dy)
 }
+const CLOSE_RATIO = 0.3
 function onDragEnd() {
   if (dragStart === null) return
-  const close = dragOffset.value > 80
+  const h = dialog.value?.offsetHeight ?? 0
+  const close = dragOffset.value > (h > 0 ? h * CLOSE_RATIO : 80)
   dragStart = null
   captured = false
   dragOffset.value = 0
@@ -125,15 +143,15 @@ onBeforeUnmount(() => window.removeEventListener('resize', onResize))
 
 <template>
   <section
-    v-if="open"
+    v-if="shown"
     ref="dialog"
     class="info"
-    :class="wide ? 'panel' : 'drawer'"
+    :class="[wide ? 'panel' : 'drawer', { following: pulling || dragOffset > 0 }]"
     role="dialog"
     aria-modal="false"
     :aria-labelledby="titleId"
     tabindex="-1"
-    :style="wide ? undefined : { maxHeight: '60vh', transform: dragOffset ? `translateY(${dragOffset}px)` : undefined }"
+    :style="drawerStyle"
     data-no-gesture
     @keydown="onKey"
   >
@@ -217,6 +235,11 @@ onBeforeUnmount(() => window.removeEventListener('resize', onResize))
   border-radius: 12px 12px 0 0;
   padding-bottom: env(safe-area-inset-bottom);
   transition: transform var(--dur-fade);
+}
+
+/* Follows the finger without lag; the release animates. */
+.drawer.following {
+  transition: none;
 }
 
 .head {
