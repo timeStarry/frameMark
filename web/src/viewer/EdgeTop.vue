@@ -5,7 +5,7 @@ import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { Collection, PhotoView } from '../api/types'
 import { originalURL } from '../api/client'
 import { shareURL } from './urlState'
-import { share } from './share'
+import { canShare, share } from './share'
 
 const props = defineProps<{
   collection: Collection
@@ -34,7 +34,11 @@ function items(): HTMLElement[] {
   return [...(menu.value?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? [])]
 }
 
+/** Read when the menu opens: share where the system sheet exists, else copy (spec §6.3). */
+const shareLabel = ref('复制链接')
+
 async function openMenu() {
+  shareLabel.value = canShare() ? '分享' : '复制链接'
   open.value = true
   props.pin('menu')
   await nextTick()
@@ -150,7 +154,7 @@ onBeforeUnmount(() => {
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h.01M12 12h.01M19 12h.01" /></svg>
       </button>
       <div v-if="open" ref="menu" class="menu" role="menu" aria-label="更多" @keydown="onMenuKey">
-        <button type="button" role="menuitem" tabindex="-1" @click="copyLink">复制链接</button>
+        <button type="button" role="menuitem" tabindex="-1" @click="copyLink">{{ shareLabel }}</button>
         <a
           v-if="photo?.downloadable"
           role="menuitem"

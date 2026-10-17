@@ -207,6 +207,17 @@ describe('EdgeTop', () => {
     expect(v.find('a[href="/u/u1"]').exists()).toBe(true)
   })
 
+  it('labels the item 分享 when the system share sheet exists', async () => {
+    vi.stubGlobal('navigator', { ...navigator, share: vi.fn() })
+    try {
+      const v = render(col, false)
+      await v.get('button[aria-haspopup="menu"]').trigger('click')
+      expect(v.findAll('[role="menuitem"]').map((i) => i.text())).toEqual(['分享', '作者主页'])
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('omits the download item when the photo is not downloadable', async () => {
     const v = render(col, false)
     await v.get('button[aria-haspopup="menu"]').trigger('click')
