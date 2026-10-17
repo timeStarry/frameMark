@@ -1,16 +1,23 @@
 <script setup lang="ts">
 // Bottom edge (spec §5.2): the neighbouring collections' cover strip, current
 // one highlighted. Not rendered with one collection or fewer.
+import { onMounted, ref } from 'vue'
 import type { Card } from '../api/types'
 import { srcset } from './media'
 
 defineProps<{ collectionId: string; strip: Card[] }>()
 const emit = defineEmits<{ jump: [id: string] }>()
+
+const list = ref<HTMLElement | null>(null)
+// A long strip on a narrow screen starts scrolled to the current card.
+onMounted(() => {
+  list.value?.querySelector<HTMLElement>('[aria-current="true"]')?.scrollIntoView?.({ block: 'nearest', inline: 'center' })
+})
 </script>
 
 <template>
   <nav v-if="strip.length > 1" class="bottom" aria-label="更多合集">
-    <ul class="strip">
+    <ul ref="list" class="strip">
       <li v-for="c in strip" :key="c.id">
         <button
           type="button"
@@ -43,13 +50,22 @@ const emit = defineEmits<{ jump: [id: string] }>()
 
 .strip {
   display: flex;
-  justify-content: center;
+  /* Centred by auto margins on the end cards, not justify-content: center,
+     which pushes an overflowing strip past the scroll origin and clips it. */
   gap: var(--space-8);
   margin: 0;
   padding: 0;
   list-style: none;
   overflow-x: auto;
   scrollbar-width: none;
+}
+
+.strip > li:first-child {
+  margin-left: auto;
+}
+
+.strip > li:last-child {
+  margin-right: auto;
 }
 
 .card {

@@ -103,7 +103,11 @@ const NEIGHBORS: Record<string, unknown> = {
   solo: { wall: 'square', prev: null, next: null, strip: [card(SOLO, 'land')] },
   broken: { wall: 'square', prev: null, next: null, strip: [] },
 }
-const COLLECTIONS: Record<string, unknown> = { main: MAIN, next: NEXT, solo: SOLO, broken: BROKEN }
+/** A collection whose strip is far wider than a phone. */
+export const LONG = collection('long', '长带', SHU, [full(photo('l1', 'land'))])
+const LONG_STRIP = [card(LONG, 'land'), ...Array.from({ length: 9 }, (_, i) => card(collection(`s${i}`, `带${i}`, SHU, []), 'land'))]
+NEIGHBORS.long = { wall: 'square', prev: null, next: null, strip: LONG_STRIP }
+const COLLECTIONS: Record<string, unknown> = { main: MAIN, next: NEXT, solo: SOLO, broken: BROKEN, long: LONG }
 
 export interface Mock {
   requests: string[]

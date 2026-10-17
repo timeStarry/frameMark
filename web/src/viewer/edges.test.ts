@@ -300,6 +300,21 @@ describe('EdgeBottom', () => {
     one.unmount()
   })
 
+  it('scrolls the current card into view on mount', () => {
+    const spy = vi.fn()
+    const orig = HTMLElement.prototype.scrollIntoView
+    HTMLElement.prototype.scrollIntoView = spy
+    try {
+      const strip = Array.from({ length: 8 }, (_, i) => card(`k${i}`, `卡${i}`))
+      const w = mount(EdgeBottom, { props: { collectionId: 'k6', strip }, attachTo: document.body })
+      expect(spy).toHaveBeenCalledTimes(1)
+      expect(spy.mock.contexts[0]).toBe(w.find('[aria-current="true"]').element)
+      w.unmount()
+    } finally {
+      HTMLElement.prototype.scrollIntoView = orig
+    }
+  })
+
   it('highlights the current collection and emits jump', async () => {
     const strip = [card('a', '甲'), card('c1', '海边'), card('b', '乙')]
     const w = mount(EdgeBottom, { props: { collectionId: 'c1', strip } })

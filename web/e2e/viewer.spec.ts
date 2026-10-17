@@ -161,6 +161,26 @@ test('edges: left scale appears near the edge; all hide after 2s idle with curso
   expect(cursor).toBe('none')
 })
 
+test('cover strip: every card is reachable at 360px', async ({ page }) => {
+  await page.setViewportSize({ width: 360, height: 780 })
+  await mockAPI(page)
+  await page.goto('/c/long')
+  await waitFrame(page, 1)
+  await page.mouse.move(180, 400)
+  await page.mouse.move(180, 770)
+  const strip = page.locator('.edge-bottom .strip')
+  await expect(page.locator('.edge-bottom')).toHaveClass(/shown/)
+  const cards = strip.locator('button')
+  await expect(cards).toHaveCount(10)
+  await strip.evaluate((el) => (el.scrollLeft = 0))
+  const s = (await strip.boundingBox())!
+  const first = (await cards.first().boundingBox())!
+  expect(first.x).toBeGreaterThanOrEqual(s.x - 0.5)
+  await strip.evaluate((el) => (el.scrollLeft = el.scrollWidth))
+  const last = (await cards.last().boundingBox())!
+  expect(last.x + last.width).toBeLessThanOrEqual(s.x + s.width + 0.5)
+})
+
 test.describe('info layer', () => {
   test('wide: panel narrows the stage without covering the photo; histogram toggles', async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 })
