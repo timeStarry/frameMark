@@ -252,6 +252,24 @@ test('cross-author switch shows the new author and announces it', async ({ page 
   await expect(page.locator('[aria-live="polite"]').filter({ hasText: '林 的「山中」' })).toHaveCount(1)
 })
 
+test('collection switch: the outgoing viewer ignores keys during its leave transition', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await mockAPI(page)
+  await page.goto('/c/main?wall=square&f=3')
+  await waitFrame(page, 3)
+  // Let the neighbour prefetch land so the next collection mounts at once.
+  await page.waitForTimeout(300)
+  await page.keyboard.press('ArrowRight')
+  await expect(page).toHaveURL(/\/c\/next/)
+  // The new viewer starts at frame 1 and clamps on ↑; only the old one (frame 3) would write f=2.
+  await page.keyboard.press('ArrowUp')
+  await page.keyboard.press('i')
+  await expect(page.getByRole('dialog')).toHaveCount(1)
+  await page.waitForTimeout(500)
+  expect(new URL(page.url()).searchParams.get('f')).toBeNull()
+  await expect(page.locator('.viewer')).toHaveCount(1)
+})
+
 test('URL: reload keeps the frame and the shared link has no wall', async ({ page, context, browserName }) => {
   await page.setViewportSize({ width: 1440, height: 900 })
   await mockAPI(page)

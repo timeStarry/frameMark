@@ -18,7 +18,7 @@ import EndFrame from './EndFrame.vue'
 import { useEdges } from './useEdges'
 import { useFullscreen } from './useFullscreen'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   collection: Collection
   neighbors: Neighbors | null
   /** 1-based; clamped to [1, frames.length + 1]. */
@@ -30,9 +30,14 @@ const props = defineProps<{
    * new author is announced (spec §5.2).
    */
   fromOwnerId?: string | null
-}>()
+  /**
+   * False while the instance is leaving (a collection transition keeps it
+   * mounted for 280ms): inputs are unbound, edges stopped, no emits.
+   */
+  active?: boolean
+}>(), { active: true, fromOwnerId: null })
 
-const emit = defineEmits<{
+const rawEmit = defineEmits<{
   /** Current frame changed (1-based; frames.length + 1 is the end frame). Not emitted for the initial frame. */
   frame: [n: number]
   /** Horizontal move to the adjacent collection. Never emitted in preview mode. */
@@ -42,6 +47,12 @@ const emit = defineEmits<{
   /** A strip card was chosen. Never emitted in preview mode. */
   jump: [collectionId: string]
 }>()
+
+/** Set once deactivate() runs; every emit below goes through this gate. */
+let inactive = false
+const emit = ((...args: Parameters<typeof rawEmit>) => {
+  if (!inactive) (rawEmit as (...a: unknown[]) => void)(...args)
+}) as typeof rawEmit
 
 export interface ViewerSlotProps {
   /** 1-based position in the sequence; `frames + 1` is the end frame. */
@@ -227,6 +238,8 @@ function onRelease() {
 let unbind: (() => void) | null = null
 function bind() {
   unbind?.()
+  unbind = null
+  if (inactive) return
   const el = stageEl.value
   if (!el) return
   unbind = bindInputs(
@@ -296,10 +309,36 @@ watch(
   },
 )
 
+/** Stop handling input right away; the instance may stay mounted for a leave transition. */
+function deactivate() {
+  if (inactive) return
+  inactive = true
+  unbind?.()
+  unbind = null
+  edges.stop()
+  infoOpen.value = false
+  resetDrag()
+}
+
+function activate() {
+  if (!inactive) return
+  inactive = false
+  if (stageEl.value) edges.attach(stageEl.value)
+  bind()
+}
+
+watch(
+  () => props.active,
+  (on) => (on ? activate() : deactivate()),
+)
+
+defineExpose({ deactivate })
+
 let unmounted = false
 onMounted(() => {
-  if (stageEl.value) edges.attach(stageEl.value)
-  if (props.fromOwnerId && props.fromOwnerId !== props.collection.owner.id) announceAuthor()
+  if (!props.active) inactive = true
+  if (stageEl.value && !inactive) edges.attach(stageEl.value)
+  if (!inactive && props.fromOwnerId && props.fromOwnerId !== props.collection.owner.id) announceAuthor()
   stackMQ?.addEventListener('change', onStack)
   reducedMQ?.addEventListener('change', onReduced)
   bind()

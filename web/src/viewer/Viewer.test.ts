@@ -543,6 +543,29 @@ describe('Viewer with default edges (Task 6)', () => {
     expect(v.find('[aria-live]').text()).toBe('')
   })
 
+  it('an inactive viewer ignores input and emits nothing', async () => {
+    const v = mountWith()
+    await v.setProps({ active: false })
+    key('ArrowDown')
+    key('ArrowRight')
+    key('i')
+    key('Escape')
+    await nextTick()
+    expect(v.emitted('frame')).toBeUndefined()
+    expect(v.emitted('navigate')).toBeUndefined()
+    expect(v.emitted('exit')).toBeUndefined()
+    expect(v.find('[role="dialog"]').exists()).toBe(false)
+    expect(v.find('[data-frame="1"]').attributes('aria-hidden')).toBeUndefined()
+  })
+
+  it('deactivate() stops input at once (the leaving instance of a transition)', async () => {
+    const v = mountWith()
+    ;(v.vm as unknown as { deactivate(): void }).deactivate()
+    key('ArrowDown')
+    await nextTick()
+    expect(v.emitted('frame')).toBeUndefined()
+  })
+
   it('renders the default end frame and its restart goes to frame 1', async () => {
     const v = mountWith({ initialFrame: 4 })
     const restart = v.findAll('[data-frame="4"] button').find((b) => b.text().includes('从头再看'))!

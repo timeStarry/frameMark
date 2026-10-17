@@ -139,8 +139,16 @@ export function useEdges(initial?: HTMLElement): Edges {
     }, ms)
   }
 
+  let listening = false
+  function listen() {
+    if (listening) return
+    listening = true
+    window.addEventListener('pointermove', onMove)
+  }
+
   function attach(next: HTMLElement) {
     detach()
+    listen() // re-arms after stop()
     el = next
     el.addEventListener('focusin', onFocusIn)
     el.addEventListener('focusout', onFocusOut)
@@ -152,7 +160,7 @@ export function useEdges(initial?: HTMLElement): Edges {
     el = null
   }
 
-  window.addEventListener('pointermove', onMove)
+  listen()
   if (initial) attach(initial)
 
   return {
@@ -165,6 +173,7 @@ export function useEdges(initial?: HTMLElement): Edges {
     attach,
     stop() {
       window.removeEventListener('pointermove', onMove)
+      listening = false
       detach()
       if (idleTimer) clearTimeout(idleTimer)
       if (flashTimer) clearTimeout(flashTimer)

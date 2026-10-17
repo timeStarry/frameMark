@@ -2,7 +2,7 @@
 // /c/:id?wall=&f= (spec §4, §6.3, §6.4): loads the collection and its
 // neighbours, keeps `f` and `wall` in the URL, moves between collections with
 // history pushes, prefetches the neighbours and owns the document title.
-import { computed, onBeforeUnmount, ref, shallowRef, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, shallowRef, watch, type ComponentPublicInstance } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import type { Collection, Neighbors } from '../api/types'
 import { getCollection, getNeighbors } from '../api/client'
@@ -150,6 +150,37 @@ function onExit() {
   else void router.push('/')
 }
 
+/**
+ * Listeners bound to the collection they were rendered for. A leaving Viewer
+ * keeps its old vnode props, so its closures carry the old id: anything it
+ * emits during its 280ms leave is dropped (backstop for `active`).
+ */
+const listeners = computed(() => {
+  const id = collection.value?.id
+  const mine = () => id === props.id
+  return {
+    onFrame: (n: number) => mine() && onFrame(n),
+    onNavigate: (dir: Dir) => mine() && onNavigate(dir),
+    onJump: (to: string) => mine() && onJump(to),
+    onExit: () => mine() && onExit(),
+  }
+})
+
+type ViewerHandle = ComponentPublicInstance & { deactivate(): void }
+const viewers = new Set<ViewerHandle>()
+function trackViewer(v: Element | ComponentPublicInstance | null) {
+  for (const x of viewers) if (!x.$el?.isConnected) viewers.delete(x)
+  if (v && 'deactivate' in v) viewers.add(v as ViewerHandle)
+}
+/** The outgoing Viewer stops handling input as its leave transition starts. */
+function onBeforeLeave(el: Element) {
+  for (const v of viewers) {
+    if (v.$el !== el) continue
+    v.deactivate()
+    viewers.delete(v)
+  }
+}
+
 function retry() {
   void load(props.id)
 }
@@ -165,20 +196,19 @@ onBeforeUnmount(() => {
 <template>
   <ErrorScreen v-if="error" :kind="error" @retry="retry" />
   <div v-else class="route">
-    <Transition :name="transitionName">
+    <Transition :name="transitionName" @before-leave="onBeforeLeave">
       <Viewer
         v-if="collection"
         :key="collection.id"
+        :ref="trackViewer"
         class="layer"
         :collection="collection"
         :neighbors="neighbors"
         :initial-frame="initialFrame"
         :from-owner-id="fromOwnerId"
+        :active="collection.id === id"
         mode="public"
-        @frame="onFrame"
-        @navigate="onNavigate"
-        @jump="onJump"
-        @exit="onExit"
+        v-bind="listeners"
       />
     </Transition>
   </div>
