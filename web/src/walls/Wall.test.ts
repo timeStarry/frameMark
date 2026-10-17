@@ -6,6 +6,7 @@ import Wall from './Wall.vue'
 import WallNav from './WallNav.vue'
 import WallStatus from './WallStatus.vue'
 import { card } from '../viewer/testFixtures'
+import { rowSpan, salon } from './layout'
 import type { Card } from '../api/types'
 
 let router: Router
@@ -115,6 +116,33 @@ describe('Wall ResizeObserver', () => {
     expect(second).not.toBe(first)
     expect(observed[observed.length - 1]).toBe(second)
     expect(unobserved.includes(first) || disconnects > 0).toBe(true)
+  })
+})
+
+describe('Wall first layout', () => {
+  it('measures the container on mount, before any ResizeObserver callback', async () => {
+    setWidth(1440)
+    // An observer that never fires: only the synchronous measure can set the width.
+    vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} })
+    const desc = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientWidth')
+    Object.defineProperty(HTMLElement.prototype, 'clientWidth', {
+      configurable: true,
+      get() { return (this as HTMLElement).classList.contains('wall') ? 1000 : 0 },
+    })
+    try {
+      const wr = mountWall()
+      await wr.vm.$nextTick()
+      const gap = 1440 * 0.04
+      const colPx = (1000 - gap * 2) / 3
+      const items = wr.findAll('.wall > .item')
+      const places = salon(cards.map((c) => ({ id: c.id, aspect: c.cover ? c.cover.width / c.cover.height : 1.5, count: c.count, featured: false })), 3)
+      items.forEach((it, i) => {
+        const want = rowSpan(places[i]!.widthPct, cards[i]!.cover ? cards[i]!.cover!.width / cards[i]!.cover!.height : 1.5, colPx, 8, 40, gap)
+        expect((it.element as HTMLElement).style.gridRowEnd).toBe(`span ${want}`)
+      })
+    } finally {
+      if (desc) Object.defineProperty(HTMLElement.prototype, 'clientWidth', desc)
+    }
   })
 })
 

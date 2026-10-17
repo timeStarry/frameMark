@@ -79,6 +79,10 @@ function onResize() {
 let ro: ResizeObserver | null = null
 onMounted(() => {
   window.addEventListener('resize', onResize)
+  // Measure now, so the first restore (next tick) scrolls against the final
+  // layout rather than the innerWidth fallback; the observer keeps it fresh.
+  const w0 = root.value?.clientWidth ?? 0
+  if (w0 > 0) containerPx.value = w0
   if (typeof ResizeObserver === 'function' && root.value) {
     ro = new ResizeObserver((entries) => {
       const w = entries[0]?.contentRect.width
