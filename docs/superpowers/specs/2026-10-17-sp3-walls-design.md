@@ -37,7 +37,7 @@ web/src/walls/
 web/src/routes/   SquareRoute.vue、UserRoute.vue、AlbumRoute.vue、Placeholder.vue
 ```
 
-`viewer/lastViewed.ts` 保持现状并被墙复用。墙代码不得被 `/c/:id` 关键路径静态引用（包体检查）。
+`viewer/lastViewed.ts` 保持现状并被墙复用。墙代码不得被 `/c/:id` 关键路径静态引用（包体检查）；唯一例外是纯函数 `walls/wallRoute.ts`（墙值 → 路由，无组件、无样式），观看器用它把「返回」指向来源墙。
 
 ## 4. 布局
 
