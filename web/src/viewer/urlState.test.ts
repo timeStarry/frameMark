@@ -31,7 +31,7 @@ describe('readState', () => {
     [{ wall: 'album:a1' }, 'album:a1'],
     [{ wall: '' }, null],
     [{ wall: null }, null],
-    [{ wall: ['user', 'square'] }, 'user'],
+    [{ wall: ['user:u1', 'square'] }, 'user:u1'],
   ])('wall from %j -> %s', (query, want) => {
     expect(readState({ query }).wall).toBe(want)
   })

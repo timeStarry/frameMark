@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
-import { getCollection, getNeighbors, originalURL } from './client'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { getAlbum, getCollection, getNeighbors, getSquare, getUser, originalURL } from './client'
 
 function mockFetch(impl: (input: string, init?: RequestInit) => Promise<Response>) {
   const fn = vi.fn(impl)
@@ -83,7 +83,7 @@ describe('getNeighbors', () => {
   })
 
   it('omits wall when null', async () => {
-    const fn = mockFetch(async () => json({ wall: 'user', prev: null, next: null, strip: [] }))
+    const fn = mockFetch(async () => json({ wall: 'user:u1', prev: null, next: null, strip: [] }))
     await getNeighbors('c1', null)
     expect(fn.mock.calls[0]![0]).toBe('/api/collections/c1/neighbors')
   })
@@ -91,6 +91,29 @@ describe('getNeighbors', () => {
   it('returns status on failure', async () => {
     mockFetch(async () => json({}, 404))
     expect(await getNeighbors('c1', 'square')).toEqual({ ok: false, status: 404 })
+  })
+})
+
+describe('wall endpoints', () => {
+  let calls: string[]
+  beforeEach(() => {
+    calls = []
+    mockFetch(async (input) => {
+      calls.push(input)
+      return json({})
+    })
+  })
+
+  it('getSquare sends the cursor encoded and omits it on the first page', async () => {
+    await getSquare(null)
+    await getSquare('a+b/c')
+    expect(calls).toEqual(['/api/square', '/api/square?cursor=a%2Bb%2Fc'])
+  })
+
+  it('getUser and getAlbum encode ids', async () => {
+    await getUser('u 1')
+    await getAlbum('a/1')
+    expect(calls).toEqual(['/api/u/u%201', '/api/albums/a%2F1'])
   })
 })
 

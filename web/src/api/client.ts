@@ -1,4 +1,4 @@
-import type { Collection, Neighbors } from './types'
+import type { AlbumPage, Collection, Neighbors, SquarePage, UserWall } from './types'
 
 /**
  * status 0: network error or unreadable body (show the retry screen).
@@ -36,10 +36,23 @@ export function getCollection(id: string, signal?: AbortSignal): Promise<Result<
   return getJSON<Collection>(`/api/collections/${encodeURIComponent(id)}`, signal)
 }
 
-/** `wall` is `square`, `user` or `album:{id}`; null lets the server pick. */
+/** `wall` is `square`, `user:{id}` or `album:{id}`; null lets the server pick. */
 export function getNeighbors(id: string, wall: string | null, signal?: AbortSignal): Promise<Result<Neighbors>> {
   const q = wall ? `?wall=${encodeURIComponent(wall)}` : ''
   return getJSON<Neighbors>(`/api/collections/${encodeURIComponent(id)}/neighbors${q}`, signal)
+}
+
+export function getSquare(cursor: string | null, signal?: AbortSignal): Promise<Result<SquarePage>> {
+  const q = cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''
+  return getJSON<SquarePage>(`/api/square${q}`, signal)
+}
+
+export function getUser(id: string, signal?: AbortSignal): Promise<Result<UserWall>> {
+  return getJSON<UserWall>(`/api/u/${encodeURIComponent(id)}`, signal)
+}
+
+export function getAlbum(id: string, signal?: AbortSignal): Promise<Result<AlbumPage>> {
+  return getJSON<AlbumPage>(`/api/albums/${encodeURIComponent(id)}`, signal)
 }
 
 /** Download link for the original. Builds a string only; never fetched. */

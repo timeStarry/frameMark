@@ -96,6 +96,7 @@ const card = (c: ReturnType<typeof collection>, shape: Shape) => ({
   owner: c.owner,
   count: c.frames.length,
   cover: media(`${c.id}-cover`, shape),
+  previews: [media(`${c.id}-p1`, shape), media(`${c.id}-p2`, 'port'), media(`${c.id}-p3`, 'land')],
 })
 
 const NEIGHBORS: Record<string, unknown> = {

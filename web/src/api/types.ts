@@ -94,6 +94,47 @@ export interface Card {
   owner: OwnerRef
   count: number
   cover: Media | null
+  /** Up to five preview images; never null. */
+  previews: Media[]
+}
+
+/** GET /api/square. */
+export interface SquarePage {
+  featured: Card[]
+  items: Card[]
+  nextCursor: string | null
+}
+
+export interface Profile {
+  id: string
+  name: string
+  bio: string
+  wallLayout: 'salon' | 'grid'
+}
+
+/** An album on a user wall. Albums carry no previews. */
+export interface AlbumCard {
+  id: string
+  title: string
+  intro: string
+  count: number
+  cover: Media | null
+}
+
+/** GET /api/u/{id}. */
+export interface UserWall {
+  profile: Profile
+  collections: Card[]
+  albums: AlbumCard[]
+}
+
+/** GET /api/albums/{id}. */
+export interface AlbumPage {
+  id: string
+  title: string
+  intro: string
+  owner: OwnerRef
+  members: Card[]
 }
 
 export interface Neighbors {

@@ -71,8 +71,16 @@ export function collection(frames: Frame[], over: Partial<Collection> = {}): Col
   }
 }
 
-export function card(id: string, title: string, ownerName = '阿树', ownerId = 'u1'): Card {
-  return { id, title, owner: { id: ownerId, name: ownerName }, count: 4, cover: media(`cover-${id}`) }
+export function card(id: string, title: string, ownerName = '阿树', ownerId = 'u1', over: Partial<Card> = {}): Card {
+  return {
+    id,
+    title,
+    owner: { id: ownerId, name: ownerName },
+    count: 4,
+    cover: media(`cover-${id}`),
+    previews: [media(`p-${id}-1`), media(`p-${id}-2`), media(`p-${id}-3`)],
+    ...over,
+  }
 }
 
 export function neighbors(over: Partial<Neighbors> = {}): Neighbors {

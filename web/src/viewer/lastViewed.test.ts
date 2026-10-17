@@ -23,7 +23,7 @@ describe('lastViewed', () => {
     remember('album:a1', 'c2')
     expect(recall('square')).toBe('c1')
     expect(recall('album:a1')).toBe('c2')
-    expect(recall('user')).toBeNull()
+    expect(recall('user:u1')).toBeNull()
   })
 
   it('does not throw when sessionStorage throws', () => {
