@@ -36,11 +36,43 @@ describe('salon', () => {
     )
     expect(ps[3]!.column).toBe(heights.indexOf(Math.min(...heights)))
   })
-  it('uses full width and center on one column only when width is 100', () => {
-    for (const p of salon(items, 1)) expect(p.column).toBe(0)
+  it('centers a featured item at full width on 1 and 3 columns', () => {
+    for (const cols of [1, 3]) {
+      const [p] = salon([item('f', 0.67, 3, true)], cols)
+      expect(p!.widthPct).toBe(100)
+      expect(p!.align).toBe('center')
+    }
   })
-  it('treats invalid aspect as 3:2', () => {
-    expect(() => salon([item('x', 0), item('y', NaN)], 2)).not.toThrow()
+  it('takes align from the hash when width is under 100', () => {
+    const ALIGNS = ['start', 'center', 'end']
+    for (const cols of [1, 3]) {
+      const ps = salon(items, cols)
+      const narrow = ps.filter((p) => p.widthPct < 100)
+      expect(narrow.length).toBeGreaterThan(0)
+      ps.forEach((p, i) => {
+        expect(ALIGNS).toContain(p.align)
+        if (p.widthPct < 100) expect(p.align).toBe(ALIGNS[(hash(items[i]!.id) >>> 10) % 3])
+      })
+      // more than one align among narrow items, so center is not forced by width
+      expect(new Set(narrow.map((p) => p.align)).size).toBeGreaterThan(1)
+    }
+  })
+  it('always centers items at width 100', () => {
+    const mixed = [...items, item('f1', 1.5, 4, true), item('f2', 3, 20, true)]
+    for (const cols of [1, 2, 3]) {
+      const full = salon(mixed, cols).filter((p) => p.widthPct === 100)
+      expect(full.length).toBeGreaterThan(0)
+      for (const p of full) expect(p.align).toBe('center')
+    }
+  })
+  // Number.isFinite rejects Infinity, so it is treated as invalid like 0, NaN and -1
+  // (falls back to 3:2) rather than as a panorama.
+  it.each([0, NaN, -1, Infinity])('treats aspect %s as 3:2, including the column height it adds', (bad) => {
+    const run = (a: number) => salon([item('x', a), item('ref', 1.5), item('next', 1.5), item('last', 1)], 2)
+    const got = run(bad)
+    const want = run(1.5)
+    expect(got[0]).toEqual(want[0])
+    expect(got.slice(1)).toEqual(want.slice(1))
   })
 })
 
