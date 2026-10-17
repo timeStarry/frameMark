@@ -1,5 +1,5 @@
-// Fails when the /c/:id route's critical path (entry + collection chunk and
-// their static imports, JS and CSS) exceeds 80 KB gzipped.
+// Fails when the critical path of /c/:id or / (entry + route chunk and their
+// static imports, JS and CSS) exceeds 80 KB gzipped. Each route is measured separately.
 import { readFileSync } from 'node:fs'
 import { gzipSync } from 'node:zlib'
 import { fileURLToPath } from 'node:url'
@@ -18,34 +18,50 @@ try {
 }
 
 const entryKey = Object.keys(manifest).find((k) => manifest[k].isEntry)
-const routeKey = 'src/routes/CollectionRoute.vue'
-if (!entryKey || !manifest[routeKey]) {
-  console.error(`manifest 中缺少入口或 ${routeKey}`)
+if (!entryKey) {
+  console.error('manifest 中缺少入口')
   process.exit(1)
 }
 
-const files = new Set()
-const seen = new Set()
-function walk(key) {
-  if (seen.has(key)) return
-  seen.add(key)
-  const chunk = manifest[key]
-  if (!chunk) return
-  files.add(chunk.file)
-  for (const css of chunk.css ?? []) files.add(css)
-  for (const dep of chunk.imports ?? []) walk(dep)
+/** Gzipped size of the entry plus one route chunk and their static imports. */
+function measure(routeKey) {
+  if (!manifest[routeKey]) {
+    console.error(`manifest 中缺少 ${routeKey}`)
+    process.exit(1)
+  }
+  const files = new Set()
+  const seen = new Set()
+  function walk(key) {
+    if (seen.has(key)) return
+    seen.add(key)
+    const chunk = manifest[key]
+    if (!chunk) return
+    files.add(chunk.file)
+    for (const css of chunk.css ?? []) files.add(css)
+    for (const dep of chunk.imports ?? []) walk(dep)
+  }
+  walk(entryKey)
+  walk(routeKey)
+  let total = 0
+  for (const file of files) {
+    const size = gzipSync(readFileSync(resolve(dist, file))).length
+    total += size
+    console.log(`${(size / 1024).toFixed(2).padStart(8)} KB  ${file}`)
+  }
+  return total
 }
-walk(entryKey)
-walk(routeKey)
 
-let total = 0
-for (const file of files) {
-  const size = gzipSync(readFileSync(resolve(dist, file))).length
-  total += size
-  console.log(`${(size / 1024).toFixed(2).padStart(8)} KB  ${file}`)
+let failed = false
+for (const [path, routeKey] of [
+  ['/c/:id', 'src/routes/CollectionRoute.vue'],
+  ['/', 'src/routes/SquareRoute.vue'],
+]) {
+  console.log(`${path} (${routeKey})`)
+  const total = measure(routeKey)
+  console.log(`${(total / 1024).toFixed(2).padStart(8)} KB  ${path} total (limit ${LIMIT / 1024} KB)`)
+  if (total > LIMIT) {
+    console.error(`超出 ${path} 首屏体积预算。`)
+    failed = true
+  }
 }
-console.log(`${(total / 1024).toFixed(2).padStart(8)} KB  total (limit ${LIMIT / 1024} KB)`)
-if (total > LIMIT) {
-  console.error('超出 /c/:id 首屏体积预算。')
-  process.exit(1)
-}
+if (failed) process.exit(1)

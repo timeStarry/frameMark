@@ -114,21 +114,90 @@ export const MANY = collection('many', '十帧', SHU, Array.from({ length: 10 },
 NEIGHBORS.many = { wall: 'square', prev: null, next: null, strip: [] }
 const COLLECTIONS: Record<string, unknown> = { main: MAIN, next: NEXT, solo: SOLO, broken: BROKEN, long: LONG, many: MANY }
 
+// ---- Walls (SP3) ----
+const SHAPES: Shape[] = ['land', 'port', 'pano', 'port', 'land']
+/** A wall-only card: never clicked, so it needs no collection fixture. */
+const dummy = (id: string, owner: { id: string; name: string }, i: number, count = 3 + (i % 9)) =>
+  ({ ...card(collection(id, `墙 ${id}`, owner, []), SHAPES[i % SHAPES.length]!), count })
+
+/** Card whose cover images 404 (cover id `missing`). */
+export const BROKEN_CARD = { ...card(BROKEN, 'land'), cover: media('missing', 'land') }
+
+/**
+ * Square page 1: 2 featured + 24 items (`broken` at index 3), nextCursor p2.
+ * Page 2: 10 items; its 4th is `main`, the 30th card on the wall.
+ */
+export const SQUARE_P1 = {
+  featured: [dummy('f1', LIN, 0), dummy('f2', SHU, 1)],
+  items: Array.from({ length: 24 }, (_, i) => (i === 3 ? BROKEN_CARD : dummy(`q${i + 1}`, i % 2 ? SHU : LIN, i + 2))),
+  nextCursor: 'p2' as string | null,
+}
+export const SQUARE_P2 = {
+  featured: [],
+  items: Array.from({ length: 10 }, (_, i) => (i === 3 ? card(MAIN, 'land') : dummy(`r${i + 1}`, i % 2 ? SHU : LIN, i + 7))),
+  nextCursor: null,
+}
+/** Wall order on `/` once both pages are in. */
+export const SQUARE_ORDER = [...SQUARE_P1.featured, ...SQUARE_P1.items, ...SQUARE_P2.items].map((c) => c.id)
+
+/** u1: salon; `main` is the second card. */
+export const USER_U1 = {
+  profile: { id: 'u1', name: '阿树', bio: '海边与礁石。', wallLayout: 'salon' },
+  collections: [card(SOLO, 'land'), card(MAIN, 'land'), ...Array.from({ length: 6 }, (_, i) => dummy(`t${i + 1}`, SHU, i))],
+  albums: [{ id: 'al1', title: '海岸', intro: '', count: 3, cover: media('al1-cover', 'land') }],
+}
+/** u2: grid. */
+export const USER_U2 = {
+  profile: { id: 'u2', name: '林', bio: '', wallLayout: 'grid' },
+  collections: [card(NEXT, 'port'), ...Array.from({ length: 9 }, (_, i) => dummy(`g${i + 1}`, LIN, i))],
+  albums: [],
+}
+export const ALBUM_AL1 = {
+  id: 'al1',
+  title: '海岸',
+  intro: '三组海边的照片。',
+  owner: SHU,
+  members: [card(MAIN, 'land'), card(NEXT, 'port'), card(SOLO, 'land'), ...Array.from({ length: 4 }, (_, i) => dummy(`m-al${i + 1}`, SHU, i))],
+}
+
+/** The wall the neighbors API reports: `user` / `user:*` become the owner's wall. */
+function echoWall(requested: string | null, id: string): string {
+  if (requested === null) return 'square'
+  if (requested === 'user' || requested.startsWith('user:')) {
+    const owner = (COLLECTIONS[id] as { owner?: { id: string } } | undefined)?.owner?.id
+    return owner ? `user:${owner}` : requested
+  }
+  return requested
+}
+
 export interface Mock {
   requests: string[]
 }
 
-export async function mockAPI(page: Page, opts: { mediaDelayMs?: number } = {}): Promise<Mock> {
+export async function mockAPI(page: Page, opts: { mediaDelayMs?: number; squareDelayMs?: number } = {}): Promise<Mock> {
   const mock: Mock = { requests: [] }
   page.on('request', (r) => mock.requests.push(r.url()))
 
   await page.route('**/api/**', async (route: Route) => {
     const url = new URL(route.request().url())
     const m = url.pathname.match(/^\/api\/collections\/([^/]+)(\/neighbors)?$/)
+    const json = (body: unknown) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) })
     if (m) {
-      const body = m[2] ? NEIGHBORS[m[1]!] : COLLECTIONS[m[1]!]
-      if (body) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) })
+      const nb = NEIGHBORS[m[1]!] as Record<string, unknown> | undefined
+      const body = m[2] ? nb && { ...nb, wall: echoWall(url.searchParams.get('wall'), m[1]!) } : COLLECTIONS[m[1]!]
+      if (body) return json(body)
     }
+    if (url.pathname === '/api/square') {
+      const cursor = url.searchParams.get('cursor')
+      if (!cursor) return json(SQUARE_P1)
+      if (cursor === 'p2') {
+        if (opts.squareDelayMs) await new Promise((r) => setTimeout(r, opts.squareDelayMs))
+        return json(SQUARE_P2)
+      }
+    }
+    if (url.pathname === '/api/u/u1') return json(USER_U1)
+    if (url.pathname === '/api/u/u2') return json(USER_U2)
+    if (url.pathname === '/api/albums/al1') return json(ALBUM_AL1)
     if (url.pathname.includes('/original')) return route.fulfill({ status: 200, contentType: 'image/jpeg', body: readFileSync(`${imgDir}land.jpg`) })
     return route.fulfill({ status: 404, contentType: 'application/json', body: '{"error":"未找到。"}' })
   })
