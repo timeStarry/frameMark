@@ -47,7 +47,7 @@ web/src/routes/   SquareRoute.vue、UserRoute.vue、AlbumRoute.vue、Placeholder
 - 依次放入当前最短的一栏（masonry），保持大致的时间顺序。DOM 顺序就是输入顺序，Tab 顺序与之一致。
 - 卡片宽度占栏宽的比例 w ∈ [0.70, 1.00]，由确定性哈希（合集 id 的 FNV-1a）决定基准值，再按封面比例和张数调整：竖图 −0.08，全景（宽高比 > 2）+0.10，张数 ≥ 12 时 +0.05，精选取 1.00，结果夹到区间内。剩余宽度决定水平偏移：靠左、居中或靠右，同样由哈希决定。单栏时 w 下限提高到 0.85。
 - 高度由封面比例决定（无封面按 3:2）；全景封面的显示比例夹到最多 2.4:1（`object-fit: cover`）。
-- 实现：`layout.ts` 只输出每张卡片的 `{ column, widthPct, align }`。栏用 flex 列，宽度用百分比，所以响应式不必重新测量；栏数随断点变化时（`matchMedia`）重新计算。
+- 实现：`layout.ts` 只输出每张卡片的 `{ column, widthPct, align }`。卡片按输入顺序作为同一个 CSS grid 的直接子元素，用 `grid-column` 指定栏、按估算高度 `grid-row` 跨行，从而形成错列，同时 DOM 顺序与 Tab 顺序保持输入顺序（不按栏分组渲染）。栏数随断点变化时重新计算。
 
 ### 4.2 均匀网格（grid，主页可选）
 
