@@ -146,6 +146,31 @@ describe('InfoLayer', () => {
     expect(document.activeElement).toBe(trigger)
   })
 
+  it('a press on the drawer close button never captures the pointer (click stays on the button)', async () => {
+    const v = render(col.frames[0]!, 390)
+    const head = v.get('header').element as HTMLElement
+    const cap = vi.fn()
+    head.setPointerCapture = cap
+    const btn = v.get('button[aria-label="关闭"]').element
+    btn.dispatchEvent(new PointerEvent('pointerdown', { clientY: 400, pointerId: 1, bubbles: true }))
+    btn.dispatchEvent(new PointerEvent('pointermove', { clientY: 450, pointerId: 1, bubbles: true }))
+    btn.dispatchEvent(new PointerEvent('pointerup', { clientY: 450, pointerId: 1, bubbles: true }))
+    expect(cap).not.toHaveBeenCalled()
+    await v.get('button[aria-label="关闭"]').trigger('click')
+    expect(v.emitted('close')).toHaveLength(1)
+  })
+
+  it('a plain press on the drawer header does not capture until it moves', () => {
+    const v = render(col.frames[0]!, 390)
+    const head = v.get('header').element as HTMLElement
+    const cap = vi.fn()
+    head.setPointerCapture = cap
+    head.dispatchEvent(new PointerEvent('pointerdown', { clientY: 400, pointerId: 1, bubbles: true }))
+    expect(cap).not.toHaveBeenCalled()
+    head.dispatchEvent(new PointerEvent('pointermove', { clientY: 410, pointerId: 1, bubbles: true }))
+    expect(cap).toHaveBeenCalledTimes(1)
+  })
+
   it('emits close from the close button', async () => {
     const v = render(col.frames[0]!)
     await v.get('button[aria-label="关闭"]').trigger('click')

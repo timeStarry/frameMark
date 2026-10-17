@@ -59,22 +59,33 @@ watch(
   },
 )
 
-// Drawer: drag down on the handle or header to close.
+// Drawer: drag down on the handle or header to close. Presses on the close
+// button (or any control) never start a drag, and capture is taken only once
+// the pointer has moved: a capturing parent retargets the child's click.
+const CAPTURE_PX = 4
 let dragStart: number | null = null
+let captured = false
 const dragOffset = ref(0)
 function onDragStart(e: PointerEvent) {
   if (wide.value) return
+  if (e.target instanceof Element && e.target.closest('button, a')) return
   dragStart = e.clientY
-  ;(e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId)
+  captured = false
 }
 function onDragMove(e: PointerEvent) {
   if (dragStart === null) return
-  dragOffset.value = Math.max(0, e.clientY - dragStart)
+  const dy = e.clientY - dragStart
+  if (!captured && Math.abs(dy) > CAPTURE_PX) {
+    captured = true
+    ;(e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId)
+  }
+  dragOffset.value = Math.max(0, dy)
 }
 function onDragEnd() {
   if (dragStart === null) return
   const close = dragOffset.value > 80
   dragStart = null
+  captured = false
   dragOffset.value = 0
   if (close) emit('close')
 }

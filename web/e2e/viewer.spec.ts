@@ -196,6 +196,8 @@ test.describe('info layer', () => {
     const d = (await dialog.boundingBox())!
     expect(d.height).toBeLessThanOrEqual(780 * 0.6 + 1)
     await screen(page, 'info-drawer')
+    await dialog.getByRole('button', { name: '关闭' }).click()
+    await expect(page.getByRole('dialog')).toHaveCount(0)
   })
 })
 
