@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { columnsFor, hash, salon, sweepIndex, type LayoutItem } from './layout'
+import { columnsFor, hash, rowSpan, salon, sweepIndex, type LayoutItem } from './layout'
 
 const item = (id: string, aspect = 1.5, count = 4, featured = false): LayoutItem => ({ id, aspect, count, featured })
 
@@ -57,5 +57,16 @@ describe('sweepIndex', () => {
     expect(sweepIndex(50, 300, 0)).toBe(-1)
     expect(sweepIndex(250, 300, 1)).toBe(0)
     expect(sweepIndex(10, 0, 3)).toBe(0)
+  })
+})
+
+describe('rowSpan', () => {
+  it('converts the estimated card height (image + caption + row gap) to 8px rows', () => {
+    expect(rowSpan(100, 1.5, 300)).toBe(Math.ceil((200 + 40 + 24) / 8))
+    expect(rowSpan(100, 1.5, 300, 8, 40, 0)).toBe(30)
+    expect(rowSpan(50, 1, 400, 8, 40, 64)).toBe(Math.ceil((200 + 40 + 64) / 8))
+  })
+  it('clamps panoramas to 2.4:1', () => {
+    expect(rowSpan(100, 5, 240, 8, 0, 0)).toBe(rowSpan(100, 2.4, 240, 8, 0, 0))
   })
 })

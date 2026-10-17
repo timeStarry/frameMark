@@ -44,3 +44,13 @@ export function sweepIndex(x: number, width: number, n: number): number {
   if (width <= 0) return 0
   return Math.min(n - 1, Math.max(0, Math.floor((x / width) * n)))
 }
+
+/**
+ * Grid rows (of `unit` px) a salon card spans: its image height at `widthPct`
+ * of the column, plus the caption line and the row gap below it. The gap is
+ * folded in here so the grid container itself uses `row-gap: 0`.
+ */
+export function rowSpan(widthPct: number, aspect: number, columnPx: number, unit = 8, captionPx = 40, gap = 24): number {
+  const a = Number.isFinite(aspect) && aspect > 0 ? aspect : 1.5
+  return Math.max(1, Math.ceil(((columnPx * widthPct) / 100 / Math.min(a, MAX_PANO) + captionPx + gap) / unit))
+}
