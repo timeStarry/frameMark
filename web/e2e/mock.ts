@@ -74,7 +74,8 @@ const LIN = { id: 'u2', name: '林' }
 
 /** Main collection: landscape (full EXIF + histogram), portrait, panorama, pair, text, bare photo. */
 export const MAIN = collection('main', '海边', SHU, [
-  full(photo('a1', 'land', { exif: EXIF, histogram: hist(), downloadable: true })),
+  // Location stuffed in on purpose: the viewer must never render it (privacy test).
+  full(photo('a1', 'land', { exif: { ...EXIF, latitude: 31.2304, longitude: 121.4737 }, histogram: hist(), downloadable: true })),
   full(photo('a2', 'port', { exif: { iso: 400 } })),
   full(photo('a3', 'pano')),
   { layout: 'pair', matteRatio: null, text: null, photos: [photo('a4', 'port', { exif: EXIF }), photo('a5', 'port')] },

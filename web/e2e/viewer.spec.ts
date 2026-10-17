@@ -74,13 +74,29 @@ test('keyboard-only: page through, open info, next collection, back', async ({ p
   await page.keyboard.press('ArrowRight')
   await expect(page).toHaveURL(/\/c\/next/)
   await expect(page).toHaveTitle('山中 · 林 — Markr')
-  // Tab reaches a visible edge control with a focus ring.
+  // Every Tab stop on an edge is visible, shows its edge and has a focus ring (spec §9, at every step).
   // Safari only tabs to buttons and links with Option+Tab by default.
-  await page.keyboard.press(browserName === 'webkit' ? 'Alt+Tab' : 'Tab')
-  const focused = page.locator(':focus')
-  await expect(focused).toBeVisible()
-  const outline = await focused.evaluate((el) => getComputedStyle(el).outlineStyle)
-  expect(outline).not.toBe('none')
+  const seen: string[] = []
+  for (let i = 0; i < 12; i++) {
+    await page.keyboard.press(browserName === 'webkit' ? 'Alt+Tab' : 'Tab')
+    const info = await page.evaluate(() => {
+      const el = document.activeElement as HTMLElement | null
+      const edge = el?.closest('[data-edge]')
+      if (!el || !edge) return null
+      return {
+        label: el.getAttribute('aria-label') ?? el.textContent?.trim() ?? '',
+        shown: edge.classList.contains('shown'),
+        outline: getComputedStyle(el).outlineStyle,
+      }
+    })
+    if (!info) break
+    if (seen.includes(info.label)) break
+    seen.push(info.label)
+    await expect(page.locator(':focus')).toBeVisible()
+    expect(info.shown, info.label).toBe(true)
+    expect(info.outline, info.label).not.toBe('none')
+  }
+  expect(seen.length).toBeGreaterThanOrEqual(3)
   await page.keyboard.press('Escape')
   await expect(page).toHaveURL(/\/$/)
 })
@@ -284,8 +300,26 @@ test('slow media stays black, a failed image shows a notice and paging still wor
   await mockAPI(page, { mediaDelayMs: 1500 })
   await page.goto('/c/broken')
   await expect(current(page)).toHaveAttribute('data-frame', '1')
-  const bg = await page.locator('.viewer').evaluate((el) => getComputedStyle(el).backgroundColor)
-  expect(bg).toBe('rgb(0, 0, 0)')
+  // While the image is in flight: a real <img>, not loaded yet, on black, with no placeholder or skeleton.
+  await page.waitForTimeout(300)
+  const state = await current(page).evaluate((slot) => {
+    const img = slot.querySelector('img')
+    const black = (el: Element | null) => {
+      for (let e = el; e; e = e.parentElement) {
+        const c = getComputedStyle(e).backgroundColor
+        if (c !== 'rgba(0, 0, 0, 0)' && c !== 'transparent') return c === 'rgb(0, 0, 0)'
+      }
+      return false
+    }
+    return {
+      img: !!img,
+      complete: img?.complete ?? null,
+      natural: img?.naturalWidth ?? null,
+      black: black(img),
+      fillers: slot.querySelectorAll('.placeholder, [class*="skeleton"], [class*="spinner"], [role="progressbar"]').length,
+    }
+  })
+  expect(state).toEqual({ img: true, complete: false, natural: 0, black: true, fillers: 0 })
   await expect(current(page).getByText('图片暂时无法加载')).toBeVisible({ timeout: 5000 })
   await page.keyboard.press('ArrowDown')
   await waitFrame(page, 2)
