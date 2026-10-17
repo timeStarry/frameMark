@@ -17,7 +17,7 @@ afterEach(() => teardown())
 describe('AlbumRoute', () => {
   it('shows a missing page on 404', async () => {
     const { w } = await open('/a/nope')
-    expect(w.text()).toContain('这组作品不存在或已不再公开')
+    expect(w.text()).toContain('这组照片不存在或已不再公开')
     expect(w.find('a[href="/"]').text()).toBe('回首页')
   })
 

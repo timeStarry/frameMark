@@ -30,7 +30,7 @@ const { state, rootEl, retry } = useWallPage<AlbumPage, AlbumPage>({
 </script>
 
 <template>
-  <WallNotFound v-if="state === 'missing'" message="这组作品不存在或已不再公开" />
+  <WallNotFound v-if="state === 'missing'" message="这组照片不存在或已不再公开" />
   <template v-else>
     <WallNav />
     <main ref="rootEl" class="wall-page" aria-labelledby="album-title">
