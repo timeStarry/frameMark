@@ -569,6 +569,22 @@ describe('Viewer with default edges (Task 6)', () => {
     expect(v.emitted('frame')).toBeUndefined()
   })
 
+  it('closing info on deactivate() does not restore focus into the leaving viewer (N2)', async () => {
+    const v = mountWith()
+    const opener = v.get<HTMLElement>('button[aria-haspopup="menu"]').element
+    opener.focus()
+    key('i')
+    await nextTick()
+    await nextTick()
+    expect(document.activeElement?.getAttribute('role')).toBe('dialog')
+    ;(v.vm as unknown as { deactivate(): void }).deactivate()
+    await nextTick()
+    await nextTick()
+    await flushPromises()
+    expect(v.find('[role="dialog"]').exists()).toBe(false)
+    expect(v.element.contains(document.activeElement)).toBe(false)
+  })
+
   it('a touch swipe up from the bottom edge pulls the drawer with the finger, then opens info', async () => {
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 })
     Object.defineProperty(window, 'innerHeight', { configurable: true, value: 800 })

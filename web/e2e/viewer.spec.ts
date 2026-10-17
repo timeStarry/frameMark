@@ -428,6 +428,40 @@ test('cross-author switch shows the new author and announces it', async ({ page 
   await expect(page.locator('[aria-live="polite"]').filter({ hasText: '林 的「山中」' })).toHaveCount(1)
 })
 
+test('collection switch: the next collection slides in from the right and .route never scrolls (N1)', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await mockAPI(page)
+  await page.goto('/c/main?wall=square')
+  await waitFrame(page, 1)
+  // Let the neighbour prefetch land so the next collection mounts at once.
+  await page.waitForTimeout(300)
+  const arm = page.evaluate(
+    () =>
+      new Promise<{ scroll: number[]; x: number[] }>((resolve) => {
+        const route = document.querySelector<HTMLElement>('.route')!
+        const first = document.querySelector('.viewer')
+        const scroll: number[] = []
+        const x: number[] = []
+        const t0 = performance.now()
+        const tick = () => {
+          scroll.push(route.scrollLeft)
+          const incoming = [...route.querySelectorAll('.viewer')].find((v) => v !== first)
+          if (incoming) x.push(incoming.getBoundingClientRect().left)
+          if (performance.now() - t0 < 400) requestAnimationFrame(tick)
+          else resolve({ scroll, x })
+        }
+        requestAnimationFrame(tick)
+      }),
+  )
+  await page.keyboard.press('ArrowRight')
+  const { scroll, x } = await arm
+  expect(scroll.length).toBeGreaterThan(5)
+  expect(scroll.every((s) => s === 0), `route scrollLeft samples: ${scroll.join(',')}`).toBe(true)
+  expect(x.length).toBeGreaterThan(2)
+  for (let i = 1; i < x.length; i++) expect(x[i]!, `incoming x samples: ${x.join(',')}`).toBeLessThanOrEqual(x[i - 1]!)
+  await expect(page).toHaveURL(/\/c\/next/)
+})
+
 test('collection switch: the outgoing viewer ignores keys during its leave transition', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 })
   await mockAPI(page)

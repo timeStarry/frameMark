@@ -9,7 +9,7 @@ import { originalURL } from '../api/client'
 import { exifTable } from './format'
 import Histogram from './Histogram.vue'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   open: boolean
   collection: Collection
   frame: Frame | null
@@ -20,11 +20,14 @@ const props = defineProps<{
    * and closed, the drawer is shown rising with the finger (spec §5.3).
    */
   pull?: number
-}>()
+  /**
+   * False once the owning viewer is deactivated (a leaving instance): closing
+   * then does not hand focus back to the opener inside it (N2).
+   */
+  active?: boolean
+}>(), { active: true })
 
 const emit = defineEmits<{ close: [] }>()
-
-
 
 const wide = ref(typeof window !== 'undefined' && window.innerWidth >= 1024)
 const onResize = () => {
@@ -59,7 +62,7 @@ watch(
       const back = opener
       opener = null
       await nextTick()
-      if (back && back.isConnected) back.focus()
+      if (props.active && back && back.isConnected) back.focus()
     }
   },
 )

@@ -9,9 +9,15 @@ defineProps<{ collectionId: string; strip: Card[] }>()
 const emit = defineEmits<{ jump: [id: string] }>()
 
 const list = ref<HTMLElement | null>(null)
-// A long strip on a narrow screen starts scrolled to the current card.
+// A long strip on a narrow screen starts scrolled to the current card. Only the
+// strip scrolls: scrollIntoView would also scroll .route while the new viewer
+// is still sliding in at translateX(100%), breaking the slide (N1).
 onMounted(() => {
-  list.value?.querySelector<HTMLElement>('[aria-current="true"]')?.scrollIntoView?.({ block: 'nearest', inline: 'center' })
+  const el = list.value
+  const card = el?.querySelector<HTMLElement>('[aria-current="true"]')
+  if (!el || !card) return
+  // The browser clamps to [0, scrollWidth - clientWidth].
+  el.scrollLeft = card.offsetLeft - (el.clientWidth - card.offsetWidth) / 2
 })
 </script>
 

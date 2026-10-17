@@ -370,18 +370,36 @@ describe('EdgeBottom', () => {
     one.unmount()
   })
 
-  it('scrolls the current card into view on mount', () => {
-    const spy = vi.fn()
-    const orig = HTMLElement.prototype.scrollIntoView
-    HTMLElement.prototype.scrollIntoView = spy
+  it('centres the current card by scrolling only the strip on mount (never scrollIntoView)', () => {
+    // scrollIntoView would also scroll the viewer's ancestors (.route) mid-slide (N1).
+    // jsdom has no scrollIntoView: define one so the spy can see any call.
+    const had = 'scrollIntoView' in Element.prototype
+    if (!had) Element.prototype.scrollIntoView = () => {}
+    const spy = vi.spyOn(Element.prototype, 'scrollIntoView')
+    const left = vi.spyOn(HTMLElement.prototype, 'offsetLeft', 'get').mockImplementation(function (this: HTMLElement) {
+      return this.getAttribute('aria-current') === 'true' ? 500 : 0
+    })
+    const width = vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(72)
+    // jsdom reports clientWidth 0 from a prototype getter vi.spyOn cannot see; shadow it on HTMLElement.
+    Object.defineProperty(HTMLElement.prototype, 'clientWidth', {
+      configurable: true,
+      get(this: HTMLElement) {
+        return this.classList.contains('strip') ? 300 : 0
+      },
+    })
     try {
       const strip = Array.from({ length: 8 }, (_, i) => card(`k${i}`, `卡${i}`))
       const w = mount(EdgeBottom, { props: { collectionId: 'k6', strip }, attachTo: document.body })
-      expect(spy).toHaveBeenCalledTimes(1)
-      expect(spy.mock.contexts[0]).toBe(w.find('[aria-current="true"]').element)
+      // 500 - (300 - 72) / 2
+      expect(w.get('.strip').element.scrollLeft).toBe(386)
+      expect(spy).not.toHaveBeenCalled()
       w.unmount()
     } finally {
-      HTMLElement.prototype.scrollIntoView = orig
+      spy.mockRestore()
+      if (!had) delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView
+      left.mockRestore()
+      width.mockRestore()
+      delete (HTMLElement.prototype as { clientWidth?: number }).clientWidth
     }
   })
 

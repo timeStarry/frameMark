@@ -53,6 +53,8 @@ const rawEmit = defineEmits<{
 
 /** Set once deactivate() runs; every emit below goes through this gate. */
 let inactive = false
+/** Reactive mirror of `!inactive` for the default info layer (N2). */
+const live = ref(true)
 const emit = ((...args: Parameters<typeof rawEmit>) => {
   if (!inactive) (rawEmit as (...a: unknown[]) => void)(...args)
 }) as typeof rawEmit
@@ -352,6 +354,7 @@ watch(
 function deactivate() {
   if (inactive) return
   inactive = true
+  live.value = false
   unbind?.()
   unbind = null
   edges.stop()
@@ -363,6 +366,7 @@ function deactivate() {
 function activate() {
   if (!inactive) return
   inactive = false
+  live.value = true
   if (stageEl.value) edges.attach(stageEl.value)
   bind()
 }
@@ -376,7 +380,10 @@ defineExpose({ deactivate })
 
 let unmounted = false
 onMounted(() => {
-  if (!props.active) inactive = true
+  if (!props.active) {
+    inactive = true
+    live.value = false
+  }
   if (stageEl.value && !inactive) edges.attach(stageEl.value)
   if (!inactive && props.focusOnMount) stageEl.value?.focus({ preventScroll: true })
   if (!inactive && props.fromOwnerId && props.fromOwnerId !== props.collection.owner.id) announceAuthor()
@@ -505,6 +512,7 @@ const sequence = computed(() => Array.from({ length: total.value }, (_, i) => i 
       <slot name="info" v-bind="slotProps">
         <InfoLayer
           :open="infoOpen"
+          :active="live"
           :pull="sheetPull"
           :collection="collection"
           :frame="currentFrame"

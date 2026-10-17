@@ -3,6 +3,7 @@ import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { defineComponent, h } from 'vue'
 import { createMemoryHistory, RouterView, type HistoryState, type Router } from 'vue-router'
 import { createAppRouter } from '../router'
+import Viewer from '../viewer/Viewer.vue'
 import { collectionCache } from './collectionCache'
 import { card, collection, fullFrame, neighbors, photo } from '../viewer/testFixtures'
 import type { Collection, Neighbors } from '../api/types'
@@ -265,5 +266,41 @@ describe('CollectionRoute', () => {
     expect(router.currentRoute.value.path).toBe('/c/b')
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
     expect(go).toHaveBeenCalledWith(-2)
+  })
+
+  it('drops frame and navigate emits from a leaving Viewer of another collection (I2 backstop)', async () => {
+    serve(A, nbA)
+    serve(B, neighbors({ wall: 'square', prev: card('a', '海边'), next: card('z', '城里') }))
+    serve(Z, neighbors({ wall: 'square' }))
+    // A real Transition, with the leave never finishing: the old Viewer stays mounted.
+    vi.stubGlobal('requestAnimationFrame', () => 0)
+    const router = createAppRouter(createMemoryHistory())
+    await router.push('/c/a?wall=square')
+    await router.isReady()
+    w = mount(defineComponent({ render: () => h(RouterView) }), {
+      global: { plugins: [router], stubs: { transition: false } },
+      attachTo: document.body,
+    })
+    await flushPromises()
+    await flushPromises()
+    // Taken before the switch: a leaving vnode is no longer in the wrapper's tree.
+    const old = w.findComponent(Viewer)
+    expect((old.props('collection') as Collection).id).toBe('a')
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }))
+    await flushPromises()
+    await flushPromises()
+    expect(router.currentRoute.value.path).toBe('/c/b')
+    expect(document.querySelectorAll('.viewer')).toHaveLength(2)
+    // Vue unmounts the leaving instance at once (only its element waits for the
+    // leave), so call the listeners bound to its vnode: what any emit would reach.
+    const bound = old.vm.$.vnode.props as Record<string, (...a: unknown[]) => void>
+    // One at a time: overlapping navigations would cancel each other and hide a leak.
+    bound.onFrame!(2)
+    await flushPromises()
+    expect(router.currentRoute.value.query.f).toBeUndefined()
+    bound.onNavigate!(1)
+    await flushPromises()
+    await flushPromises()
+    expect(router.currentRoute.value.path).toBe('/c/b')
   })
 })
