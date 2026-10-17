@@ -1,9 +1,9 @@
 <script setup lang="ts">
 // One wall card (spec §5): cover, mouse sweep through previews, touch dots,
 // and a single caption line. The whole card is a real link.
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import type { Card } from '../api/types'
+import type { Card, Tier } from '../api/types'
 import Cover from './Cover.vue'
 import { sweepIndex } from './layout'
 
@@ -35,6 +35,23 @@ const sizes = computed(() => props.sizes ?? '(max-width: 599px) 100vw, (max-widt
 // Previews are only mounted (and so only fetched) after the first mouse entry.
 const entered = ref(false)
 const shown = ref(-1) // -1 = cover
+// Spec §5: previews only use the w480/w1280 tiers.
+const PREVIEW_TIERS: readonly Tier[] = ['w480', 'w1280']
+// The box keeps the card's cover ratio for the whole sweep, so the row span
+// Wall computed from it stays valid; previews are cropped with object-fit.
+const boxAspect = computed(() => {
+  if (props.aspect) return props.aspect
+  const c = props.card.cover
+  return c && c.width > 0 && c.height > 0 ? Math.min(c.width / c.height, 2.4) : 1.5
+})
+const showingPreview = computed(() => shown.value >= 0 && !!props.card.previews[shown.value])
+watch(
+  () => props.card,
+  () => {
+    shown.value = -1
+    entered.value = false
+  },
+)
 const media = computed(() => (shown.value >= 0 ? (props.card.previews[shown.value] ?? props.card.cover) : props.card.cover))
 
 function sweeps(e: PointerEvent): boolean {
@@ -67,14 +84,23 @@ function onClick(e: MouseEvent) {
 <template>
   <a class="card" :href="href" :data-card-id="card.id" :aria-label="label" @click="onClick">
     <div class="frame" @pointerenter="onEnter" @pointermove="onMove" @pointerleave="onLeave">
-      <Cover :media="media" :sizes="sizes" :eager="eager" :high="high" alt="" :aspect="aspect" />
+      <Cover
+        :media="media"
+        :sizes="sizes"
+        :eager="eager"
+        :high="high"
+        alt=""
+        :aspect="boxAspect"
+        :tiers="showingPreview ? PREVIEW_TIERS : undefined"
+      />
       <span v-if="!hover && dots > 0" class="dots" aria-hidden="true"><i v-for="n in dots" :key="n" /></span>
       <span v-if="entered" class="preload" aria-hidden="true">
         <Cover
           v-for="(p, i) in card.previews"
           :key="i"
           :media="p"
-          sizes="(max-width: 1099px) 480px, 1280px"
+          :sizes="sizes"
+          :tiers="PREVIEW_TIERS"
           :eager="true"
           :high="false"
           alt=""

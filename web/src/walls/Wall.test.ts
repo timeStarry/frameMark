@@ -93,6 +93,31 @@ describe('Wall salon', () => {
   })
 })
 
+describe('Wall ResizeObserver', () => {
+  it('re-observes the new container when layout changes', async () => {
+    setWidth(1440)
+    const observed: Element[] = []
+    const unobserved: Element[] = []
+    let disconnects = 0
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        observe(el: Element) { observed.push(el) }
+        unobserve(el: Element) { unobserved.push(el) }
+        disconnect() { disconnects++ }
+      },
+    )
+    const wr = mountWall()
+    const first = wr.find('.wall').element
+    expect(observed).toEqual([first])
+    await wr.setProps({ layout: 'grid' })
+    const second = wr.find('.wall').element
+    expect(second).not.toBe(first)
+    expect(observed[observed.length - 1]).toBe(second)
+    expect(unobserved.includes(first) || disconnects > 0).toBe(true)
+  })
+})
+
 describe('Wall grid', () => {
   it('uses the uniform grid class without inline placement', () => {
     setWidth(1440)

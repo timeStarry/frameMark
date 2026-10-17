@@ -3,7 +3,7 @@
 // input order (so DOM and Tab order match), each pinned to its column with a
 // row span estimated from its height; `row dense` packs them into masonry.
 // Grid: uniform auto-fill grid with 4:5 covers.
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { Card } from '../api/types'
 import WallCard from './WallCard.vue'
 import { columnsFor, rowSpan, salon } from './layout'
@@ -24,7 +24,8 @@ const containerPx = ref(0)
 const root = ref<HTMLElement | null>(null)
 
 const cols = computed(() => columnsFor(vw.value))
-// Mirrors the CSS column-gap clamp(24px, 4vw, 64px); also used as row gap.
+// Must mirror the CSS `column-gap: clamp(24px, 4vw, 64px)` below; edit both together.
+// Also used as the row gap folded into rowSpan.
 const gap = computed(() => Math.min(64, Math.max(24, vw.value * 0.04)))
 const columnPx = computed(() => {
   const n = cols.value
@@ -86,6 +87,12 @@ onMounted(() => {
     ro.observe(root.value)
   }
 })
+// layout switches the v-if/v-else root, so follow the new container.
+watch(root, (el, old) => {
+  if (!ro) return
+  if (old) ro.unobserve(old)
+  if (el) ro.observe(el)
+})
 onBeforeUnmount(() => {
   window.removeEventListener('resize', onResize)
   if (raf && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(raf)
@@ -130,7 +137,7 @@ onBeforeUnmount(() => {
 .salon {
   display: grid;
   grid-auto-flow: row dense;
-  column-gap: clamp(24px, 4vw, 64px);
+  column-gap: clamp(24px, 4vw, 64px); /* mirrored by `gap` in the script */
   row-gap: 0;
   align-items: start;
 }

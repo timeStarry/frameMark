@@ -2,8 +2,8 @@
 // A wall image: <picture> AVIF → WebP → JPEG in a fixed-ratio box (spec §5).
 // Null media or a load error keeps the box with a placeholder tone.
 import { computed, ref, watch } from 'vue'
-import type { Media } from '../api/types'
-import { srcset } from '../viewer/media'
+import type { ImageFormat, Media, Tier } from '../api/types'
+import { srcset, tierWidth } from '../viewer/media'
 
 const props = defineProps<{
   media: Media | null
@@ -12,7 +12,22 @@ const props = defineProps<{
   high: boolean
   alt: string
   aspect?: number | null
+  /** Restrict srcset candidates to these tiers (wall previews use w480/w1280). */
+  tiers?: readonly Tier[]
 }>()
+
+function set(m: Media, format: ImageFormat): string {
+  if (!props.tiers) return srcset(m, format)
+  const out: string[] = []
+  let last = 0
+  for (const t of props.tiers) {
+    const w = tierWidth(m, t)
+    if (w <= last) continue
+    last = w
+    out.push(`${m.tiers[t][format]} ${w}w`)
+  }
+  return out.join(', ')
+}
 
 const failed = ref(false)
 watch(
@@ -33,10 +48,10 @@ const ratio = computed(() => {
 <template>
   <div class="cover" :class="{ failed: !media || failed }" :style="{ aspectRatio: String(ratio) }">
     <picture v-if="media && !failed">
-      <source type="image/avif" :srcset="srcset(media, 'avif')" :sizes="sizes" />
-      <source type="image/webp" :srcset="srcset(media, 'webp')" :sizes="sizes" />
+      <source type="image/avif" :srcset="set(media, 'avif')" :sizes="sizes" />
+      <source type="image/webp" :srcset="set(media, 'webp')" :sizes="sizes" />
       <img
-        :srcset="srcset(media, 'jpeg')"
+        :srcset="set(media, 'jpeg')"
         :src="media.tiers.w1280.jpeg"
         :sizes="sizes"
         :alt="alt"

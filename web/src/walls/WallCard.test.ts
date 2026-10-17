@@ -3,7 +3,7 @@ import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createMemoryHistory, type Router } from 'vue-router'
 import { createAppRouter } from '../router'
 import WallCard from './WallCard.vue'
-import { card } from '../viewer/testFixtures'
+import { card, media } from '../viewer/testFixtures'
 import type { Card } from '../api/types'
 
 function stubHover(hover: boolean) {
@@ -179,5 +179,73 @@ describe('WallCard', () => {
   it('aspect prop overrides the cover ratio', () => {
     const wr = mountCard(card('c1', '海边'), { aspect: 0.8 })
     expect(wr.find('.cover').attributes('style')).toContain('aspect-ratio: 0.8')
+  })
+
+  it('keeps the box at the cover ratio while sweeping onto a portrait preview', async () => {
+    const c = card('c1', '海边', '阿树', 'u1', { cover: media('cover-c1', 6000, 4000), previews: [media('p-c1-1', 4000, 6000)] })
+    const wr = mountCard(c)
+    const frame = wr.find('.frame').element
+    stubRect(frame)
+    const before = wr.find('.frame > .cover').attributes('style')
+    expect(before).toContain('aspect-ratio: 1.5')
+    frame.dispatchEvent(pointer('pointerenter', { pointerType: 'mouse' }))
+    frame.dispatchEvent(pointer('pointermove', { pointerType: 'mouse', clientX: 100 }))
+    await wr.vm.$nextTick()
+    expect(wr.find('.frame > .cover img').attributes('srcset')).toContain('p-c1-1')
+    expect(wr.find('.frame > .cover').attributes('style')).toBe(before)
+  })
+
+  it('a card without a cover keeps 3:2 while sweeping', async () => {
+    const c = card('c1', '海边', '阿树', 'u1', { cover: null, previews: [media('p-c1-1', 4000, 6000)] })
+    const wr = mountCard(c)
+    const frame = wr.find('.frame').element
+    stubRect(frame)
+    frame.dispatchEvent(pointer('pointerenter', { pointerType: 'mouse' }))
+    frame.dispatchEvent(pointer('pointermove', { pointerType: 'mouse', clientX: 100 }))
+    await wr.vm.$nextTick()
+    expect(wr.find('.frame > .cover').attributes('style')).toContain('aspect-ratio: 1.5')
+  })
+
+  it('previews use only w480/w1280, and preload matches the shown preview exactly', async () => {
+    const wr = mountCard(card('c1', '海边'), { sizes: '33vw' })
+    const frame = wr.find('.frame').element
+    stubRect(frame)
+    frame.dispatchEvent(pointer('pointerenter', { pointerType: 'mouse' }))
+    await wr.vm.$nextTick()
+    const sig = (el: { attributes: (k: string) => string | undefined }) => `${el.attributes('srcset')}|${el.attributes('sizes')}`
+    const preloadImgs = wr.findAll('.preload img')
+    expect(preloadImgs).toHaveLength(3)
+    const preloadSources = wr.findAll('.preload source')
+    for (const el of [...preloadImgs, ...preloadSources]) {
+      const ss = el.attributes('srcset') ?? ''
+      expect(ss).toMatch(/w480/)
+      expect(ss).not.toMatch(/w2400|w3840/)
+    }
+    frame.dispatchEvent(pointer('pointermove', { pointerType: 'mouse', clientX: 250 }))
+    await wr.vm.$nextTick()
+    const shown = wr.find('.frame > .cover')
+    expect(shown.find('img').attributes('srcset')).toContain('p-c1-3')
+    const preload3 = wr.findAll('.preload .cover')[2]!
+    expect(shown.findAll('source').map(sig)).toEqual(preload3.findAll('source').map(sig))
+    expect(sig(shown.find('img'))).toBe(sig(preload3.find('img')))
+    for (const el of shown.findAll('img, source')) expect(el.attributes('srcset')).not.toMatch(/w2400|w3840/)
+  })
+
+  it('the cover itself still offers every tier', () => {
+    const wr = mountCard()
+    expect(wr.find('.frame > .cover img').attributes('srcset')).toContain('w3840')
+  })
+
+  it('resets the sweep when the card changes', async () => {
+    const wr = mountCard()
+    const frame = wr.find('.frame').element
+    stubRect(frame)
+    frame.dispatchEvent(pointer('pointerenter', { pointerType: 'mouse' }))
+    frame.dispatchEvent(pointer('pointermove', { pointerType: 'mouse', clientX: 250 }))
+    await wr.vm.$nextTick()
+    expect(shownSrcset(wr)).toContain('p-c1-3')
+    await wr.setProps({ card: card('c2', '山') })
+    expect(shownSrcset(wr)).toContain('cover-c2')
+    expect(wr.find('.preload').exists()).toBe(false)
   })
 })
