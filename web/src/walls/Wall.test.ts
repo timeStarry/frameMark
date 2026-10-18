@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, type VueWrapper } from '@vue/test-utils'
+import { nextTick } from 'vue'
+import { session } from '../api/session'
 import { createMemoryHistory, type Router } from 'vue-router'
 import { createAppRouter } from '../router'
 import Wall from './Wall.vue'
@@ -159,11 +161,26 @@ describe('Wall grid', () => {
 })
 
 describe('WallNav', () => {
-  it('links Markr, 工具 and 我的', () => {
+  const s = session as { user: string | null }
+  afterEach(() => {
+    s.user = null
+  })
+
+  it('links 我的 to /login when signed out', () => {
+    s.user = null
     w = mount(WallNav, { global: { plugins: [router] } })
     expect(w.find('nav').attributes('aria-label')).toBe('站点')
     const links = w.findAll('a').map((a) => [a.text(), a.attributes('href')])
-    expect(links).toEqual([['Markr', '/'], ['工具', '/tools'], ['我的', '/me']])
+    expect(links).toEqual([['Markr', '/'], ['工具', '/tools'], ['我的', '/login']])
+  })
+
+  it('links 我的 to /me when signed in, and follows the session', async () => {
+    s.user = 'u1'
+    w = mount(WallNav, { global: { plugins: [router] } })
+    expect(w.findAll('a')[2]!.attributes('href')).toBe('/me')
+    s.user = null
+    await nextTick()
+    expect(w.findAll('a')[2]!.attributes('href')).toBe('/login')
   })
 })
 

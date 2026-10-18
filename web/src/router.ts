@@ -22,8 +22,11 @@ export function scrollTarget(
 }
 
 // Route components are lazy so each route gets its own chunk.
+// Placeholder /me pages until tasks 5, 7 and 8 land.
+const stub = () => import('./me/MeStub.vue')
+
 export function createAppRouter(history: RouterHistory = createWebHistory()): Router {
-  return createRouter({
+  const router = createRouter({
     history,
     // The router scrolls before a wall's restoreFocus (see scrollTarget).
     scrollBehavior(to, from, saved) {
@@ -36,7 +39,17 @@ export function createAppRouter(history: RouterHistory = createWebHistory()): Ro
       { path: '/u/:id', name: 'user', component: () => import('./routes/UserRoute.vue'), props: true },
       { path: '/a/:id', name: 'album', component: () => import('./routes/AlbumRoute.vue'), props: true },
       { path: '/tools', name: 'tools', component: () => import('./routes/Placeholder.vue') },
-      { path: '/me', name: 'me', component: () => import('./routes/Placeholder.vue') },
+      { path: '/login', name: 'login', component: () => import('./me/LoginRoute.vue') },
+      {
+        path: '/me',
+        component: () => import('./me/MeLayout.vue'),
+        meta: { requiresUser: true },
+        children: [
+          { path: '', name: 'archive', component: stub, meta: { requiresUser: true, title: '归档' } },
+          { path: 'collections', name: 'me-collections', component: stub, meta: { requiresUser: true, title: '合集' } },
+          { path: 'settings', name: 'me-settings', component: stub, meta: { requiresUser: true, title: '偏好' } },
+        ],
+      },
       {
         path: '/c/:id',
         name: 'collection',
@@ -46,4 +59,12 @@ export function createAppRouter(history: RouterHistory = createWebHistory()): Ro
       { path: '/:pathMatch(.*)*', name: 'not-found', component: () => import('./routes/NotFound.vue') },
     ],
   })
+  // The /me guard (me/guard.ts) loads only when a navigation touches /me or
+  // /login, so the wall and viewer entry never statically imports src/me.
+  router.beforeEach(async (to) => {
+    if (to.name !== 'login' && !to.matched.some((m) => m.meta.requiresUser === true)) return true
+    const { guardNavigation } = await import('./me/guard')
+    return guardNavigation(to)
+  })
+  return router
 }

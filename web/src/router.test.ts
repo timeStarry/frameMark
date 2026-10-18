@@ -24,12 +24,32 @@ describe('router', () => {
     expect(a.params.id).toBe('x')
   })
 
-  it('resolves /tools and /me to the placeholder', async () => {
-    for (const p of ['/tools', '/me']) {
+  it('resolves /tools to the placeholder', async () => {
+    const r = router.resolve('/tools')
+    const loader = r.matched[0]!.components!.default as () => Promise<{ default: { __name?: string } }>
+    const mod = await loader()
+    expect(mod.default.__name).toBe('Placeholder')
+  })
+
+  it('resolves /login and the /me workspace lazily', async () => {
+    const load = async (p: string, depth: number) => {
+      const loader = router.resolve(p).matched[depth]!.components!.default as () => Promise<{
+        default: { __name?: string }
+      }>
+      return (await loader()).default.__name
+    }
+    expect(router.resolve('/login').name).toBe('login')
+    expect(await load('/login', 0)).toBe('LoginRoute')
+    for (const [p, name] of [
+      ['/me', 'archive'],
+      ['/me/collections', 'me-collections'],
+      ['/me/settings', 'me-settings'],
+    ] as const) {
       const r = router.resolve(p)
-      const loader = r.matched[0]!.components!.default as () => Promise<{ default: { __name?: string } }>
-      const mod = await loader()
-      expect(mod.default.__name).toBe('Placeholder')
+      expect(r.name).toBe(name)
+      expect(r.matched).toHaveLength(2)
+      expect(r.matched.every((m) => m.meta.requiresUser === true)).toBe(true)
+      expect(await load(p, 0)).toBe('MeLayout')
     }
   })
 
