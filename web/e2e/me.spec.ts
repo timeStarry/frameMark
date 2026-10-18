@@ -252,31 +252,62 @@ test.describe('archive', () => {
     expectNoOriginals(m)
   })
 
-  test('filters: a year updates the URL and the grid; Back returns to the filtered archive', async ({ page }) => {
+  test('filters: each change is a history entry; Back and Forward step through them', async ({ page }) => {
     const m = await mockAccount(page, { signedIn: true })
     await page.goto('/me')
     await expect(tiles(page)).toHaveCount(30)
     const filters = page.getByRole('form', { name: '筛选' })
-    await filters.getByLabel('年份').selectOption('2025')
-    await expect(page).toHaveURL(/\/me\?year=2025$/)
+    const year = filters.getByLabel('年份')
+    const camera = filters.getByLabel('机身')
     const in2025 = ARCHIVE_YEARS.filter((y) => y === 2025).length
+
+    // Year A.
+    await year.selectOption('2025')
+    await expect(page).toHaveURL(/\/me\?year=2025$/)
     await expect(tiles(page)).toHaveCount(in2025)
     await expect(tiles(page).first()).toHaveAttribute('data-photo-id', 'p13')
     expect(m.order).toContain('GET /api/archive')
     expect(m.requests.some((u) => u.includes('/api/archive?year=2025'))).toBe(true)
 
-    await filters.getByLabel('未用于合集').check()
-    await expect(page).toHaveURL(/year=2025/)
-    await expect(page).toHaveURL(/in_collection=false/)
+    // Camera B on top of it. In 2025 (p13..p22) the odd-indexed seeds use GR III.
+    await camera.selectOption('GR III')
+    await expect(page).toHaveURL(/\/me\?year=2025&camera=GR(%20|\+)III$/)
     await expect(tiles(page)).toHaveCount(in2025 / 2)
+    await expect(tiles(page).first()).toHaveAttribute('data-photo-id', 'p14')
 
-    // Filters replace the entry (task-5 brief), so Back from another page
-    // returns to the last filtered state rather than stepping through each one.
+    // Back: year A without camera B.
+    await page.goBack()
+    await expect(page).toHaveURL(/\/me\?year=2025$/)
+    await expect(year).toHaveValue('2025')
+    await expect(camera).toHaveValue('')
+    await expect(tiles(page)).toHaveCount(in2025)
+    await expect(tiles(page).first()).toHaveAttribute('data-photo-id', 'p13')
+
+    // Back again: no filters.
+    await page.goBack()
+    await expect(page).toHaveURL(/\/me$/)
+    await expect(year).toHaveValue('')
+    await expect(camera).toHaveValue('')
+    await expect(tiles(page)).toHaveCount(30)
+    await expect(tiles(page).first()).toHaveAttribute('data-photo-id', 'p1')
+
+    // Forward: year A again.
+    await page.goForward()
+    await expect(page).toHaveURL(/\/me\?year=2025$/)
+    await expect(year).toHaveValue('2025')
+    await expect(camera).toHaveValue('')
+    await expect(tiles(page)).toHaveCount(in2025)
+    await expect(tiles(page).first()).toHaveAttribute('data-photo-id', 'p13')
+
+    // A filtered state also survives a round trip through another page.
+    await filters.getByLabel('未用于合集').check()
+    await expect(page).toHaveURL(/\/me\?year=2025&in_collection=false$/)
+    await expect(tiles(page)).toHaveCount(in2025 / 2)
     await meNav(page).getByRole('link', { name: '合集' }).click()
     await expect(page).toHaveURL(/\/me\/collections$/)
     await page.goBack()
     await expect(page).toHaveURL(/\/me\?year=2025&in_collection=false$/)
-    await expect(filters.getByLabel('年份')).toHaveValue('2025')
+    await expect(year).toHaveValue('2025')
     await expect(filters.getByLabel('未用于合集')).toBeChecked()
     await expect(tiles(page)).toHaveCount(in2025 / 2)
 

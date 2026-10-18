@@ -247,7 +247,7 @@ describe('ArchiveRoute filters', () => {
     }
   })
 
-  it('replaces the query, aborts the old request and reloads from the first page', async () => {
+  it('pushes the query, aborts the old request and reloads from the first page', async () => {
     let release!: (r: Result<ArchivePage>) => void
     replies[key({}, null)] = new Promise((r) => (release = r))
     replies[key({ status: 'failed' }, null)] = { ok: true, data: page([owner('p9')]) }
@@ -259,8 +259,8 @@ describe('ArchiveRoute filters', () => {
     await w!.find('select[name="status"]').setValue('failed')
     await flushPromises()
     expect(router.currentRoute.value.query).toEqual({ status: 'failed' })
-    expect(replace).toHaveBeenCalledWith({ query: { status: 'failed' } })
-    expect(push).not.toHaveBeenCalled()
+    expect(push).toHaveBeenCalledWith({ query: { status: 'failed' } })
+    expect(replace).not.toHaveBeenCalled()
     expect(first.signal!.aborted).toBe(true)
     expect(calls.at(-1)).toMatchObject({ q: { status: 'failed' }, cursor: null })
     // The stale first reply never overwrites the filtered result.
@@ -285,6 +285,123 @@ describe('ArchiveRoute filters', () => {
     await flushPromises()
     expect(router.currentRoute.value.query).toEqual({})
     expect(calls.at(-1)!.q).toEqual({})
+  })
+
+  it('a year change pushes a history entry, not a replace', async () => {
+    await open()
+    const replace = vi.spyOn(router, 'replace')
+    const push = vi.spyOn(router, 'push')
+    await w!.find('select[name="year"]').setValue('2025')
+    await flushPromises()
+    expect(push).toHaveBeenCalledTimes(1)
+    expect(push).toHaveBeenCalledWith({ query: { year: '2025' } })
+    expect(replace).not.toHaveBeenCalled()
+    expect(router.currentRoute.value.query).toEqual({ year: '2025' })
+    // Back steps to the unfiltered archive, still on /me.
+    router.back()
+    await flushPromises()
+    expect(router.currentRoute.value.fullPath).toBe('/me')
+    expect((w!.find('select[name="year"]').element as HTMLSelectElement).value).toBe('')
+  })
+
+  it('choosing the same filters twice adds one history entry', async () => {
+    await open()
+    const push = vi.spyOn(router, 'push')
+    const year = w!.find('select[name="year"]')
+    await year.setValue('2025')
+    await flushPromises()
+    await year.setValue('2025')
+    await flushPromises()
+    expect(push).toHaveBeenCalledTimes(1)
+    // Clearing with nothing set, or re-choosing 全部 at /me, pushes nothing either.
+    router.back()
+    await flushPromises()
+    await w!.find('select[name="year"]').setValue('')
+    await flushPromises()
+    expect(push).toHaveBeenCalledTimes(1)
+    expect(router.currentRoute.value.fullPath).toBe('/me')
+  })
+
+  it('a focal input pushes only on change, once per commit', async () => {
+    await open()
+    const push = vi.spyOn(router, 'push')
+    const fmin = w!.find('input[name="focal_min"]')
+    const el = fmin.element as HTMLInputElement
+    // Keystrokes fire input events only.
+    el.value = '3'
+    await fmin.trigger('input')
+    el.value = '35'
+    await fmin.trigger('input')
+    await flushPromises()
+    expect(push).not.toHaveBeenCalled()
+    expect(router.currentRoute.value.query).toEqual({})
+    await fmin.trigger('change')
+    await flushPromises()
+    expect(push).toHaveBeenCalledTimes(1)
+    expect(push).toHaveBeenCalledWith({ query: { focal_min: '35' } })
+    // Committing the same value again (blur after Enter) adds nothing.
+    await fmin.trigger('change')
+    await flushPromises()
+    expect(push).toHaveBeenCalledTimes(1)
+  })
+
+  it('a route query change (Back/Forward) reloads from the first page and aborts the old request', async () => {
+    replies[key({ year: 2025 }, null)] = { ok: true, data: page([owner('a1')], 'k1') }
+    await open('/me?year=2025')
+    expect(tileIds()).toEqual(['a1'])
+    await router.push('/me?year=2025&camera=X100V')
+    let release!: (r: Result<ArchivePage>) => void
+    replies[key({ year: 2025, camera: 'X100V' }, null)] = new Promise((r) => (release = r))
+    // Re-enter the camera query so its reply is still pending when we go back.
+    await router.push('/me?year=2025')
+    await flushPromises()
+    await router.push('/me?year=2025&camera=X100V')
+    const pending = calls.at(-1)!
+    expect(pending).toMatchObject({ q: { year: 2025, camera: 'X100V' }, cursor: null })
+    expect((w!.find('select[name="camera"]').element as HTMLSelectElement).value).toBe('X100V')
+    router.back()
+    await flushPromises()
+    expect(router.currentRoute.value.query).toEqual({ year: '2025' })
+    expect(pending.signal!.aborted).toBe(true)
+    expect(calls.at(-1)).toMatchObject({ q: { year: 2025 }, cursor: null })
+    expect((w!.find('select[name="camera"]').element as HTMLSelectElement).value).toBe('')
+    expect((w!.find('select[name="year"]').element as HTMLSelectElement).value).toBe('2025')
+    expect(tileIds()).toEqual(['a1'])
+    expect(button('载入更多')).toBeDefined()
+    // The late reply for the abandoned query never lands.
+    release({ ok: true, data: page([owner('late')]) })
+    await flushPromises()
+    expect(tileIds()).toEqual(['a1'])
+  })
+
+  it('a query change resets the cursor and the list', async () => {
+    replies[key({}, null)] = { ok: true, data: page([owner('p1')], 'k1') }
+    replies[key({}, 'k1')] = { ok: true, data: page([owner('p2')], 'k2') }
+    replies[key({ year: 2025 }, null)] = { ok: true, data: page([owner('y1')], null) }
+    await open()
+    await button('载入更多')!.trigger('click')
+    await flushPromises()
+    expect(tileIds()).toEqual(['p1', 'p2'])
+    await w!.find('select[name="year"]').setValue('2025')
+    await flushPromises()
+    expect(tileIds()).toEqual(['y1'])
+    expect(button('载入更多')).toBeUndefined()
+    router.back()
+    await flushPromises()
+    expect(calls.at(-1)).toMatchObject({ q: {}, cursor: null })
+    expect(tileIds()).toEqual(['p1'])
+  })
+
+  it('opening the detail panel adds no history entry', async () => {
+    replies[key({}, null)] = { ok: true, data: page([owner('p1')]) }
+    await open()
+    const push = vi.spyOn(router, 'push')
+    const replace = vi.spyOn(router, 'replace')
+    await tile('p1').trigger('click')
+    await flushPromises()
+    expect(w!.find('aside').exists()).toBe(true)
+    expect(push).not.toHaveBeenCalled()
+    expect(replace).not.toHaveBeenCalled()
   })
 
   it('aborts an in-flight next page when the filter changes', async () => {

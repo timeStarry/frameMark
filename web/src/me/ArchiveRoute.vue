@@ -1,7 +1,9 @@
 <script setup lang="ts">
-// `/me` (spec §5): the author's archive. Filters live in the URL query
-// (router.replace, so Back leaves /me rather than stepping through filters);
-// each change aborts the open requests and reloads from the first page.
+// `/me` (spec §5): the author's archive. The URL query is the single source of
+// truth for filters: the filter bar emits the desired query, onFilters pushes
+// it (one history entry per change, so Back/Forward step through filters), and
+// the watcher on the route query aborts the open requests and reloads from
+// the first page.
 // Paging mirrors the square: one guarded more() behind a sentinel and a
 // 载入更多 button. Selecting a tile opens a non-modal detail panel; delete
 // goes through the modal ConfirmDialog. Uploads (spec §6) come from the 上传
@@ -70,7 +72,10 @@ watch(
 )
 
 function onFilters(next: ArchiveQuery) {
-  void router.replace({ query: toQuery(next) })
+  const target = toQuery(next)
+  // The same filters again would only add a duplicate history entry.
+  if (JSON.stringify(target) === JSON.stringify(toQuery(q.value))) return
+  void router.push({ query: target })
 }
 
 // --- Next pages ---
