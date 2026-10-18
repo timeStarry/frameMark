@@ -65,14 +65,23 @@ interface SessionBody {
   registrationOpen: boolean
 }
 
-let inflight: Promise<void> | null = null
+/**
+ * Bumped by every login, verify and logout. A refresh that started under an
+ * older generation drops its response, so it can never overwrite a newer
+ * identity or token with stale values.
+ */
+let generation = 0
+let inflight: { gen: number; done: Promise<void> } | null = null
 
 /** Reloads the session. Concurrent calls share one request. Never throws. */
 export function refresh(): Promise<void> {
-  inflight ??= (async () => {
+  if (inflight && inflight.gen === generation) return inflight.done
+  const gen = generation
+  const entry: { gen: number; done: Promise<void> } = { gen, done: Promise.resolve() }
+  entry.done = (async () => {
     try {
       const r = await getJSON<SessionBody>('/api/auth/session')
-      if (r.ok) {
+      if (r.ok && gen === generation) {
         state.user = r.data.user ?? null
         state.csrfToken = r.data.csrfToken
         state.registrationOpen = r.data.registrationOpen === true
@@ -80,10 +89,11 @@ export function refresh(): Promise<void> {
       }
     } finally {
       state.ready = true
-      inflight = null
+      if (inflight === entry) inflight = null
     }
   })()
-  return inflight
+  inflight = entry
+  return entry.done
 }
 
 interface SignedIn {
@@ -95,6 +105,7 @@ interface SignedIn {
 async function signIn(p: Promise<WriteResult<SignedIn>>): Promise<WriteResult<{ user: string }>> {
   const r = await p
   if (!r.ok) return r
+  generation++
   state.user = r.data.user
   state.csrfToken = r.data.csrfToken
   state.ready = true
@@ -118,6 +129,7 @@ export function verify(token: string, password: string): Promise<WriteResult<{ u
 async function signOut(url: string): Promise<WriteResult<unknown>> {
   const r = await send<unknown>('POST', url)
   if (!r.ok) return r
+  generation++
   state.user = null
   state.csrfToken = null
   track(null, true)

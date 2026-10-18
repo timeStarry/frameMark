@@ -90,6 +90,21 @@ describe('send', () => {
     expect(await send('POST', '/api/x', {})).toEqual({ ok: false, status: 0, message: '网络连接出了问题' })
   })
 
+  it('treats a 204 with no body as success', async () => {
+    mockFetch(async () => new Response(null, { status: 204 }))
+    expect(await send('DELETE', '/api/photos/p1')).toEqual({ ok: true, status: 204, data: undefined })
+  })
+
+  it('treats an empty 200 body as success', async () => {
+    mockFetch(async () => new Response('', { status: 200 }))
+    expect(await send('POST', '/api/x', {})).toEqual({ ok: true, status: 200, data: undefined })
+  })
+
+  it('treats a 200 with Content-Length 0 as success', async () => {
+    mockFetch(async () => new Response('', { status: 200, headers: { 'Content-Length': '0' } }))
+    expect(await send('POST', '/api/x', {})).toEqual({ ok: true, status: 200, data: undefined })
+  })
+
   it('maps an unreadable success body to status 0', async () => {
     mockFetch(async () => new Response('not json', { status: 200 }))
     expect(await send('POST', '/api/x', {})).toEqual({ ok: false, status: 0, message: '网络连接出了问题' })

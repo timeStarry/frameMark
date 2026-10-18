@@ -53,10 +53,22 @@ async function once<T>(
     }
     return { ok: false, status: res.status, message: message || `请求失败（${res.status}）` }
   }
+  // 204 (e.g. DELETE /api/photos/{id}) and any empty 2xx body are success
+  // with no data; a non-empty body that is not JSON is still a failure.
+  if (res.status === 204 || res.headers.get('Content-Length') === '0') {
+    return { ok: true, status: res.status, data: undefined as T }
+  }
+  let text: string
   try {
-    return { ok: true, status: res.status, data: (await res.json()) as T }
+    text = await res.text()
   } catch (err) {
     return fail(err)
+  }
+  if (text === '') return { ok: true, status: res.status, data: undefined as T }
+  try {
+    return { ok: true, status: res.status, data: JSON.parse(text) as T }
+  } catch {
+    return { ok: false, status: 0, message: NETWORK_MESSAGE }
   }
 }
 

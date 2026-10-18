@@ -180,6 +180,68 @@ describe('login / verify / logout', () => {
   })
 })
 
+describe('stale refresh', () => {
+  function deferredSession() {
+    let resolve!: (r: Response) => void
+    const pending = new Promise<Response>((r) => (resolve = r))
+    return { pending, resolve }
+  }
+
+  it('a refresh that resolves after login does not overwrite the login', async () => {
+    sessionStorage.setItem('markr:identity', 'null')
+    const d = deferredSession()
+    const fn = mockFetch(async (url) => {
+      if (url === '/api/auth/session') return d.pending
+      return json({ user: 'u1', csrfToken: 'tok-login' })
+    })
+    const stale = refresh()
+    const r = await login('a@example.com', 'pw')
+    expect(r.ok).toBe(true)
+    seed()
+    d.resolve(json({ user: null, csrfToken: 'tok-stale', registrationOpen: true }))
+    await stale
+    expect(session.user).toBe('u1')
+    expect(session.csrfToken).toBe('tok-login')
+    expect(session.ready).toBe(true)
+    expectKept()
+    expect(sessionStorage.getItem('markr:identity')).toBe('u1')
+    expect(fn.mock.calls.filter((c) => c[0] === '/api/auth/session')).toHaveLength(1)
+  })
+
+  it('a refresh that resolves after logout does not restore the old user', async () => {
+    ;(session as { user: string | null }).user = 'u1'
+    sessionStorage.setItem('markr:identity', 'u1')
+    let n = 0
+    const d = deferredSession()
+    mockFetch(async (url) => {
+      if (url === '/api/auth/session') {
+        n++
+        return n === 1 ? d.pending : json({ user: null, csrfToken: 'tok-anon', registrationOpen: false })
+      }
+      return json({ user: null })
+    })
+    const stale = refresh()
+    await logout()
+    seed()
+    d.resolve(json({ user: 'u1', csrfToken: 'tok-old', registrationOpen: false }))
+    await stale
+    expect(session.user).toBeNull()
+    expect(session.csrfToken).toBe('tok-anon')
+    expectKept()
+    expect(sessionStorage.getItem('markr:identity')).toBe('null')
+  })
+
+  it('a refresh started after a login still applies', async () => {
+    mockFetch(async (url) => {
+      if (url === '/api/auth/session') return json({ user: 'u1', csrfToken: 'tok-fresh', registrationOpen: false })
+      return json({ user: 'u1', csrfToken: 'tok-login' })
+    })
+    await login('a@example.com', 'pw')
+    await refresh()
+    expect(session.csrfToken).toBe('tok-fresh')
+  })
+})
+
 describe('storage failures', () => {
   it('a throwing sessionStorage causes no throw', async () => {
     const boom = () => {

@@ -69,9 +69,9 @@ describe('photos', () => {
     expect(fn.mock.calls[0]![0]).toBe('/api/photos/a%2Fb')
   })
 
-  it('deletePhoto sends DELETE with the token', async () => {
-    const fn = mockFetch(async () => json({}))
-    await deletePhoto('p1')
+  it('deletePhoto sends DELETE with the token and reads a 204 as success', async () => {
+    const fn = mockFetch(async () => new Response(null, { status: 204 }))
+    expect(await deletePhoto('p1')).toEqual({ ok: true, status: 204, data: undefined })
     const [url, init] = fn.mock.calls[0]!
     expect(url).toBe('/api/photos/p1')
     expect(init?.method).toBe('DELETE')
