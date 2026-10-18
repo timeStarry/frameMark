@@ -22,9 +22,6 @@ export function scrollTarget(
 }
 
 // Route components are lazy so each route gets its own chunk.
-// Placeholder /me pages until tasks 7 and 8 land.
-const stub = () => import('./me/MeStub.vue')
-
 export function createAppRouter(history: RouterHistory = createWebHistory()): Router {
   const router = createRouter({
     history,
@@ -47,7 +44,7 @@ export function createAppRouter(history: RouterHistory = createWebHistory()): Ro
         children: [
           { path: '', name: 'archive', component: () => import('./me/ArchiveRoute.vue'), meta: { requiresUser: true, title: '归档' } },
           { path: 'collections', name: 'me-collections', component: () => import('./me/CollectionsRoute.vue'), meta: { requiresUser: true, title: '合集' } },
-          { path: 'settings', name: 'me-settings', component: stub, meta: { requiresUser: true, title: '偏好' } },
+          { path: 'settings', name: 'me-settings', component: () => import('./me/SettingsRoute.vue'), meta: { requiresUser: true, title: '偏好' } },
         ],
       },
       {
