@@ -1,8 +1,9 @@
 // Intercepts /api/** and /m/** with fixture JSON and the generated images, and
 // records every request URL for the privacy assertions.
+import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import type { Page, Route } from '@playwright/test'
+import type { Page, Request, Route } from '@playwright/test'
 
 type Shape = 'land' | 'port' | 'pano'
 const DIMS: Record<Shape, [number, number]> = { land: [6000, 4000], port: [4000, 6000], pano: [12000, 2000] }
@@ -218,4 +219,356 @@ export async function mockAPI(page: Page, opts: { mediaDelayMs?: number; squareD
     return route.fulfill({ status: 200, contentType: MIME[ext], body: readFileSync(`${imgDir}${shape}.${ext}`) })
   })
   return mock
+}
+
+// ---- Account and archive (SP4a) ----
+// mockAccount() layers a stateful, per-test author backend over mockAPI():
+// routes registered later win, and anything it does not own falls back to the
+// wall and viewer fixtures above.
+
+/** The signed-in author. */
+export const ME = { id: 'u9', name: '阿禾' }
+export const EMAIL = 'me@example.com'
+export const PASSWORD = 'correct horse battery staple'
+export const VERIFY_TOKEN = 'tok-verify-7Qx2'
+export const CSRF_MESSAGE = '会话校验失败，请刷新页面后重试。'
+export const REGISTERED_MESSAGE = '如果该邮箱可以注册，验证邮件已发送。请在 30 分钟内打开链接并设置密码。'
+/**
+ * The app's origin and the S3 stand-in: another port on the same host, so it
+ * is cross-origin (as a real presigned URL is) but same-site. Cookies ignore
+ * ports, so the session cookie *would* ride along on a credentialed request;
+ * only withCredentials=false keeps it off.
+ */
+export const APP_ORIGIN = 'http://127.0.0.1:4173'
+export const S3_ORIGIN = 'http://127.0.0.1:4174'
+export const SESSION_COOKIE = 'markr_session'
+
+/** The author's own collections: a draft, an unlisted one and a public one. */
+export const MINE_DRAFT = collection('d1', '未完成的海', ME, [full(photo('d1p', 'land'))])
+export const MINE_UNLISTED = collection('d2', '给朋友看', ME, [full(photo('d2p', 'port'))])
+export const MINE_PUBLIC = collection('d3', '礁石', ME, [full(photo('d3p', 'land'))])
+for (const c of [MINE_DRAFT, MINE_UNLISTED, MINE_PUBLIC]) {
+  COLLECTIONS[c.id] = c
+  NEIGHBORS[c.id] = { wall: 'square', prev: null, next: null, strip: [] }
+}
+const MINE = [
+  { c: MINE_DRAFT, status: 'draft', visibility: 'private' },
+  { c: MINE_UNLISTED, status: 'published', visibility: 'unlisted' },
+  { c: MINE_PUBLIC, status: 'published', visibility: 'public' },
+] as const
+
+export const fixtureFile = (shape: Shape) => readFileSync(`${imgDir}${shape}.jpg`)
+const sha256 = (b: Buffer) => createHash('sha256').update(b).digest('hex')
+/** land.jpg is already in the archive (the duplicate); port.jpg is new. */
+export const DUP_SHA = sha256(fixtureFile('land'))
+
+interface Archived {
+  photo: Record<string, unknown> & { id: string; status: string }
+  sha: string
+  inCollection: boolean
+  year: number
+}
+
+/** Years newest first: 12 × 2026, 10 × 2025, 8 × 2024. */
+export const ARCHIVE_YEARS: number[] = [...Array(12).fill(2026), ...Array(10).fill(2025), ...Array(8).fill(2024)]
+const CAMERAS = ['X100V', 'GR III']
+
+function ownerPhoto(id: string, shape: Shape, year: number, i: number, over: Record<string, unknown> = {}) {
+  const [width, height] = DIMS[shape]
+  return {
+    id,
+    status: 'ready',
+    error: null,
+    title: `归档 ${id}`,
+    caption: '',
+    width,
+    height,
+    format: 'jpeg',
+    createdAt: Date.UTC(year, 6, 1) - i * 60_000,
+    publicFields: ['aperture', 'iso'],
+    histogramPublic: false,
+    originalDownload: false,
+    exif: { camera: CAMERAS[i % 2], focalLength: 23, aperture: 2, shutter: '1/250', iso: 200, takenAt: Date.UTC(year, 4, 3, 10) - i * 3_600_000 },
+    media: media(id, shape),
+    ...over,
+  }
+}
+
+function seedArchive(n: number): Archived[] {
+  return ARCHIVE_YEARS.slice(0, n).map((year, i) => ({
+    photo: ownerPhoto(`p${i + 1}`, SHAPES[i % SHAPES.length]!, year, i),
+    sha: i === 0 ? DUP_SHA : `seed-${i}`,
+    inCollection: i % 2 === 0,
+    year,
+  }))
+}
+
+export interface WriteLog {
+  method: string
+  path: string
+  body: unknown
+  csrf: string | undefined
+  status: number
+}
+
+export interface AccountState {
+  user: string | null
+  csrf: string
+  registrationOpen: boolean
+  archive: Archived[]
+  prefs: Record<string, unknown>
+  profile: { name: string; bio: string; wallLayout: 'salon' | 'grid' }
+}
+
+export interface AccountMock extends Mock {
+  state: AccountState
+  /** Every non-GET under /api, in order, with the status the mock answered. */
+  writes: WriteLog[]
+  /** Every non-OPTIONS request to the S3 stand-in, with all its headers. */
+  s3: { method: string; url: string; headers: Record<string, string>; bytes: number }[]
+  /** All headers of each /api write (positive control for the cookie check). */
+  apiHeaders: Record<string, string>[]
+  /** page.url() at the moment POST /api/auth/verify arrived. */
+  verifyPageURL: string | null
+  /** Request paths under /api in arrival order (method + path). */
+  order: string[]
+  /** Rotate the server's token behind the page's back: its next write is stale. */
+  staleToken(): void
+}
+
+export interface AccountOptions {
+  signedIn?: boolean
+  registrationOpen?: boolean
+  photos?: number
+  pageSize?: number
+}
+
+export async function mockAccount(page: Page, opts: AccountOptions = {}): Promise<AccountMock> {
+  const base = await mockAPI(page)
+  const pageSize = opts.pageSize ?? 20
+  let seq = 0
+  let uploads = 0
+  const rotate = () => `csrf-${++seq}`
+  const polls = new Map<string, number>()
+  const putDone = new Set<string>()
+
+  const m: AccountMock = {
+    requests: base.requests,
+    state: {
+      user: opts.signedIn ? ME.id : null,
+      csrf: rotate(),
+      registrationOpen: opts.registrationOpen ?? false,
+      archive: seedArchive(opts.photos ?? 30),
+      prefs: {
+        publicFields: ['camera', 'lens', 'focal_length', 'aperture', 'shutter', 'iso'],
+        histogramPublic: true,
+        originalDownload: false,
+        watermark: null,
+        defaultLicense: null,
+        defaultAiDeclaration: null,
+        locationMode: 'off',
+        updatedAt: null,
+      },
+      profile: { name: ME.name, bio: '只拍海。', wallLayout: 'salon' },
+    },
+    writes: [],
+    s3: [],
+    apiHeaders: [],
+    verifyPageURL: null,
+    order: [],
+    staleToken: () => {
+      m.state.csrf = rotate()
+    },
+  }
+  const st = m.state
+
+  // A real HttpOnly session cookie, as the backend sets it (identity.go).
+  const setCookie = async (on: boolean) => {
+    const ctx = page.context()
+    if (!on) return ctx.clearCookies({ name: SESSION_COOKIE })
+    await ctx.addCookies([{ name: SESSION_COOKIE, value: `s-${seq}`, url: APP_ORIGIN, httpOnly: true, sameSite: 'Lax' }])
+  }
+  if (st.user) await setCookie(true)
+
+  const userWall = () => {
+    const owner = st.user === ME.id
+    const cards = MINE.filter((x) => owner || (x.status === 'published' && x.visibility === 'public')).map((x) => ({
+      ...card(x.c, 'land'),
+      ...(owner ? { status: x.status, visibility: x.visibility } : {}),
+    }))
+    return { profile: { id: ME.id, ...st.profile }, collections: cards, albums: [] }
+  }
+
+  const facets = () => {
+    const count = <K>(keys: K[]) => {
+      const out = new Map<K, number>()
+      for (const k of keys) out.set(k, (out.get(k) ?? 0) + 1)
+      return [...out]
+    }
+    return {
+      years: count(st.archive.map((a) => a.year)).map(([year, c]) => ({ year, count: c })),
+      cameras: count(st.archive.map((a) => String((a.photo.exif as { camera: string }).camera))).map(([name, c]) => ({ name, count: c })),
+      lenses: [],
+    }
+  }
+
+  await page.route('**/mock-s3/**', async (route: Route) => {
+    const req = route.request()
+    const cors = {
+      'Access-Control-Allow-Origin': APP_ORIGIN,
+      'Access-Control-Allow-Methods': 'PUT',
+      'Access-Control-Allow-Headers': 'content-type, x-amz-checksum-sha256',
+    }
+    if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors })
+    m.s3.push({ method: req.method(), url: req.url(), headers: await req.allHeaders(), bytes: req.postDataBuffer()?.length ?? 0 })
+    putDone.add(new URL(req.url()).pathname.split('/').pop()!)
+    return route.fulfill({ status: 200, headers: cors, body: '' })
+  })
+
+  await page.route('**/api/**', async (route: Route) => {
+    const req: Request = route.request()
+    const url = new URL(req.url())
+    const path = url.pathname
+    const method = req.method()
+    m.order.push(`${method} ${path}`)
+    const reply = (status: number, body?: unknown) => {
+      if (method !== 'GET') {
+        let parsed: unknown = undefined
+        try {
+          parsed = req.postData() ? JSON.parse(req.postData()!) : undefined
+        } catch {
+          parsed = req.postData()
+        }
+        m.writes.push({ method, path, body: parsed, csrf: req.headers()['x-csrf-token'], status })
+      }
+      if (body === undefined) return route.fulfill({ status, body: '' })
+      return route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
+    }
+    const fail = (status: number, error: string) => reply(status, { error })
+    const input = () => {
+      try {
+        return (JSON.parse(req.postData() ?? 'null') ?? {}) as Record<string, unknown>
+      } catch {
+        return {}
+      }
+    }
+
+    if (method !== 'GET') {
+      m.apiHeaders.push(await req.allHeaders())
+      const tok = req.headers()['x-csrf-token']
+      if (tok !== st.csrf) {
+        return fail(403, CSRF_MESSAGE)
+      }
+    }
+
+    if (path === '/api/auth/session' && method === 'GET') {
+      return reply(200, { user: st.user, csrfToken: st.csrf, registrationOpen: st.registrationOpen })
+    }
+    if (path === '/api/auth/login' && method === 'POST') {
+      const b = input()
+      if (b.email !== EMAIL || b.password !== PASSWORD) return fail(401, '邮箱或密码不正确。')
+      st.user = ME.id
+      st.csrf = rotate()
+      await setCookie(true)
+      return reply(200, { user: st.user, csrfToken: st.csrf })
+    }
+    if (path === '/api/auth/register' && method === 'POST') {
+      if (!st.registrationOpen) return fail(403, '注册尚未开放。')
+      return reply(202, { message: REGISTERED_MESSAGE })
+    }
+    if (path === '/api/auth/verify' && method === 'POST') {
+      m.verifyPageURL = page.url()
+      const b = input()
+      if (b.token !== VERIFY_TOKEN) return fail(400, '链接无效或已过期。')
+      if (typeof b.password !== 'string' || [...b.password].length < 15) return fail(400, '密码至少需要 15 个字符。')
+      st.user = ME.id
+      st.csrf = rotate()
+      await setCookie(true)
+      return reply(201, { user: st.user, csrfToken: st.csrf })
+    }
+    if ((path === '/api/auth/logout' || path === '/api/auth/logout-all') && method === 'POST') {
+      st.user = null
+      st.csrf = rotate()
+      await setCookie(false)
+      return reply(200, { user: null })
+    }
+    if (path === `/api/u/${ME.id}` && method === 'GET') return reply(200, userWall())
+
+    // Everything below is the owner API.
+    const owner = /^\/api\/(archive|uploads|photos|upload-prefs|profile)(\/|$)/.test(path)
+    if (!owner) return route.fallback()
+    if (path.includes('/original')) return route.fallback()
+    if (st.user !== ME.id) return fail(401, '请先登录。')
+
+    if (path === '/api/archive' && method === 'GET') {
+      const q = url.searchParams
+      let list = st.archive
+      if (q.has('year')) list = list.filter((a) => String(a.year) === q.get('year'))
+      if (q.has('in_collection')) list = list.filter((a) => a.inCollection === (q.get('in_collection') === 'true'))
+      if (q.has('status')) list = list.filter((a) => a.photo.status === q.get('status'))
+      if (q.has('camera')) list = list.filter((a) => (a.photo.exif as { camera?: string } | null)?.camera === q.get('camera'))
+      const start = Number(q.get('cursor') ?? '0')
+      const items = list.slice(start, start + pageSize).map((a) => a.photo)
+      const next = start + pageSize < list.length ? String(start + pageSize) : null
+      return reply(200, { items, nextCursor: next, facets: facets() })
+    }
+    if (path === '/api/uploads' && method === 'POST') {
+      const b = input()
+      const known = st.archive.find((a) => a.sha === b.sha256)
+      if (known) return reply(200, known.photo)
+      const id = `up${++uploads}`
+      const ct = String(b.contentType)
+      st.archive.unshift({
+        photo: ownerPhoto(id, 'port', 2026, 0, { status: 'uploading', title: String(b.filename).replace(/\.[^.]+$/, ''), createdAt: Date.UTC(2026, 9, 18) }),
+        sha: String(b.sha256),
+        inCollection: false,
+        year: 2026,
+      })
+      return reply(201, {
+        photoId: id,
+        upload: { url: `${S3_ORIGIN}/mock-s3/${id}`, method: 'PUT', headers: { 'Content-Type': ct, 'x-amz-checksum-sha256': `sum-${id}` } },
+        expiresAt: Date.now() + 15 * 60_000,
+      })
+    }
+    const done = path.match(/^\/api\/uploads\/([^/]+)\/complete$/)
+    if (done && method === 'POST') {
+      const a = st.archive.find((x) => x.photo.id === done[1])
+      if (!a) return fail(404, '未找到。')
+      if (!putDone.has(a.photo.id)) return fail(409, '原图尚未上传。')
+      a.photo.status = 'processing'
+      return reply(200, a.photo)
+    }
+    const ph = path.match(/^\/api\/photos\/([^/]+)$/)
+    if (ph) {
+      const i = st.archive.findIndex((x) => x.photo.id === ph[1])
+      if (i < 0) return fail(404, '未找到。')
+      const a = st.archive[i]!
+      if (method === 'DELETE') {
+        st.archive.splice(i, 1)
+        // The real backend answers 204 with no body.
+        return reply(204)
+      }
+      if (method === 'GET') {
+        const n = (polls.get(a.photo.id) ?? 0) + 1
+        polls.set(a.photo.id, n)
+        // Ready on the second poll.
+        if (a.photo.status === 'processing' && n >= 2) a.photo.status = 'ready'
+        return reply(200, a.photo)
+      }
+    }
+    if (path === '/api/upload-prefs') {
+      if (method === 'GET') return reply(200, st.prefs)
+      if (method === 'PUT') {
+        st.prefs = { ...input(), updatedAt: Date.now() }
+        return reply(200, st.prefs)
+      }
+    }
+    if (path === '/api/profile' && method === 'PUT') {
+      const b = input()
+      st.profile = { name: String(b.name).trim(), bio: String(b.bio ?? '').trim(), wallLayout: b.wallLayout === 'grid' ? 'grid' : 'salon' }
+      return reply(200, { userId: ME.id, ...st.profile, updatedAt: Date.now() })
+    }
+    return fail(404, '未找到。')
+  })
+  return m
 }
