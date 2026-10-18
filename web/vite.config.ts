@@ -26,9 +26,11 @@ export default defineConfig({
     manifest: true,
   },
   server: {
+    // Keys are prefixes unless they start with ^: a bare '/m' would also
+    // proxy the SPA routes /me and /me/* to the backend.
     proxy: {
-      '/api': 'http://127.0.0.1:18150',
-      '/m': 'http://127.0.0.1:18150',
+      '^/api/': 'http://127.0.0.1:18150',
+      '^/m/': 'http://127.0.0.1:18150',
     },
   },
 })
