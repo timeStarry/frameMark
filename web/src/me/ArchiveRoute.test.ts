@@ -12,8 +12,11 @@ const api = vi.hoisted(() => ({
   getArchive: vi.fn(),
   getPhoto: vi.fn(),
   deletePhoto: vi.fn(),
+  createUpload: vi.fn(),
+  completeUpload: vi.fn(),
 }))
 vi.mock('../api/me', () => api)
+vi.mock('./sha256', () => ({ sha256Hex: async (f: File) => `h-${f.name}` }))
 
 import ArchiveRoute from './ArchiveRoute.vue'
 
@@ -94,6 +97,8 @@ beforeEach(() => {
   })
   api.getPhoto.mockReset()
   api.deletePhoto.mockReset()
+  api.createUpload.mockReset()
+  api.completeUpload.mockReset()
   vi.stubGlobal(
     'IntersectionObserver',
     class extends FakeIO {
@@ -235,8 +240,8 @@ describe('ArchiveRoute filters', () => {
     const st = w!.find('select[name="status"]').findAll('option')
     expect(st.map((o) => o.text())).toEqual(['全部', '处理中', '失败'])
     expect(st.map((o) => o.attributes('value'))).toEqual(['', 'processing', 'failed'])
-    // Every control has a visible label.
-    for (const el of w!.findAll('select, input')) {
+    // Every control has a visible label (the hidden file input is reached through 上传).
+    for (const el of w!.findAll('select, input:not([type="file"])')) {
       const id = el.attributes('id')!
       expect(w!.find(`label[for="${id}"]`).text().length).toBeGreaterThan(0)
     }
@@ -433,5 +438,131 @@ describe('ArchiveRoute delete', () => {
     await flushPromises()
     expect(w!.find('dialog').attributes('open')).toBeUndefined()
     expect(w!.find('aside').exists()).toBe(true)
+  })
+})
+
+class FakeXHR {
+  static all: FakeXHR[] = []
+  upload: { onprogress: ((e: ProgressEvent) => void) | null } = { onprogress: null }
+  onload: (() => void) | null = null
+  onerror: (() => void) | null = null
+  onabort: (() => void) | null = null
+  withCredentials = false
+  status = 0
+  aborted = false
+  constructor() {
+    FakeXHR.all.push(this)
+  }
+  open() {}
+  setRequestHeader() {}
+  send() {}
+  abort() {
+    this.aborted = true
+    this.onabort?.()
+  }
+}
+
+describe('ArchiveRoute uploads', () => {
+  beforeEach(() => {
+    FakeXHR.all = []
+    vi.stubGlobal('XMLHttpRequest', FakeXHR)
+    api.createUpload.mockImplementation(async (f: { filename: string }) => ({
+      ok: true,
+      status: 201,
+      data: { photoId: `n-${f.filename}`, upload: { url: 'https://s3/x', method: 'PUT', headers: {} }, expiresAt: 0 },
+    }))
+    api.completeUpload.mockImplementation(async (id: string) => ({ ok: true, status: 200, data: owner(id, { status: 'ready' }) }))
+  })
+
+  const input = () => w!.find('input[type="file"]')
+  function choose(files: File[]) {
+    const el = input().element as HTMLInputElement
+    Object.defineProperty(el, 'files', { value: files, configurable: true })
+    return input().trigger('change')
+  }
+  const jpg = (name: string) => new File(['x'], name, { type: 'image/jpeg' })
+
+  it('has 上传 in the header and the empty state, opening a hidden multi-file input', async () => {
+    await open()
+    const el = input().element as HTMLInputElement
+    expect(el.multiple).toBe(true)
+    expect(el.accept).toBe('image/jpeg,image/png,image/webp')
+    expect(el.hidden || el.getAttribute('tabindex') === '-1').toBe(true)
+    const ups = w!.findAll('button').filter((b) => b.text() === '上传')
+    expect(ups.length).toBe(2)
+    expect(w!.find('[data-upload-slot]').find('button').text()).toBe('上传')
+    const click = vi.spyOn(el, 'click')
+    await ups[0]!.trigger('click')
+    expect(click).toHaveBeenCalled()
+  })
+
+  it('prepends a finished photo to the grid, de-duplicated by id', async () => {
+    fallback = { ok: true, data: page([owner('p1'), owner('n-a.jpg')]) }
+    await open()
+    await choose([jpg('a.jpg'), jpg('b.jpg')])
+    await flushPromises()
+    expect(FakeXHR.all.length).toBe(2)
+    for (const x of FakeXHR.all) {
+      x.status = 200
+      x.onload!()
+    }
+    await flushPromises()
+    expect(tileIds()).toEqual(['n-b.jpg', 'n-a.jpg', 'p1'])
+    expect(w!.find('[aria-live="polite"]').text()).toBe('2 张完成')
+  })
+
+  it('shows a tile from the empty state after upload', async () => {
+    await open()
+    await choose([jpg('a.jpg')])
+    await flushPromises()
+    FakeXHR.all[0]!.status = 200
+    FakeXHR.all[0]!.onload!()
+    await flushPromises()
+    expect(tileIds()).toEqual(['n-a.jpg'])
+  })
+
+  it('shows a 松开以上传 overlay while files are dragged and adds dropped files', async () => {
+    await open()
+    const overlay = () => w!.find('[data-drop-overlay]')
+    expect(overlay().exists()).toBe(false)
+    const dt = { types: ['Files'], files: [jpg('d.jpg')] }
+    const enter = new Event('dragenter', { cancelable: true }) as DragEvent
+    Object.defineProperty(enter, 'dataTransfer', { value: dt })
+    document.dispatchEvent(enter)
+    await nextTick()
+    expect(overlay().text()).toBe('松开以上传')
+    expect(overlay().attributes('aria-hidden')).toBe('true')
+    const over = new Event('dragover', { cancelable: true }) as DragEvent
+    Object.defineProperty(over, 'dataTransfer', { value: dt })
+    document.dispatchEvent(over)
+    expect(over.defaultPrevented).toBe(true)
+    const drop = new Event('drop', { cancelable: true }) as DragEvent
+    Object.defineProperty(drop, 'dataTransfer', { value: dt })
+    document.dispatchEvent(drop)
+    expect(drop.defaultPrevented).toBe(true)
+    await flushPromises()
+    expect(overlay().exists()).toBe(false)
+    expect(api.createUpload).toHaveBeenCalledWith(expect.objectContaining({ filename: 'd.jpg' }))
+  })
+
+  it('ignores drags that carry no files', async () => {
+    await open()
+    const enter = new Event('dragenter', { cancelable: true }) as DragEvent
+    Object.defineProperty(enter, 'dataTransfer', { value: { types: ['text/plain'], files: [] } })
+    document.dispatchEvent(enter)
+    await nextTick()
+    expect(w!.find('[data-drop-overlay]').exists()).toBe(false)
+  })
+
+  it('aborts the in-flight PUT and drops beforeunload on unmount', async () => {
+    const remove = vi.spyOn(window, 'removeEventListener')
+    await open()
+    await choose([jpg('a.jpg')])
+    await flushPromises()
+    w!.unmount()
+    w = null
+    expect(FakeXHR.all[0]!.aborted).toBe(true)
+    expect(remove.mock.calls.some((c) => c[0] === 'beforeunload')).toBe(true)
+    remove.mockRestore()
   })
 })

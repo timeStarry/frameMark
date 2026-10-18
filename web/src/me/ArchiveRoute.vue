@@ -4,17 +4,21 @@
 // each change aborts the open requests and reloads from the first page.
 // Paging mirrors the square: one guarded more() behind a sentinel and a
 // 载入更多 button. Selecting a tile opens a non-modal detail panel; delete
-// goes through the modal ConfirmDialog.
+// goes through the modal ConfirmDialog. Uploads (spec §6) come from the 上传
+// button or a page-wide drop; finished photos are prepended to the grid.
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, useId, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import type { ArchiveFacets, ArchiveQuery, OwnerPhoto } from '../api/types'
-import { deletePhoto, getArchive } from '../api/me'
+import { completeUpload, createUpload, deletePhoto, getArchive, getPhoto } from '../api/me'
 import WallStatus from '../walls/WallStatus.vue'
 import ArchiveFilters from './ArchiveFilters.vue'
 import ArchiveGrid from './ArchiveGrid.vue'
 import PhotoPanel from './PhotoPanel.vue'
 import ConfirmDialog from './ConfirmDialog.vue'
 import { fromRoute, isFiltered, toQuery } from './archiveQuery'
+import UploadTray from './UploadTray.vue'
+import { ACCEPT, createQueue, sleep, xhrPut } from './uploadQueue'
+import { sha256Hex } from './sha256'
 
 const route = useRoute()
 const router = useRouter()
@@ -176,11 +180,78 @@ async function confirmDelete() {
   else heading.value?.focus()
 }
 
+// --- Uploads ---
+
+const ACCEPT_ATTR = ACCEPT.join(',')
+const fileInput = ref<HTMLInputElement | null>(null)
+const queue = createQueue({
+  hash: sha256Hex,
+  create: createUpload,
+  complete: completeUpload,
+  get: getPhoto,
+  put: xhrPut,
+  sleep,
+  now: () => Date.now(),
+})
+queue.onDone((p) => {
+  items.value = [p, ...items.value.filter((x) => x.id !== p.id)]
+})
+
+function pickFiles() {
+  fileInput.value?.click()
+}
+
+function onFileChange(e: Event) {
+  const el = e.target as HTMLInputElement
+  if (el.files?.length) queue.add(Array.from(el.files))
+  // Clearing lets the same file be chosen again (e.g. after a rejection).
+  el.value = ''
+}
+
+// Page-wide drop: dragenter/dragleave fire per child element, so count them.
+const dragging = ref(false)
+let dragDepth = 0
+const hasFiles = (e: DragEvent) => Array.from(e.dataTransfer?.types ?? []).includes('Files')
+
+function onDragEnter(e: DragEvent) {
+  if (!hasFiles(e)) return
+  e.preventDefault()
+  dragDepth++
+  dragging.value = true
+}
+function onDragOver(e: DragEvent) {
+  if (!hasFiles(e)) return
+  e.preventDefault()
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'
+}
+function onDragLeave(e: DragEvent) {
+  if (!hasFiles(e)) return
+  dragDepth = Math.max(0, dragDepth - 1)
+  if (dragDepth === 0) dragging.value = false
+}
+function onDrop(e: DragEvent) {
+  if (!hasFiles(e)) return
+  e.preventDefault()
+  dragDepth = 0
+  dragging.value = false
+  const files = Array.from(e.dataTransfer?.files ?? [])
+  if (files.length) queue.add(files)
+}
+
 onMounted(() => {
   document.addEventListener('keydown', onKeydown)
+  document.addEventListener('dragenter', onDragEnter)
+  document.addEventListener('dragover', onDragOver)
+  document.addEventListener('dragleave', onDragLeave)
+  document.addEventListener('drop', onDrop)
 })
 onBeforeUnmount(() => {
   document.removeEventListener('keydown', onKeydown)
+  document.removeEventListener('dragenter', onDragEnter)
+  document.removeEventListener('dragover', onDragOver)
+  document.removeEventListener('dragleave', onDragLeave)
+  document.removeEventListener('drop', onDrop)
+  queue.dispose()
   io?.disconnect()
   ctrl?.abort()
   moreCtrl?.abort()
@@ -192,7 +263,20 @@ void load()
 
 <template>
   <main ref="root" class="archive" :class="{ 'has-panel': selected }" :aria-labelledby="`${uid}-title`">
-    <h1 :id="`${uid}-title`" ref="heading" tabindex="-1">归档</h1>
+    <div class="head">
+      <h1 :id="`${uid}-title`" ref="heading" tabindex="-1">归档</h1>
+      <button type="button" class="upload" @click="pickFiles">上传</button>
+    </div>
+    <input
+      ref="fileInput"
+      type="file"
+      multiple
+      :accept="ACCEPT_ATTR"
+      hidden
+      tabindex="-1"
+      @change="onFileChange"
+    />
+    <UploadTray :items="queue.items" @retry="queue.retry" @clear="queue.clearFinished" />
     <ArchiveFilters :q="q" :facets="facets" @update="onFilters" />
 
     <template v-if="state === 'idle'">
@@ -202,8 +286,9 @@ void load()
         </template>
         <template v-else>
           <p>还没有照片</p>
-          <!-- Task 6 mounts the upload button here. -->
-          <div data-upload-slot class="upload-slot" />
+          <div data-upload-slot class="upload-slot">
+            <button type="button" class="upload" @click="pickFiles">上传</button>
+          </div>
         </template>
       </div>
       <template v-else>
@@ -230,6 +315,7 @@ void load()
       @confirm="confirmDelete"
       @cancel="cancelDelete"
     />
+    <div v-if="dragging" data-drop-overlay class="drop" aria-hidden="true">松开以上传</div>
   </main>
 </template>
 
@@ -243,6 +329,41 @@ void load()
   .archive.has-panel {
     padding-right: calc(400px + var(--space-16));
   }
+}
+.head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-16);
+}
+.upload {
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0 var(--space-16);
+  border: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  cursor: pointer;
+}
+.upload:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+}
+.drop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px dashed var(--accent);
+  background: rgba(11, 11, 12, 0.85);
+  color: var(--fg);
+  font-family: var(--font-title);
+  font-size: 1.5rem;
+  pointer-events: none;
 }
 h1 {
   font-family: var(--font-title);
