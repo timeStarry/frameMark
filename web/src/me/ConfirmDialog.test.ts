@@ -66,8 +66,23 @@ describe('ConfirmDialog', () => {
     await flushPromises()
     // A close request the browser does not let cancel veto (e.g. a repeated
     // Android back gesture) closes the dialog without a cancel event.
-    w!.find('dialog').element.dispatchEvent(new Event('close'))
+    const d = w!.find('dialog').element as HTMLDialogElement
+    d.removeAttribute('open')
+    d.dispatchEvent(new Event('close'))
     expect(w!.emitted('cancel')!.length).toBe(1)
+  })
+
+  it('ignores a queued close that arrives after the dialog reopened', async () => {
+    make({ open: true })
+    await flushPromises()
+    await w!.setProps({ open: false })
+    await flushPromises()
+    await w!.setProps({ open: true })
+    await flushPromises()
+    // The close task queued by the first close() runs only now.
+    w!.find('dialog').element.dispatchEvent(new Event('close'))
+    expect(w!.emitted('cancel')).toBeUndefined()
+    expect(w!.find('dialog').attributes('open')).toBeDefined()
   })
 
   it('does not emit cancel for the close that follows open turning false', async () => {

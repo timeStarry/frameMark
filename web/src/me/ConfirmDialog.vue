@@ -63,9 +63,11 @@ function onCancelEvent(e: Event) {
  * A close the cancel event could not veto (browsers may ignore preventDefault
  * without fresh user activation) leaves the parent's `open` true; report it as
  * a cancel so the parent's state matches and the next open fires its watch.
+ * `close` is dispatched as a queued task, so it can arrive after the dialog
+ * was already reopened; only a dialog that is still closed counts.
  */
 function onCloseEvent() {
-  if (props.open) emit('cancel')
+  if (props.open && !el.value?.open) emit('cancel')
 }
 
 function onKeydown(e: KeyboardEvent) {
