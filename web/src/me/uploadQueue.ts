@@ -94,9 +94,14 @@ export function xhrPut(
       signal.removeEventListener('abort', onAbort)
       resolve(status)
     }
-    xhr.open(method, url)
-    xhr.withCredentials = false
-    for (const [k, v] of Object.entries(headers)) xhr.setRequestHeader(k, v)
+    // A malformed URL or header from the presign makes open/setRequestHeader throw.
+    try {
+      xhr.open(method, url)
+      xhr.withCredentials = false
+      for (const [k, v] of Object.entries(headers)) xhr.setRequestHeader(k, v)
+    } catch {
+      return resolve(0)
+    }
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable && e.total > 0) onProgress(e.loaded / e.total)
     }
@@ -104,7 +109,11 @@ export function xhrPut(
     xhr.onerror = () => finish(0)
     xhr.onabort = () => finish(0)
     signal.addEventListener('abort', onAbort)
-    xhr.send(file)
+    try {
+      xhr.send(file)
+    } catch {
+      finish(0)
+    }
   })
 }
 
@@ -155,9 +164,18 @@ export function createQueue(deps: UploadDeps, opts: { concurrency?: number; poll
     }
   }
 
+  /** Never rejects: a throw from any step ends a still-live item as a retryable failure. */
   async function run(item: QueueItem, token: number) {
+    const live = () => !life.signal.aborted && runs.get(item.key) === token
+    try {
+      await steps(item, live)
+    } catch {
+      if (live()) set(item, { state: 'failed', message: MSG_PUT, retryable: true, progress: 0 })
+    }
+  }
+
+  async function steps(item: QueueItem, live: () => boolean) {
     const signal = life.signal
-    const live = () => !signal.aborted && runs.get(item.key) === token
     const fail = (message: string, retryable = true) => set(item, { state: 'failed', message, retryable, progress: 0 })
 
     set(item, { state: 'hashing', progress: 0, message: '', retryable: false, settled: false })

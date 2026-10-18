@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi, type Mocked } from 'vi
 import type { OwnerPhoto, UploadInit } from '../api/types'
 import type { WriteResult } from '../api/write'
 import type { Result } from '../api/client'
-import { createQueue, MAX_BYTES, sleep, xhrPut, type UploadDeps } from './uploadQueue'
+import { createQueue, MAX_BYTES, sleep, summarize, xhrPut, type UploadDeps } from './uploadQueue'
 
 function photo(id: string, over: Partial<OwnerPhoto> = {}): OwnerPhoto {
   return {
@@ -324,6 +324,90 @@ describe('upload queue', () => {
     expect(remove).toHaveBeenCalledWith('beforeunload', handler2)
     add.mockRestore()
     remove.mockRestore()
+  })
+
+  describe('a step that throws', () => {
+    // No @types/node in this project; type just the two methods we use.
+    type Listener = (e: unknown) => void
+    const proc = (globalThis as unknown as { process: { on(ev: string, f: Listener): void; off(ev: string, f: Listener): void } }).process
+    const boom = () => Promise.reject(new Error('boom'))
+    const cases: [string, (d: Mocked<UploadDeps>) => void, number][] = [
+      ['create', (d) => d.create.mockImplementationOnce(boom), 0],
+      ['put', (d) => d.put.mockImplementationOnce(boom), 0],
+      ['complete', (d) => d.complete.mockImplementationOnce(boom), 1],
+      ['get', (d) => d.get.mockImplementationOnce(boom), 1],
+    ]
+    for (const [step, arm, putsBeforeFail] of cases) {
+      it(`ends the item failed and retryable when ${step} rejects, and a retry succeeds`, async () => {
+        const unhandled: unknown[] = []
+        const onUnhandled = (e: unknown) => unhandled.push(e)
+        proc.on('unhandledRejection', onUnhandled)
+        const remove = vi.spyOn(window, 'removeEventListener')
+        try {
+          deps.complete.mockImplementation(async (id: string) => ({ ok: true, status: 200, data: photo(id) }))
+          arm(deps)
+          const q = createQueue(deps)
+          const done = vi.fn()
+          q.onDone(done)
+          q.add([file('a.jpg')])
+          await settle()
+          for (let i = 0; i < putsBeforeFail; i++) puts[i]!.resolve(200)
+          await settle()
+          await vi.advanceTimersByTimeAsync(2000)
+          await settle()
+          expect(q.items[0]).toMatchObject({ state: 'failed', message: '上传失败，请重试', retryable: true })
+          expect(summarize(q.items)).toBe('1 张失败')
+          expect(remove.mock.calls.some((c) => c[0] === 'beforeunload')).toBe(true)
+          expect(done).not.toHaveBeenCalled()
+
+          q.retry(q.items[0]!.key)
+          await settle()
+          puts.at(-1)!.resolve(200)
+          await settle()
+          await vi.advanceTimersByTimeAsync(2000)
+          await settle()
+          expect(q.items[0]!.state).toBe('done')
+          expect(done).toHaveBeenCalledTimes(1)
+          // Real timers let any unhandled rejection surface before we check.
+          vi.useRealTimers()
+          await new Promise((r) => setTimeout(r, 0))
+          expect(unhandled).toEqual([])
+        } finally {
+          proc.off('unhandledRejection', onUnhandled)
+          remove.mockRestore()
+        }
+      })
+    }
+
+    it('a throw after dispose leaves the item untouched', async () => {
+      let reject!: (e: unknown) => void
+      deps.create.mockImplementationOnce(() => new Promise((_, r) => (reject = r)))
+      const q = createQueue(deps)
+      q.add([file('a.jpg')])
+      await settle()
+      q.dispose()
+      reject(new Error('aborted'))
+      await settle()
+      expect(q.items[0]!.state).toBe('hashing')
+      expect(q.items[0]!.message).toBe('')
+    })
+
+    it('xhrPut resolves 0 when open throws', async () => {
+      class ThrowingXHR {
+        upload = {}
+        open() {
+          throw new DOMException('bad url', 'SyntaxError')
+        }
+        setRequestHeader() {}
+        send() {}
+      }
+      vi.stubGlobal('XMLHttpRequest', ThrowingXHR)
+      try {
+        expect(await xhrPut('::', 'PUT', {}, file('a.jpg'), () => {}, new AbortController().signal)).toBe(0)
+      } finally {
+        vi.unstubAllGlobals()
+      }
+    })
   })
 
   it('clearFinished drops completed items only', async () => {
