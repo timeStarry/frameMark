@@ -6,6 +6,7 @@ import { useRouter } from 'vue-router'
 import type { Card, Tier } from '../api/types'
 import Cover from './Cover.vue'
 import { sweepIndex } from './layout'
+import { cardBadge, openCollection } from './open'
 
 const props = defineProps<{
   card: Card
@@ -24,8 +25,10 @@ const hover = typeof matchMedia === 'function' && matchMedia('(hover: hover)').m
 
 const path = computed(() => `/c/${encodeURIComponent(props.card.id)}`)
 const href = computed(() => router.resolve({ path: path.value, query: { wall: props.wall } }).href)
+// Owner-only status (SP4a §7); null for public cards and for visitors.
+const badge = computed(() => cardBadge(props.card))
 const label = computed(() =>
-  [props.card.title, props.showOwner ? props.card.owner.name : null, `${props.card.count} 张`]
+  [props.card.title, props.showOwner ? props.card.owner.name : null, `${props.card.count} 张`, badge.value]
     .filter((s): s is string => !!s)
     .join('，'),
 )
@@ -71,13 +74,7 @@ function onLeave() {
 }
 
 function onClick(e: MouseEvent) {
-  if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
-  e.preventDefault()
-  void router.push({
-    path: path.value,
-    query: { wall: props.wall },
-    state: { fromWall: true, viewerDepth: 0 },
-  })
+  openCollection(router, props.card.id, props.wall, e)
 }
 </script>
 
@@ -110,6 +107,7 @@ function onClick(e: MouseEvent) {
     <p class="line">
       <span class="title">{{ card.title }}</span>
       <span class="meta"><template v-if="showOwner"> · {{ card.owner.name }}</template> · {{ card.count }} 张</span>
+      <span v-if="badge" class="badge">{{ badge }}</span>
     </p>
   </a>
 </template>
@@ -162,5 +160,13 @@ function onClick(e: MouseEvent) {
 }
 .meta {
   color: var(--fg-muted);
+}
+.badge {
+  margin-left: var(--space-8);
+  padding: 0 var(--space-4);
+  border: 1px solid var(--line);
+  color: var(--fg-muted);
+  font-size: 0.85em;
+  line-height: 20px;
 }
 </style>

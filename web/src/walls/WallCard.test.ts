@@ -94,6 +94,29 @@ describe('WallCard', () => {
     expect(push).not.toHaveBeenCalled()
   })
 
+  it('owner badges: 草稿 wins, then 仅链接 or 私密, in the caption and the accessible name', () => {
+    const cases: [Partial<Card>, string | null][] = [
+      [{ status: 'draft', visibility: 'public' }, '草稿'],
+      [{ status: 'draft', visibility: 'private' }, '草稿'],
+      [{ status: 'published', visibility: 'unlisted' }, '仅链接'],
+      [{ status: 'published', visibility: 'private' }, '私密'],
+      [{ status: 'published', visibility: 'public' }, null],
+      [{}, null],
+    ]
+    for (const [over, badge] of cases) {
+      w?.unmount()
+      const wr = mountCard(card('c1', '海边', '阿树', 'u1', over))
+      const a = wr.find('a.card')
+      if (badge) {
+        expect(wr.find('.line .badge').text()).toBe(badge)
+        expect(a.attributes('aria-label')).toBe(`海边，阿树，4 张，${badge}`)
+      } else {
+        expect(wr.find('.badge').exists()).toBe(false)
+        expect(a.attributes('aria-label')).toBe('海边，阿树，4 张')
+      }
+    }
+  })
+
   it('mouse sweep shows the matching preview and restores the cover on leave', async () => {
     const wr = mountCard()
     const frame = wr.find('.frame').element
