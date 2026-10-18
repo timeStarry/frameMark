@@ -69,6 +69,13 @@ describe('formatDate', () => {
     expect(formatDate(Date.UTC(2024, 4, 3, 23, 59))).toBe('2024.05.03')
     expect(formatDate(Date.UTC(1999, 11, 31))).toBe('1999.12.31')
   })
+
+  it('shifts by the EXIF offset to get the local taken date', () => {
+    const ms = Date.UTC(2026, 4, 3, 17)
+    expect(formatDate(ms, 480)).toBe('2026.05.04')
+    expect(formatDate(ms)).toBe('2026.05.03')
+    expect(formatDate(Date.UTC(2026, 4, 3, 2), -330)).toBe('2026.05.02')
+  })
 })
 
 describe('paramLine', () => {
@@ -125,6 +132,12 @@ describe('exifTable', () => {
 
   it('shows a zero bias in the table', () => {
     expect(exifTable({ exposureBias: 0 })).toEqual([{ label: '曝光补偿', value: '0 EV' }])
+  })
+
+  it('shows the taken date in the photo own time zone', () => {
+    expect(exifTable({ takenAt: Date.UTC(2026, 4, 3, 17), takenOffsetMinutes: 480 })).toEqual([
+      { label: '拍摄日期', value: '2026.05.04' },
+    ])
   })
 
   it('is empty for null', () => {

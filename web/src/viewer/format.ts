@@ -67,16 +67,14 @@ export function formatBias(exif: Exif): string | null {
 }
 
 /**
- * Unix ms -> "YYYY.MM.DD" in UTC.
+ * Unix ms -> "YYYY.MM.DD" in the photo's own time zone.
  *
- * Known limitation: the backend stores takenAt as the wall clock interpreted
- * as UTC when EXIF has no OffsetTimeOriginal (UTC formatting is then exact),
- * but as the true UTC instant when an offset is present. For the latter the
- * shown day can be off by one for shots near local midnight. No frontend
- * timezone choice fixes both cases; SP4 will store the offset and fix this.
+ * With an EXIF offset the backend stores the true UTC instant, so shifting by
+ * the offset and reading UTC fields gives the local date. Without one it
+ * stores the wall clock read as UTC, so the UTC date is already correct.
  */
-export function formatDate(ms: number): string {
-  const d = new Date(ms)
+export function formatDate(ms: number, offsetMinutes?: number): string {
+  const d = new Date(ms + (offsetMinutes ?? 0) * 60000)
   const p = (n: number) => String(n).padStart(2, '0')
   return `${d.getUTCFullYear()}.${p(d.getUTCMonth() + 1)}.${p(d.getUTCDate())}`
 }
@@ -105,7 +103,7 @@ export function exifTable(exif: Exif | null): ExifRow[] {
     ['快门', formatShutter(exif)],
     ['感光度', exif.iso === undefined ? null : `ISO ${exif.iso}`],
     ['曝光补偿', exif.exposureBias === undefined ? null : biasText(exif.exposureBias)],
-    ['拍摄日期', exif.takenAt === undefined ? null : formatDate(exif.takenAt)],
+    ['拍摄日期', exif.takenAt === undefined ? null : formatDate(exif.takenAt, exif.takenOffsetMinutes)],
   ]
   return rows.filter((r): r is [string, string] => r[1] !== null && r[1] !== '').map(([label, value]) => ({ label, value }))
 }
