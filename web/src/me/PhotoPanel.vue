@@ -1,7 +1,10 @@
 <script setup lang="ts">
 // The archive detail panel (spec §5): a right-hand <aside> from 768px, a
 // bottom sheet below. Not modal: no focus trap. Esc is handled by the route.
-import { computed, useId } from 'vue'
+// From 768px the panel starts where the archive starts (below the site and
+// workspace navs) and sticks to the top once they scroll away, so the navs
+// stay reachable while it is open.
+import { computed, onBeforeUnmount, onMounted, ref, useId } from 'vue'
 import type { OwnerPhoto } from '../api/types'
 import Cover from '../walls/Cover.vue'
 import { exifTable } from '../viewer/format'
@@ -10,6 +13,26 @@ const props = defineProps<{ photo: OwnerPhoto; panelId: string }>()
 const emit = defineEmits<{ close: []; delete: [] }>()
 
 const uid = useId()
+const el = ref<HTMLElement | null>(null)
+
+/** Sets --panel-top to the parent's top edge in the viewport, never above 0. */
+function place(): void {
+  const panel = el.value
+  const parent = panel?.parentElement
+  if (!panel || !parent) return
+  const top = Math.max(0, parent.getBoundingClientRect().top)
+  panel.style.setProperty('--panel-top', `${top}px`)
+}
+
+onMounted(() => {
+  place()
+  window.addEventListener('scroll', place, { passive: true })
+  window.addEventListener('resize', place)
+})
+onBeforeUnmount(() => {
+  window.removeEventListener('scroll', place)
+  window.removeEventListener('resize', place)
+})
 
 /** internal/domain PublicFieldKeys -> the labels exifTable uses. */
 const FIELD_LABELS: Record<string, string> = {
@@ -32,7 +55,7 @@ const aspect = computed(() => {
 </script>
 
 <template>
-  <aside :id="panelId" class="panel" :aria-labelledby="`${uid}-title`">
+  <aside :id="panelId" ref="el" class="panel" :aria-labelledby="`${uid}-title`">
     <div class="head">
       <h2 :id="`${uid}-title`">{{ photo.title }}</h2>
       <button type="button" class="close" @click="emit('close')">关闭</button>
@@ -96,7 +119,7 @@ const aspect = computed(() => {
 @media (min-width: 768px) {
   .panel {
     left: auto;
-    top: 0;
+    top: var(--panel-top, 0px);
     width: 400px;
     max-height: none;
     border-top: 0;

@@ -325,6 +325,12 @@ void load()
   margin: 0 auto;
   padding: var(--space-24) max(16px, 4vw) var(--space-48);
 }
+/* Phones: the bottom sheet is up to 75vh tall; let the last rows scroll above it. */
+@media (max-width: 767px) {
+  .archive.has-panel {
+    padding-bottom: calc(75vh + var(--space-16));
+  }
+}
 @media (min-width: 768px) {
   .archive.has-panel {
     padding-right: calc(400px + var(--space-16));
