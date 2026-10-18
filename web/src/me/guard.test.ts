@@ -16,6 +16,16 @@ describe('safeNext', () => {
     expect(safeNext('/me')).toBe('/me')
     expect(safeNext('/me/collections?x=1')).toBe('/me/collections?x=1')
   })
+  it('rejects dot segments, encoded or not, and undecodable paths', () => {
+    for (const v of ['/me/../u/x', '/me/%2e%2e/u/x', '/me/%2E%2E/u/x', '/me/./settings', '/me/%', '/me/..', '/me/.?x=1']) {
+      expect(safeNext(v)).toBe('/me')
+    }
+  })
+  it('still passes clean paths with a query or hash', () => {
+    for (const v of ['/me', '/me/settings?x=1', '/me/collections#top', '/me/settings?a=..', '/me/x#..']) {
+      expect(safeNext(v)).toBe(v)
+    }
+  })
   it('falls back to /me for anything else', () => {
     for (const v of ['https://x', '//x', '/\\x', '/u/1', '/me//evil.com', '/me\\x', '', 'me', undefined, null, 3, ['/me/settings']]) {
       expect(safeNext(v)).toBe('/me')

@@ -5,11 +5,29 @@ import { refresh, session } from '../api/session'
 
 const FALLBACK = '/me'
 
-/** `v` if it is an in-site /me path with no `//` or `\`; otherwise `/me`. */
+/** True if a path segment, once decoded, is `.` or `..`, or does not decode. */
+function hasDotSegment(path: string): boolean {
+  for (const seg of path.split('/')) {
+    let d: string
+    try {
+      d = decodeURIComponent(seg)
+    } catch {
+      return true
+    }
+    if (d === '.' || d === '..') return true
+  }
+  return false
+}
+
+/**
+ * `v` if it is an in-site /me path with no `//`, `\` or dot segment (the
+ * browser would normalise `/me/../u/x` to `/u/x`); otherwise `/me`.
+ */
 export function safeNext(v: unknown): string {
   if (typeof v !== 'string') return FALLBACK
   if (!/^\/me(?:[/?#]|$)/.test(v)) return FALLBACK
   if (v.includes('//') || v.includes('\\')) return FALLBACK
+  if (hasDotSegment(v.split(/[?#]/, 1)[0]!)) return FALLBACK
   return v
 }
 
