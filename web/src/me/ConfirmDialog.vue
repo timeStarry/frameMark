@@ -2,7 +2,8 @@
 // A modal confirmation on the native <dialog> (spec §10). Opens with
 // showModal() (falls back to the open attribute where it is missing, e.g.
 // happy-dom), focuses 取消, and emits cancel for 取消, Esc and the dialog's
-// own cancel event. The parent owns focus return after it closes.
+// own cancel event, plus any native close while `open` is still set. The
+// parent owns focus return after it closes.
 import { nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
 
 const props = defineProps<{
@@ -58,6 +59,15 @@ function onCancelEvent(e: Event) {
   emit('cancel')
 }
 
+/**
+ * A close the cancel event could not veto (browsers may ignore preventDefault
+ * without fresh user activation) leaves the parent's `open` true; report it as
+ * a cancel so the parent's state matches and the next open fires its watch.
+ */
+function onCloseEvent() {
+  if (props.open) emit('cancel')
+}
+
 function onKeydown(e: KeyboardEvent) {
   if (e.key !== 'Escape') return
   e.preventDefault()
@@ -77,6 +87,7 @@ function onConfirm() {
     :aria-labelledby="`${id}-title`"
     :aria-describedby="`${id}-body`"
     @cancel="onCancelEvent"
+    @close="onCloseEvent"
     @keydown="onKeydown"
   >
     <h2 :id="`${id}-title`">{{ title }}</h2>

@@ -61,4 +61,21 @@ describe('ConfirmDialog', () => {
     await flushPromises()
     expect(w!.find('dialog').attributes('open')).toBeUndefined()
   })
+  it('emits cancel when the dialog closes natively while open is still set', async () => {
+    make({ open: true })
+    await flushPromises()
+    // A close request the browser does not let cancel veto (e.g. a repeated
+    // Android back gesture) closes the dialog without a cancel event.
+    w!.find('dialog').element.dispatchEvent(new Event('close'))
+    expect(w!.emitted('cancel')!.length).toBe(1)
+  })
+
+  it('does not emit cancel for the close that follows open turning false', async () => {
+    make({ open: true })
+    await flushPromises()
+    await w!.setProps({ open: false })
+    w!.find('dialog').element.dispatchEvent(new Event('close'))
+    await flushPromises()
+    expect(w!.emitted('cancel')).toBeUndefined()
+  })
 })
