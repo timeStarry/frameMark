@@ -1,0 +1,144 @@
+/* Shared by PrefsForm and ProfileForm (scoped per component via src). */
+.settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-16);
+  padding: var(--space-24) 0;
+  border-top: 1px solid var(--line);
+}
+h2 {
+  margin: 0;
+  font-family: var(--font-title);
+  font-weight: 400;
+  font-size: 1.25rem;
+}
+.lead,
+.hint {
+  margin: 0;
+  color: var(--fg-muted);
+}
+fieldset {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+legend {
+  margin-bottom: var(--space-8);
+  padding: 0;
+}
+.checks,
+.radios,
+.switches {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: var(--space-24);
+}
+.switches {
+  flex-direction: column;
+}
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-8);
+  min-height: 44px;
+  cursor: pointer;
+}
+.check input {
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+.watermark {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+  margin-top: var(--space-12);
+}
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.range {
+  display: flex;
+  align-items: center;
+  gap: var(--space-12);
+}
+.range input {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 320px;
+  min-height: 44px;
+  accent-color: var(--accent);
+}
+output {
+  min-width: 4ch;
+  font-variant-numeric: tabular-nums;
+}
+input[type='text'],
+select {
+  min-height: 44px;
+  max-width: 320px;
+  padding: 0 var(--space-12);
+  border: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+}
+select option {
+  background: var(--bg-wall);
+}
+.actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-16);
+}
+.status,
+.error {
+  margin: 0;
+}
+.status {
+  color: var(--fg-muted);
+}
+button {
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0 var(--space-16);
+  border: 1px solid var(--fg);
+  border-radius: 0;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  cursor: pointer;
+}
+button:disabled {
+  border-color: var(--line);
+  cursor: default;
+  opacity: 0.6;
+}
+input:focus-visible,
+select:focus-visible,
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+textarea {
+  max-width: 480px;
+  min-height: 88px;
+  padding: var(--space-8) var(--space-12);
+  border: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  resize: vertical;
+}
+textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.danger {
+  border-color: var(--line);
+}
