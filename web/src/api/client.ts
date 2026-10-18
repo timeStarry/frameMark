@@ -12,7 +12,7 @@ function isAbort(err: unknown, signal?: AbortSignal): boolean {
   return signal?.aborted === true || (err instanceof DOMException && err.name === 'AbortError')
 }
 
-async function getJSON<T>(url: string, signal?: AbortSignal): Promise<Result<T>> {
+export async function getJSON<T>(url: string, signal?: AbortSignal): Promise<Result<T>> {
   let res: Response
   try {
     res = await fetch(url, {

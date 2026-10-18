@@ -34,6 +34,8 @@ export interface Exif {
   exposureBias?: number
   /** DateTimeOriginal in Unix milliseconds (UTC, or wall clock as UTC). */
   takenAt?: number
+  /** Offset of takenAt's wall clock from UTC, in minutes, when the camera recorded one. */
+  takenOffsetMinutes?: number
 }
 
 /** 64 bins per channel. */
@@ -96,6 +98,9 @@ export interface Card {
   cover: Media | null
   /** Up to five preview images; never null. */
   previews: Media[]
+  /** Owner-only fields. */
+  status?: 'draft' | 'published'
+  visibility?: 'private' | 'unlisted' | 'public'
 }
 
 /** GET /api/square. */
@@ -143,4 +148,82 @@ export interface Neighbors {
   prev: Card | null
   next: Card | null
   strip: Card[]
+}
+
+// --- Owner API (internal/api/uploads.go, archive.go, prefs.go, profile.go) ---
+
+export type PhotoStatus = 'uploading' | 'processing' | 'ready' | 'failed'
+
+/** The owner view of a photo. Never carries location. */
+export interface OwnerPhoto {
+  id: string
+  status: PhotoStatus
+  error: string | null
+  title: string
+  caption: string
+  width: number | null
+  height: number | null
+  format: string
+  createdAt: number
+  publicFields: string[]
+  histogramPublic: boolean
+  originalDownload: boolean
+  exif: Exif | null
+  media: Media | null
+}
+
+export interface ArchiveFacets {
+  years: { year: number; count: number }[]
+  cameras: { name: string; count: number }[]
+  lenses: { name: string; count: number }[]
+}
+
+/** GET /api/archive. */
+export interface ArchivePage {
+  items: OwnerPhoto[]
+  nextCursor: string | null
+  facets: ArchiveFacets
+}
+
+export interface ArchiveQuery {
+  year?: number
+  camera?: string
+  lens?: string
+  focalMin?: number
+  focalMax?: number
+  inCollection?: boolean
+  status?: PhotoStatus
+}
+
+export interface Watermark {
+  text: string
+  position: 'br' | 'bl' | 'tr' | 'tl' | 'center'
+  opacity: number
+  scale: number
+}
+
+/** GET/PUT /api/upload-prefs. */
+export interface UploadPrefs {
+  publicFields: string[]
+  histogramPublic: boolean
+  originalDownload: boolean
+  watermark: Watermark | null
+  defaultLicense: string | null
+  defaultAiDeclaration: string | null
+  locationMode: 'off' | 'archive'
+  updatedAt: number | null
+}
+
+/** PUT /api/profile. */
+export interface ProfileInput {
+  name: string
+  bio: string
+  wallLayout: 'salon' | 'grid'
+}
+
+/** POST /api/uploads, 201: presigned PUT for the original. */
+export interface UploadInit {
+  photoId: string
+  upload: { url: string; method: string; headers: Record<string, string> }
+  expiresAt: number
 }
