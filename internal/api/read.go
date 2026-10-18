@@ -53,6 +53,9 @@ type cardView struct {
 	Count    int          `json:"count"`
 	Cover    *mediaView   `json:"cover"`
 	Previews []*mediaView `json:"previews"`
+	// Status and Visibility are set only when the viewer owns the card.
+	Status     *string `json:"status,omitempty"`
+	Visibility *string `json:"visibility,omitempty"`
 }
 
 // maxPreviews bounds cardView.Previews: the first distinct photos in frame
@@ -229,15 +232,18 @@ func (s *server) loadReadable(ctx context.Context, id, viewer string) (collRow, 
 
 // --- cards ---
 
-// cardBuilder caches owner names across one response.
+// cardBuilder caches owner names across one response. viewer is the
+// signed-in user ("" when anonymous); cards they own carry status and
+// visibility.
 type cardBuilder struct {
-	s     *server
-	ctx   context.Context
-	names map[string]string
+	s      *server
+	ctx    context.Context
+	viewer string
+	names  map[string]string
 }
 
-func (s *server) cards(ctx context.Context) *cardBuilder {
-	return &cardBuilder{s: s, ctx: ctx, names: map[string]string{}}
+func (s *server) cards(ctx context.Context, viewer string) *cardBuilder {
+	return &cardBuilder{s: s, ctx: ctx, viewer: viewer, names: map[string]string{}}
 }
 
 func (b *cardBuilder) owner(id string) (ownerRef, error) {
@@ -274,6 +280,10 @@ func (b *cardBuilder) card(c collRow) (cardView, error) {
 		return cardView{}, err
 	}
 	v := cardView{ID: c.ID, Title: c.Title, Owner: o}
+	if b.viewer != "" && b.viewer == c.OwnerID {
+		st, vis := c.Status, c.Visibility
+		v.Status, v.Visibility = &st, &vis
+	}
 	if err := b.s.db.QueryRowContext(b.ctx, `SELECT count(DISTINCT fp.photo_id) FROM frame_photos fp JOIN frames f ON f.id=fp.frame_id
 		WHERE f.collection_id=?`, c.ID).Scan(&v.Count); err != nil {
 		return cardView{}, err
@@ -340,7 +350,7 @@ func (s *server) collectionPhotos(ctx context.Context, c collRow, viewer string)
 	rows, err := s.db.QueryContext(ctx, `SELECT p.id,p.owner_id,p.status,p.title,p.caption,p.width,p.height,p.derived_hash,
 			p.public_fields,p.histogram_public,o.public_fields,o.histogram_public,
 			e.photo_id,e.camera_make,e.camera_model,e.lens_model,e.focal_length_mm,e.focal_length_35mm,e.aperture,
-			e.exposure_time,e.exposure_seconds,e.iso,e.exposure_bias,e.taken_at,
+			e.exposure_time,e.exposure_seconds,e.iso,e.exposure_bias,e.taken_at,e.taken_offset_min,
 			h.bins,a.source
 		FROM photos p
 		LEFT JOIN photo_overrides o ON o.collection_id=? AND o.photo_id=p.id
@@ -366,13 +376,13 @@ func (s *server) collectionPhotos(ctx context.Context, c collRow, viewer string)
 			mk, model, lens, shutter sql.NullString
 			focal, focal35, ap, secs sql.NullFloat64
 			bias                     sql.NullFloat64
-			iso, taken               sql.NullInt64
+			iso, taken, offset       sql.NullInt64
 			bins                     []byte
 			attr                     sql.NullString
 		)
 		if err := rows.Scan(&v.ID, &owner, &status, &v.Title, &v.Caption, &width, &height, &hash,
 			&fields, &hist, &oFields, &oHist,
-			&exifRow, &mk, &model, &lens, &focal, &focal35, &ap, &shutter, &secs, &iso, &bias, &taken,
+			&exifRow, &mk, &model, &lens, &focal, &focal35, &ap, &shutter, &secs, &iso, &bias, &taken, &offset,
 			&bins, &attr); err != nil {
 			return nil, err
 		}
@@ -405,7 +415,7 @@ func (s *server) collectionPhotos(ctx context.Context, c collRow, viewer string)
 			set("shutter", func() { ex.Shutter, ex.ExposureSeconds = nonEmpty(shutter), floatPtr(secs) })
 			set("iso", func() { ex.ISO = intPtr(iso) })
 			set("exposure_bias", func() { ex.ExposureBias = floatPtr(bias) })
-			set("taken_date", func() { ex.TakenAt = intPtr(taken) })
+			set("taken_date", func() { ex.TakenAt, ex.TakenOffsetMinutes = intPtr(taken), intPtr(offset) })
 			if ex != (exifView{}) {
 				v.EXIF = &ex
 			}
@@ -443,7 +453,7 @@ func (s *server) readCollection(w http.ResponseWriter, r *http.Request) (int, an
 	if err != nil {
 		return 0, nil, err
 	}
-	o, err := s.cards(ctx).owner(c.OwnerID)
+	o, err := s.cards(ctx, viewer).owner(c.OwnerID)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -529,7 +539,7 @@ func (s *server) readNeighbors(w http.ResponseWriter, r *http.Request) (int, any
 		}
 		used = wallUser + ":" + cur.OwnerID
 	}
-	b := s.cards(ctx)
+	b := s.cards(ctx, viewer)
 	v := neighborsView{Wall: used, Strip: []cardView{}}
 	if len(list) == 0 {
 		return http.StatusOK, v, nil
@@ -692,7 +702,7 @@ func (s *server) readAlbum(w http.ResponseWriter, r *http.Request) (int, any, er
 	if err != nil {
 		return 0, nil, err
 	}
-	b := s.cards(ctx)
+	b := s.cards(ctx, viewer)
 	o, err := b.owner(a.OwnerID)
 	if err != nil {
 		return 0, nil, err
@@ -735,7 +745,7 @@ func (s *server) readUser(w http.ResponseWriter, r *http.Request) (int, any, err
 	if err != nil {
 		return 0, nil, err
 	}
-	b := s.cards(ctx)
+	b := s.cards(ctx, viewer)
 	if v.Collections, err = b.list(wall); err != nil {
 		return 0, nil, err
 	}
@@ -790,7 +800,7 @@ func (s *server) readSquare(w http.ResponseWriter, r *http.Request) (int, any, e
 		return 0, nil, err
 	}
 	ctx := r.Context()
-	b := s.cards(ctx)
+	b := s.cards(ctx, identity.User(ctx))
 	v := squareView{Featured: []cardView{}}
 
 	var page []collRow

@@ -157,13 +157,9 @@ func cmdServe(ctx context.Context, cfg config.Config, role string, log *slog.Log
 		return err
 	}
 
-	var mailer identity.Mailer
-	if (role == "api" || role == "all") && cfg.SMTPConfigFile != "" {
-		s, err := mail.LoadSMTP(cfg.SMTPConfigFile)
-		if err != nil {
-			return err
-		}
-		mailer = mail.NewSMTP(s)
+	mailer, err := pickMailer(cfg, role, func(format string, args ...any) { log.Warn(fmt.Sprintf(format, args...)) })
+	if err != nil {
+		return err
 	}
 
 	var id *identity.Service
@@ -199,9 +195,10 @@ func cmdServe(ctx context.Context, cfg config.Config, role string, log *slog.Log
 
 	var srv *http.Server
 	if role == "api" || role == "all" {
+		hosts := s3Hosts(cfg)
 		h := rootHandler(
 			api.New(api.Deps{DB: d, Identity: id, Storage: store, Jobs: q, Cfg: cfg}),
-			webui.Handler(webui.Options{CDNBase: cfg.CDNBase, ImgHosts: imgHosts(cfg)}),
+			webui.Handler(webui.Options{CDNBase: cfg.CDNBase, ImgHosts: hosts, ConnectHosts: hosts}),
 		)
 		srv = &http.Server{
 			Addr:              cfg.Listen,
@@ -268,10 +265,31 @@ func rootHandler(apiH, web http.Handler) http.Handler {
 	})
 }
 
-// imgHosts returns the origins presigned S3 URLs can point at, for the CSP
-// img-src. Path-style URLs use the endpoint origin; virtual-host style puts
-// the bucket in a subdomain, so each bucket's origin is listed too.
-func imgHosts(cfg config.Config) []string {
+// pickMailer returns the verification mailer for role: SMTP when a config
+// file is set, else a log mailer in dev mode, else nil (register is 503).
+// The worker role never sends mail.
+func pickMailer(cfg config.Config, role string, logf func(format string, args ...any)) (identity.Mailer, error) {
+	if role != "api" && role != "all" {
+		return nil, nil
+	}
+	if cfg.SMTPConfigFile != "" {
+		s, err := mail.LoadSMTP(cfg.SMTPConfigFile)
+		if err != nil {
+			return nil, err
+		}
+		return mail.NewSMTP(s), nil
+	}
+	if cfg.Dev {
+		return mail.LogSender{Log: logf}, nil
+	}
+	return nil, nil
+}
+
+// s3Hosts returns the origins presigned S3 URLs can point at, for the CSP
+// img-src (presigned GETs) and connect-src (direct presigned PUT uploads).
+// Path-style URLs use the endpoint origin; virtual-host style puts the
+// bucket in a subdomain, so each bucket's origin is listed too.
+func s3Hosts(cfg config.Config) []string {
 	u, err := url.Parse(cfg.S3Endpoint)
 	if cfg.S3Endpoint == "" || err != nil || u.Scheme == "" || u.Host == "" {
 		return nil

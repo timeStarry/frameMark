@@ -26,6 +26,9 @@ type Options struct {
 	CDNBase string
 	// ImgHosts are further image origins, such as S3 presigned URL hosts.
 	ImgHosts []string
+	// ConnectHosts are further fetch/XHR origins, such as the S3 hosts the
+	// browser PUTs presigned uploads to.
+	ConnectHosts []string
 }
 
 const (
@@ -66,12 +69,18 @@ func buildCSP(opts Options) string {
 			img = append(img, s)
 		}
 	}
+	connect := []string{"'self'"}
+	for _, s := range opts.ConnectHosts {
+		if s = strings.TrimSpace(s); s != "" {
+			connect = append(connect, s)
+		}
+	}
 	return strings.Join([]string{
 		"default-src 'self'",
 		"img-src " + strings.Join(img, " "),
 		"style-src 'self'",
 		"script-src 'self'",
-		"connect-src 'self'",
+		"connect-src " + strings.Join(connect, " "),
 		"base-uri 'none'",
 		"form-action 'self'",
 		"frame-ancestors 'none'",

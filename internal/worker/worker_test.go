@@ -585,6 +585,55 @@ func TestProcessPhotoErrWatermarkFallsBack(t *testing.T) {
 	assertDerived(t, e, id, p.hash.String)
 }
 
+func TestProcessPhotoWritesTakenOffset(t *testing.T) {
+	e := newEnv(t, nil)
+	e.prefs("off", "")
+	var off atomic.Pointer[int64]
+	e.setProcess(func(b []byte, o media.Options) (*media.Result, error) {
+		r, err := media.Process(b, o)
+		if err == nil {
+			r.EXIF.TakenOffsetMin = off.Load()
+		}
+		return r, err
+	})
+	offset := func(id string) sql.NullInt64 {
+		t.Helper()
+		var v sql.NullInt64
+		if err := e.d.QueryRow(`SELECT taken_offset_min FROM photo_exif WHERE photo_id=?`, id).Scan(&v); err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+
+	// Insert path.
+	v := int64(480)
+	off.Store(&v)
+	id := e.addPhoto("processing", testJPEG(t, false))
+	e.enqueue("process_photo", map[string]string{"photoId": id})
+	e.runOne()
+	if got := offset(id); !got.Valid || got.Int64 != 480 {
+		t.Fatalf("offset = %v, want 480", got)
+	}
+
+	// Update path: an existing row is overwritten, including back to NULL.
+	id2 := e.addPhoto("processing", testJPEG(t, true))
+	e.exec(`INSERT INTO photo_exif(photo_id,taken_offset_min) VALUES(?,60)`, id2)
+	w := int64(-330)
+	off.Store(&w)
+	e.enqueue("process_photo", map[string]string{"photoId": id2})
+	e.runOne()
+	if got := offset(id2); !got.Valid || got.Int64 != -330 {
+		t.Fatalf("updated offset = %v, want -330", got)
+	}
+	e.exec(`UPDATE photos SET status='processing' WHERE id=?`, id2)
+	off.Store(nil)
+	e.enqueue("process_photo", map[string]string{"photoId": id2})
+	e.runOne()
+	if got := offset(id2); got.Valid {
+		t.Fatalf("offset = %v, want NULL", got)
+	}
+}
+
 func TestProcessPhotoPermanentFailures(t *testing.T) {
 	cases := []struct {
 		name string

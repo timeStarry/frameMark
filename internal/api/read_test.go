@@ -571,3 +571,126 @@ func TestReadEndpointsAnonymousGetNoCSRF(t *testing.T) {
 		}
 	}
 }
+
+func TestTakenOffsetMinutes(t *testing.T) {
+	e := newEnv(t)
+	u1, u2, _ := viewers(e)
+	p := e.mediaPhoto("u1", "P")
+	e.exec(`UPDATE photo_exif SET taken_offset_min=480 WHERE photo_id=?`, p)
+
+	// Owner view always carries it alongside takenAt.
+	ex, _ := u1.get("/api/photos/" + p).body["exif"].(map[string]any)
+	if ex["takenAt"] != float64(t0) || ex["takenOffsetMinutes"] != 480.0 {
+		t.Errorf("owner exif %v", ex)
+	}
+
+	shown := u1.coll("published", "public", nil, p)
+	hidden := u1.coll("published", "public", nil, p)
+	if r := u1.put("/api/collections/"+shown+"/overrides/"+p, `{"publicFields":["taken_date"]}`); r.code != 200 {
+		t.Fatalf("%d %s", r.code, r.raw)
+	}
+	photo := func(cid string) map[string]any {
+		r := u2.get("/api/collections/" + cid)
+		return r.body["frames"].([]any)[0].(map[string]any)["photos"].([]any)[0].(map[string]any)
+	}
+	ex, _ = photo(shown)["exif"].(map[string]any)
+	if len(ex) != 2 || ex["takenAt"] != float64(t0) || ex["takenOffsetMinutes"] != 480.0 {
+		t.Errorf("public exif with taken_date %v", ex)
+	}
+	// Default snapshot is iso+camera: taken_date hidden, so neither field.
+	ex, _ = photo(hidden)["exif"].(map[string]any)
+	for _, k := range []string{"takenAt", "takenOffsetMinutes"} {
+		if _, ok := ex[k]; ok {
+			t.Errorf("hidden taken_date leaks %s: %v", k, ex)
+		}
+	}
+
+	// A NULL offset is omitted.
+	e.exec(`UPDATE photo_exif SET taken_offset_min=NULL WHERE photo_id=?`, p)
+	ex, _ = u1.get("/api/photos/" + p).body["exif"].(map[string]any)
+	if _, ok := ex["takenOffsetMinutes"]; ok || ex["takenAt"] == nil {
+		t.Errorf("null offset %v", ex)
+	}
+}
+
+// ownerFields reports, for each card in v, whether it carries status and
+// visibility; it fails if a card has one key without the other.
+func ownerFields(t *testing.T, label string, v any) []bool {
+	t.Helper()
+	arr, _ := v.([]any)
+	out := []bool{}
+	for _, x := range arr {
+		m := x.(map[string]any)
+		_, s := m["status"]
+		_, vis := m["visibility"]
+		if s != vis {
+			t.Errorf("%s: status/visibility mismatch %v", label, m)
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+func wantAll(t *testing.T, label string, got []bool, want bool) {
+	t.Helper()
+	if len(got) == 0 {
+		t.Errorf("%s: no cards", label)
+	}
+	for i, g := range got {
+		if g != want {
+			t.Errorf("%s card %d: owner fields = %v, want %v", label, i, g, want)
+		}
+	}
+}
+
+func TestCardOwnerFields(t *testing.T) {
+	e := newEnv(t)
+	u1, u2, anon := viewers(e)
+	g := grid(e, u1)
+	r := u1.post("/api/albums", jsonBody(map[string]any{"title": "A", "visibility": "public"}))
+	al := r.body["id"].(string)
+	u1.put("/api/albums/"+al+"/items", jsonBody(map[string]any{"collectionIds": []string{g["published/public"], g["draft/private"]}}))
+
+	e.exec(`UPDATE collections SET featured_rank=1 WHERE id=?`, g["published/public"])
+
+	// Owner: each own card carries its real status and visibility.
+	own := u1.get("/api/u/u1").body["collections"].([]any)
+	wantAll(t, "owner wall", ownerFields(t, "owner wall", own), true)
+	for _, x := range own {
+		m := x.(map[string]any)
+		if key := m["status"].(string) + "/" + m["visibility"].(string); g[key] != m["id"] {
+			t.Errorf("card %v: status/visibility %s does not match", m["id"], key)
+		}
+	}
+	wantAll(t, "owner square", ownerFields(t, "owner square", u1.get("/api/square").body["items"]), true)
+	wantAll(t, "owner featured", ownerFields(t, "owner featured", u1.get("/api/square").body["featured"]), true)
+	wantAll(t, "owner album", ownerFields(t, "owner album", u1.get("/api/albums/" + al).body["members"]), true)
+	wantAll(t, "owner neighbors", ownerFields(t, "owner neighbors",
+		u1.get("/api/collections/" + g["published/public"] + "/neighbors?wall=user").body["strip"]), true)
+
+	// Others and anonymous: neither key, anywhere.
+	for name, cl := range map[string]*client{"other": u2, "anon": anon} {
+		wantAll(t, name+" wall", ownerFields(t, name, cl.get("/api/u/u1").body["collections"]), false)
+		sq := cl.get("/api/square")
+		wantAll(t, name+" square", ownerFields(t, name, sq.body["items"]), false)
+		wantAll(t, name+" featured", ownerFields(t, name, sq.body["featured"]), false)
+		wantAll(t, name+" album", ownerFields(t, name, cl.get("/api/albums/" + al).body["members"]), false)
+		nb := cl.get("/api/collections/" + g["published/public"] + "/neighbors?wall=user")
+		wantAll(t, name+" neighbors", ownerFields(t, name, nb.body["strip"]), false)
+		for _, raw := range []string{sq.raw, nb.raw} {
+			if strings.Contains(raw, `"status"`) || strings.Contains(raw, `"visibility"`) {
+				t.Errorf("%s: owner fields in %s", name, raw)
+			}
+		}
+	}
+
+	// u2's own card on the square shows owner fields to u2 only.
+	mine := u2.coll("published", "public", nil, e.mediaPhoto("u2", "mine"))
+	for _, x := range u2.get("/api/square").body["items"].([]any) {
+		m := x.(map[string]any)
+		_, has := m["status"]
+		if has != (m["id"] == mine) {
+			t.Errorf("u2 square card %v: owner fields %v", m["id"], has)
+		}
+	}
+}

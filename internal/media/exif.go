@@ -31,6 +31,9 @@ type EXIF struct {
 	// applied when present and valid; otherwise the wall-clock time is
 	// interpreted as UTC.
 	TakenAt *int64
+	// TakenOffsetMin is OffsetTimeOriginal in minutes east of UTC; nil when
+	// that tag is absent or invalid.
+	TakenOffsetMin *int64
 
 	// Latitude and Longitude are signed decimal degrees. They are only ever
 	// populated with location mode "archive".
@@ -426,6 +429,12 @@ func (p *parser) applyExif(out *EXIF, entries []entry) {
 		}
 	}
 	out.TakenAt = takenAt(dto, oto)
+	// parseOffset admits up to ±14:59; real zones stop at ±14:00, which is
+	// also the photo_exif CHECK bound, so anything beyond is dropped.
+	if off, ok := parseOffset(oto); ok && off/60 >= -840 && off/60 <= 840 {
+		m := int64(off / 60)
+		out.TakenOffsetMin = &m
+	}
 }
 
 func gcd(a, b uint64) uint64 {

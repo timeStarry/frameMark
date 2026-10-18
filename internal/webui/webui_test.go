@@ -211,6 +211,17 @@ func TestCSP(t *testing.T) {
 	}
 }
 
+func TestCSPConnectHosts(t *testing.T) {
+	got := do(t, HandlerFS(built(), Options{ConnectHosts: []string{"http://127.0.0.1:9000", " "}}), http.MethodGet, "/").Header().Get("Content-Security-Policy")
+	if !strings.Contains(got, "; connect-src 'self' http://127.0.0.1:9000; ") {
+		t.Errorf("connect hosts: %q", got)
+	}
+	got = do(t, HandlerFS(built(), Options{}), http.MethodGet, "/").Header().Get("Content-Security-Policy")
+	if !strings.Contains(got, "; connect-src 'self'; ") {
+		t.Errorf("no connect hosts: %q", got)
+	}
+}
+
 func TestEmbeddedFSHasGitkeep(t *testing.T) {
 	f, err := FS.Open("dist/.gitkeep")
 	if err != nil {

@@ -37,6 +37,17 @@ type SenderFunc func(Message) error
 
 func (f SenderFunc) Send(m Message) error { return f(m) }
 
+// LogSender writes the verification link to a log instead of mailing it.
+// It is for local development only (MARKR_DEV=1 without SMTP).
+type LogSender struct {
+	Log func(format string, args ...any)
+}
+
+func (l LogSender) Send(m Message) error {
+	l.Log("仅开发模式：验证链接 %s → %s", m.To, m.URL)
+	return nil
+}
+
 // Settings are the validated SMTP fields. Never log the struct with %+v; use
 // String(), which redacts credentials.
 type Settings struct {

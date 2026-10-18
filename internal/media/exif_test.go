@@ -539,6 +539,30 @@ func TestExtractEXIFTakenAt(t *testing.T) {
 	}
 }
 
+func TestExtractEXIFTakenOffset(t *testing.T) {
+	dto := eASCII(tagDateTimeOriginal, "2024:05:01 12:34:56")
+	cases := []struct {
+		name    string
+		entries []tEntry
+		want    *int64
+	}{
+		{"+08:00", []tEntry{dto, eASCII(tagOffsetTimeOriginal, "+08:00")}, i64(480)},
+		{"-05:30", []tEntry{dto, eASCII(tagOffsetTimeOriginal, "-05:30")}, i64(-330)},
+		{"+14:00", []tEntry{dto, eASCII(tagOffsetTimeOriginal, "+14:00")}, i64(840)},
+		{"+00:00", []tEntry{dto, eASCII(tagOffsetTimeOriginal, "+00:00")}, i64(0)},
+		{"invalid", []tEntry{dto, eASCII(tagOffsetTimeOriginal, "8h")}, nil},
+		{"out of range", []tEntry{dto, eASCII(tagOffsetTimeOriginal, "+25:00")}, nil},
+		{"beyond column bound", []tEntry{dto, eASCII(tagOffsetTimeOriginal, "+14:30")}, nil},
+		{"missing", []tEntry{dto}, nil},
+	}
+	for _, c := range cases {
+		e := mustExtract(t, exifOnly(c.entries...), "off")
+		if !reflect.DeepEqual(e.TakenOffsetMin, c.want) {
+			t.Errorf("%s: got %v want %v", c.name, fmti(e.TakenOffsetMin), fmti(c.want))
+		}
+	}
+}
+
 func TestExtractEXIFStringSanitizing(t *testing.T) {
 	long := strings.Repeat("a", 127) + "é" // 129 bytes, é straddles the cap
 	cases := []struct {

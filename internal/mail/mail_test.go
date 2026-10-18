@@ -2,6 +2,7 @@ package mail
 
 import (
 	"encoding/base64"
+	"fmt"
 	"net"
 	"net/smtp"
 	"net/textproto"
@@ -257,5 +258,16 @@ func TestLoadSMTPRejectsFIFOWithoutBlocking(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("LoadSMTP blocked opening a FIFO")
+	}
+}
+
+func TestLogSender(t *testing.T) {
+	var got string
+	var s Sender = LogSender{Log: func(format string, args ...any) { got = fmt.Sprintf(format, args...) }}
+	if err := s.Send(Message{To: "a@b.co", URL: "http://localhost/login#verify=tok"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "仅开发模式") || !strings.Contains(got, "http://localhost/login#verify=tok") || !strings.Contains(got, "a@b.co") {
+		t.Fatalf("log = %q", got)
 	}
 }

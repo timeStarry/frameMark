@@ -38,8 +38,8 @@ func TestMigrateCreatesTables(t *testing.T) {
 	if err := d.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('users','photos','collections','frames','jobs')`).Scan(&n); err != nil || n != 5 {
 		t.Fatalf("expected 5 tables, got %d err=%v", n, err)
 	}
-	if uv := userVersion(t, d); uv != 1 {
-		t.Fatalf("expected user_version 1, got %d", uv)
+	if uv := userVersion(t, d); uv != 2 {
+		t.Fatalf("expected user_version 2, got %d", uv)
 	}
 }
 
@@ -110,8 +110,8 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	if err := db.Migrate(d); err != nil {
 		t.Fatalf("second Migrate: %v", err)
 	}
-	if uv := userVersion(t, d); uv != 1 {
-		t.Fatalf("expected user_version 1, got %d", uv)
+	if uv := userVersion(t, d); uv != 2 {
+		t.Fatalf("expected user_version 2, got %d", uv)
 	}
 }
 
@@ -306,5 +306,30 @@ func TestTransactionsBeginImmediate(t *testing.T) {
 	}
 	if _, err := d2.Exec(`INSERT INTO users(id,email,password,created_at) VALUES('u','a@example.test','x',0)`); err == nil {
 		t.Fatal("write succeeded while another transaction held BEGIN IMMEDIATE")
+	}
+}
+
+func TestMigrateAddsTakenOffset(t *testing.T) {
+	d := openMigrated(t)
+	var n int
+	if err := d.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('photo_exif') WHERE name='taken_offset_min' AND type='INTEGER' AND "notnull"=0`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("taken_offset_min column: %d %v", n, err)
+	}
+	if _, err := d.Exec(`INSERT INTO users(id,email,password,created_at) VALUES('u','u@x.test','!',1)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`INSERT INTO photos(id,owner_id,status,original_key,original_sha256,original_bytes,format,public_fields,histogram_public,original_download,created_at,updated_at)
+		VALUES('p','u','ready','k','s',1,'jpeg','[]',0,0,1,1)`); err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range []any{nil, -840, 0, 480, 840} {
+		if _, err := d.Exec(`INSERT OR REPLACE INTO photo_exif(photo_id,taken_offset_min) VALUES('p',?)`, v); err != nil {
+			t.Errorf("offset %v rejected: %v", v, err)
+		}
+	}
+	for _, v := range []int{-841, 841} {
+		if _, err := d.Exec(`INSERT OR REPLACE INTO photo_exif(photo_id,taken_offset_min) VALUES('p',?)`, v); err == nil {
+			t.Errorf("offset %d accepted", v)
+		}
 	}
 }

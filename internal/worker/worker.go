@@ -686,15 +686,16 @@ func (w *Worker) commitProcess(ctx context.Context, id string, res *media.Result
 
 func upsertEXIF(ctx context.Context, tx *sql.Tx, id string, e media.EXIF) error {
 	_, err := tx.ExecContext(ctx, `INSERT INTO photo_exif(photo_id,camera_make,camera_model,lens_model,
-		focal_length_mm,focal_length_35mm,aperture,exposure_time,exposure_seconds,iso,exposure_bias,taken_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+		focal_length_mm,focal_length_35mm,aperture,exposure_time,exposure_seconds,iso,exposure_bias,taken_at,taken_offset_min)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(photo_id) DO UPDATE SET camera_make=excluded.camera_make,camera_model=excluded.camera_model,
 		lens_model=excluded.lens_model,focal_length_mm=excluded.focal_length_mm,focal_length_35mm=excluded.focal_length_35mm,
 		aperture=excluded.aperture,exposure_time=excluded.exposure_time,exposure_seconds=excluded.exposure_seconds,
-		iso=excluded.iso,exposure_bias=excluded.exposure_bias,taken_at=excluded.taken_at`,
+		iso=excluded.iso,exposure_bias=excluded.exposure_bias,taken_at=excluded.taken_at,
+		taken_offset_min=excluded.taken_offset_min`,
 		id, nullStr(e.CameraMake), nullStr(e.CameraModel), nullStr(e.LensModel),
 		nullF(e.FocalLengthMM), nullF(e.FocalLength35mm), nullF(e.Aperture),
-		nullStr(e.ExposureTime), nullF(e.ExposureSeconds), nullI(e.ISO), nullF(e.ExposureBias), nullI(e.TakenAt))
+		nullStr(e.ExposureTime), nullF(e.ExposureSeconds), nullI(e.ISO), nullF(e.ExposureBias), nullI(e.TakenAt), nullI(e.TakenOffsetMin))
 	return err
 }
 

@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -21,6 +23,7 @@ import (
 
 	"github.com/timeStarry/frameMark/internal/config"
 	"github.com/timeStarry/frameMark/internal/db"
+	"github.com/timeStarry/frameMark/internal/mail"
 	"github.com/timeStarry/frameMark/internal/webui"
 )
 
@@ -216,7 +219,7 @@ func TestRootHandlerRouting(t *testing.T) {
 	}
 }
 
-func TestImgHosts(t *testing.T) {
+func TestS3Hosts(t *testing.T) {
 	cases := []struct {
 		cfg  config.Config
 		want []string
@@ -229,8 +232,8 @@ func TestImgHosts(t *testing.T) {
 		{config.Config{S3Endpoint: "not a url"}, nil},
 	}
 	for _, c := range cases {
-		if got := imgHosts(c.cfg); !slices.Equal(got, c.want) {
-			t.Errorf("imgHosts(%q) = %v, want %v", c.cfg.S3Endpoint, got, c.want)
+		if got := s3Hosts(c.cfg); !slices.Equal(got, c.want) {
+			t.Errorf("s3Hosts(%q) = %v, want %v", c.cfg.S3Endpoint, got, c.want)
 		}
 	}
 }
@@ -417,4 +420,117 @@ func TestServeRefusesWithoutMediaFormats(t *testing.T) {
 	if err := <-done; err != nil || calls != 2 {
 		t.Fatalf("api: %v, calls %d", err, calls)
 	}
+}
+
+func TestPickMailer(t *testing.T) {
+	var logged []string
+	logf := func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }
+
+	// Dev without SMTP: the log mailer writes the verification link.
+	m, err := pickMailer(config.Config{Dev: true}, "api", logf)
+	if err != nil || m == nil {
+		t.Fatalf("dev mailer = %v, %v", m, err)
+	}
+	if err := m.Send(mail.Message{To: "a@b.co", URL: "http://localhost:18150/login#verify=tok"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(logged) != 1 || !strings.Contains(logged[0], "/login#verify=tok") || !strings.Contains(logged[0], "仅开发模式") {
+		t.Fatalf("logged %q", logged)
+	}
+
+	// Production without SMTP, and the worker role: no mailer (register is 503).
+	for _, c := range []struct {
+		cfg  config.Config
+		role string
+	}{{config.Config{}, "api"}, {config.Config{}, "all"}, {config.Config{Dev: true}, "worker"}} {
+		if m, err := pickMailer(c.cfg, c.role, logf); err != nil || m != nil {
+			t.Errorf("dev=%v role=%s: mailer %v err %v, want none", c.cfg.Dev, c.role, m, err)
+		}
+	}
+
+	// A configured SMTP file wins over dev mode and must be loadable.
+	if _, err := pickMailer(config.Config{Dev: true, SMTPConfigFile: filepath.Join(t.TempDir(), "missing.env")}, "all", logf); err == nil {
+		t.Error("missing SMTP file accepted")
+	}
+}
+
+// TestServeDevRegisterLogsLink drives /api/auth/register end to end: with
+// MARKR_DEV=1 and no SMTP the link lands in the log; without MARKR_DEV it is 503.
+func TestServeDevRegisterLogsLink(t *testing.T) {
+	for _, dev := range []bool{true, false} {
+		dir := t.TempDir()
+		addr := freeAddr(t)
+		env := testEnv(dir, "MARKR_LISTEN="+addr, "MARKR_IDENTITY_ENABLED=true", "MARKR_REGISTRATION_OPEN=true")
+		if !dev {
+			env = slices.DeleteFunc(env, func(s string) bool { return s == "MARKR_DEV=1" })
+			env = slices.DeleteFunc(env, func(s string) bool { return strings.HasPrefix(s, "MARKR_ORIGIN=") })
+			env = append(env, "MARKR_ORIGIN=https://markr.example.com")
+		}
+		var logs syncBuffer
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() { done <- run(ctx, []string{"serve", "--role=api"}, env, &logs) }()
+		base := "http://" + addr
+		deadline := time.Now().Add(10 * time.Second)
+		for get(t, base+"/api/square") != http.StatusOK {
+			if time.Now().After(deadline) {
+				cancel()
+				t.Fatalf("dev=%v: server never came up: %s", dev, logs.String())
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		code, body := register(t, base, dev)
+		cancel()
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+		// Mail is sent from a queue; shutdown drains it, so check the log now.
+		if dev && (code < 200 || code > 299 || !strings.Contains(logs.String(), "/login#verify=")) {
+			t.Errorf("dev register = %d %s; logs %s", code, body, logs.String())
+		}
+		if !dev && (code != http.StatusServiceUnavailable || !strings.Contains(body, "验证邮件服务暂不可用。")) {
+			t.Errorf("prod register = %d %s", code, body)
+		}
+		if !dev && strings.Contains(logs.String(), "/login#verify=") {
+			t.Errorf("prod logged a verification link: %s", logs.String())
+		}
+	}
+}
+
+// register fetches a CSRF session and posts a registration.
+func register(t *testing.T, base string, dev bool) (int, string) {
+	t.Helper()
+	// No cookie jar: in production the session cookie is Secure and a jar
+	// would not return it over plain http, so it is forwarded by hand.
+	c := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{Proxy: nil}}
+	resp, err := c.Get(base + "/api/auth/session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sess struct {
+		CSRF string `json:"csrfToken"`
+	}
+	err = json.NewDecoder(resp.Body).Decode(&sess)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, _ := http.NewRequest(http.MethodPost, base+"/api/auth/register", strings.NewReader(`{"email":"dev@example.com"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-CSRF-Token", sess.CSRF)
+	for _, ck := range resp.Cookies() {
+		req.AddCookie(&http.Cookie{Name: ck.Name, Value: ck.Value})
+	}
+	origin := "http://localhost:18150"
+	if !dev {
+		origin = "https://markr.example.com"
+	}
+	req.Header.Set("Origin", origin)
+	resp, err = c.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, string(b)
 }

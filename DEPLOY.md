@@ -94,3 +94,19 @@ https://timestarry.github.io/frameMark/
 - [x] 工作流权限配置
 
 完成以上设置后，每次推送代码到main分支都会自动触发构建和部署流程！🎉 
+## 存储桶 CORS
+
+Markr 作者工作区用预签名 URL 从浏览器直接 `PUT` 原图到 originals 存储桶。CSP 的 `connect-src` 已包含 S3 源（与 `img-src` 使用同一个主机列表），存储桶还需要允许 `MARKR_ORIGIN` 跨域上传。以 `MARKR_ORIGIN=https://markr.example.com` 为例：
+
+```json
+[
+  {
+    "AllowedOrigins": ["https://markr.example.com"],
+    "AllowedMethods": ["PUT"],
+    "AllowedHeaders": ["Content-Type", "x-amz-*"],
+    "MaxAgeSeconds": 3000
+  }
+]
+```
+
+`AllowedOrigins` 必须与 `MARKR_ORIGIN` 完全一致（协议、主机、端口）。`x-amz-*` 覆盖预签名请求里出现的 `x-amz-checksum-sha256` 等头。derived 存储桶不需要这条规则。

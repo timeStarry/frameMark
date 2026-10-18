@@ -80,6 +80,8 @@ type exifView struct {
 	ISO             *int64   `json:"iso,omitempty"`
 	ExposureBias    *float64 `json:"exposureBias,omitempty"`
 	TakenAt         *int64   `json:"takenAt,omitempty"`
+	// TakenOffsetMinutes is the zone offset of TakenAt, minutes east of UTC.
+	TakenOffsetMinutes *int64 `json:"takenOffsetMinutes,omitempty"`
 }
 
 // photoView is the owner view of a photo. It never carries location or the
@@ -422,18 +424,18 @@ func (s *server) loadPhoto(ctx context.Context, owner, id string) (*photoView, e
 		mk, model, lens, shutter sql.NullString
 		focal, focal35, ap, secs sql.NullFloat64
 		bias                     sql.NullFloat64
-		iso, taken               sql.NullInt64
+		iso, taken, offset       sql.NullInt64
 		hash                     sql.NullString
 	)
 	err := s.db.QueryRowContext(ctx, `SELECT p.id,p.status,p.error,p.title,p.caption,p.width,p.height,p.format,p.created_at,
 			p.public_fields,p.histogram_public,p.original_download,p.derived_hash,
 			e.photo_id,e.camera_make,e.camera_model,e.lens_model,e.focal_length_mm,e.focal_length_35mm,e.aperture,
-			e.exposure_time,e.exposure_seconds,e.iso,e.exposure_bias,e.taken_at
+			e.exposure_time,e.exposure_seconds,e.iso,e.exposure_bias,e.taken_at,e.taken_offset_min
 		FROM photos p LEFT JOIN photo_exif e ON e.photo_id=p.id
 		WHERE p.id=? AND p.owner_id=?`, id, owner).Scan(
 		&p.ID, &p.Status, &errMsg, &p.Title, &p.Caption, &width, &height, &p.Format, &p.CreatedAt,
 		&fields, &hist, &orig, &hash,
-		&exifRow, &mk, &model, &lens, &focal, &focal35, &ap, &shutter, &secs, &iso, &bias, &taken)
+		&exifRow, &mk, &model, &lens, &focal, &focal35, &ap, &shutter, &secs, &iso, &bias, &taken, &offset)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, httperr.Fail(http.StatusNotFound, msgPhotoAbsent)
 	}
@@ -454,16 +456,17 @@ func (s *server) loadPhoto(ctx context.Context, owner, id string) (*photoView, e
 	p.Media = s.mediaFor(mediaSource{ID: p.ID, Status: p.Status, Width: width, Height: height, Hash: hash}, nil)
 	if exifRow.Valid && p.Status == statusReady {
 		p.EXIF = &exifView{
-			Camera:          cameraName(mk.String, model.String),
-			Lens:            nonEmpty(lens),
-			FocalLength:     floatPtr(focal),
-			FocalLength35mm: floatPtr(focal35),
-			Aperture:        floatPtr(ap),
-			Shutter:         nonEmpty(shutter),
-			ExposureSeconds: floatPtr(secs),
-			ISO:             intPtr(iso),
-			ExposureBias:    floatPtr(bias),
-			TakenAt:         intPtr(taken),
+			Camera:             cameraName(mk.String, model.String),
+			Lens:               nonEmpty(lens),
+			FocalLength:        floatPtr(focal),
+			FocalLength35mm:    floatPtr(focal35),
+			Aperture:           floatPtr(ap),
+			Shutter:            nonEmpty(shutter),
+			ExposureSeconds:    floatPtr(secs),
+			ISO:                intPtr(iso),
+			ExposureBias:       floatPtr(bias),
+			TakenAt:            intPtr(taken),
+			TakenOffsetMinutes: intPtr(offset),
 		}
 	}
 	return &p, nil
