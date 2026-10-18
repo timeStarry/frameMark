@@ -89,7 +89,7 @@ describe('MeLayout', () => {
     expect(w.find('nav[aria-label="站点"]').exists()).toBe(true)
     expect(w.find('nav[aria-label="工作区"]').exists()).toBe(true)
     const h1 = w.find('main h1')
-    expect(h1.text()).toBe('合集')
+    expect(h1.text()).toBe('我的合集')
     expect(w.find('main').attributes('aria-labelledby')).toBe(h1.attributes('id'))
   })
 })
