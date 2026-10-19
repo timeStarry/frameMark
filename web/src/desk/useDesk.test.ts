@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { nextTick, ref } from 'vue'
-import type { CollectionFields, ExposureChange, OwnerCollection, OwnerCollectionWrite, OwnerFramePhoto } from '../api/types'
-import { insertPhotos, insertText, isValid, toInput, type DeskPhoto, type Seq } from './sequence'
+import type { CollectionFields, ExposureChange, FrameInput, OwnerCollection, OwnerCollectionWrite, OwnerFramePhoto } from '../api/types'
+import { insertPhotos, insertText, isValid, remove, setText, toInput, type DeskPhoto, type Seq } from './sequence'
 import type { Backup } from './backup'
 
 const {
@@ -137,6 +137,7 @@ function snapshot(seq: Seq, fields: CollectionFields) {
 
 async function load(c: OwnerCollection) {
   getOwnerCollection.mockResolvedValue({ ok: true, data: c })
+  loaded.status = c.status
   const id = ref(c.id)
   const d = useDesk(id)
   await Promise.resolve()
@@ -152,12 +153,16 @@ async function flush() {
   await Promise.resolve()
 }
 
+// Default write responses echo the loaded status, as the server does.
+const loaded: { status: 'draft' | 'published' } = { status: 'draft' }
+
 beforeEach(() => {
+  loaded.status = 'draft'
   vi.useFakeTimers()
   localStorage.clear()
   getOwnerCollection.mockReset()
-  putCollection.mockReset().mockResolvedValue(ok(write()))
-  putFrames.mockReset().mockResolvedValue(ok(write({ updatedAt: 12 })))
+  putCollection.mockReset().mockImplementation(async () => ok(write({ status: loaded.status })))
+  putFrames.mockReset().mockImplementation(async () => ok(write({ status: loaded.status, updatedAt: 12 })))
   putOverride.mockReset().mockResolvedValue(ok({ collectionId: 'c1', photoId: 'p1', publicFields: [], histogramPublic: null, updatedAt: 13 }))
   putPhotoMeta.mockReset().mockResolvedValue(
     ok({
@@ -493,5 +498,350 @@ describe('photo meta and override', () => {
     d.exposure.value!.confirm()
     await flush()
     expect(putOverride).toHaveBeenCalledTimes(1)
+  })
+})
+
+
+// ---------------------------------------------------------------------------
+// Fix round 1 (task-6-review.md)
+
+function deferred<T>() {
+  let resolve!: (v: T) => void
+  const promise = new Promise<T>((r) => {
+    resolve = r
+  })
+  return { promise, resolve }
+}
+
+const frameOf = (p: OwnerFramePhoto) => ({ layout: 'full' as const, matteRatio: null, text: null, photos: [p] })
+const sentIds = (call: unknown[] | undefined) => ((call?.[1] as FrameInput[] | undefined) ?? []).flatMap((f) => f.photoIds)
+const NOT_WIDE = ok({ widens: false, changes: [] })
+const WIDE = ok({ widens: true, changes: CHANGES })
+
+describe('fix round 1: C1 checks gate the state they checked', () => {
+  it('C1: undo during an in-flight check is blocked and never sends an unchecked photo', async () => {
+    const d = await load(owner({ status: 'published', frames: [frameOf(photo('p1')), frameOf(photo('p2'))] }))
+    d.applySeq(remove(d.seq.value, 1), 'structure') // narrows: saved without a check
+    await flush()
+    expect(putFrames).toHaveBeenCalledTimes(1)
+
+    const check1 = deferred<unknown>()
+    exposureCheck.mockReturnValueOnce(check1.promise)
+    d.applySeq(insertPhotos(d.seq.value, 1, [deskPhoto('p3')]), 'structure')
+    await flush()
+    expect(d.checking.value).toBe(true)
+    d.undo()
+    d.undo() // would restore p2
+    await flush()
+    expect(d.seq.value.map((f) => f.photos[0]?.id)).toEqual(['p1', 'p3'])
+
+    check1.resolve(NOT_WIDE)
+    await flush()
+    for (const c of putFrames.mock.calls) expect(sentIds(c)).not.toContain('p2')
+    expect(sentIds(putFrames.mock.calls.at(-1))).toEqual(['p1', 'p3'])
+    expect(d.checking.value).toBe(false)
+  })
+})
+
+describe('fix round 1: C2 publish requires a clean desk', () => {
+  it('C2: a failed draft putFrames blocks publish, so its retry is never sent unchecked after publishing', async () => {
+    putFrames.mockResolvedValueOnce({ ok: false, status: 500, message: '服务器出错' })
+    const d = await load(owner({ status: 'draft' }))
+    d.applySeq(insertPhotos(d.seq.value, 1, [deskPhoto('p2')]), 'structure')
+    await flush()
+    expect(d.saveState.value).toBe('error')
+
+    expect(await d.publish()).toBeNull()
+    expect(await d.confirmPublish()).toBe(false)
+    expect(publishDryRun).not.toHaveBeenCalled()
+    expect(publish).not.toHaveBeenCalled()
+    expect(d.errorMessage.value).toBe('服务器出错')
+    expect(putFrames).toHaveBeenCalledTimes(1) // refusal did not resend it
+
+    // The explicit retry goes out while still a draft; only then can publish proceed.
+    d.retry()
+    await flush()
+    expect(putFrames).toHaveBeenCalledTimes(2)
+    expect(publish).not.toHaveBeenCalled()
+    expect(await d.publish()).not.toBeNull()
+    expect(await d.confirmPublish()).toBe(true)
+    expect(putFrames).toHaveBeenCalledTimes(2)
+    expect(putFrames.mock.invocationCallOrder[1]!).toBeLessThan(publish.mock.invocationCallOrder[0]!)
+  })
+
+  it('C2: publish refuses with a Chinese message while a save is pending and flushes first', async () => {
+    const d = await load(owner({ status: 'draft' }))
+    d.applyFields({ ...d.fields.value, title: '新' }, 'field')
+    const m = await d.publish()
+    // flush sent the pending title, so the desk is clean and the dry run runs after it
+    expect(putCollection).toHaveBeenCalledTimes(1)
+    expect(m).not.toBeNull()
+    expect(publishDryRun.mock.invocationCallOrder[0]!).toBeGreaterThan(putCollection.mock.invocationCallOrder[0]!)
+  })
+
+  it('C2/I6: publish waits for an in-flight save, and confirmPublish needs a dry run first', async () => {
+    const f = deferred<unknown>()
+    putFrames.mockReturnValueOnce(f.promise)
+    const d = await load(owner({ status: 'draft' }))
+    d.applySeq(insertPhotos(d.seq.value, 1, [deskPhoto('p2')]), 'structure')
+    await flush()
+    const m = d.publish()
+    await flush()
+    expect(publishDryRun).not.toHaveBeenCalled()
+    f.resolve(ok(write({ updatedAt: 30 })))
+    expect(await m).not.toBeNull()
+    expect(await d.confirmPublish()).toBe(true)
+    expect(publish).toHaveBeenCalledTimes(1)
+    expect(putFrames.mock.invocationCallOrder[0]!).toBeLessThan(publishDryRun.mock.invocationCallOrder[0]!)
+  })
+
+  it('C2: confirmPublish without a fresh dry run refuses', async () => {
+    const d = await load(owner({ status: 'draft' }))
+    expect(await d.confirmPublish()).toBe(false)
+    expect(publish).not.toHaveBeenCalled()
+    expect(await d.publish()).not.toBeNull()
+    d.applyFields({ ...d.fields.value, title: '改了' }, 'field')
+    await vi.advanceTimersByTimeAsync(800)
+    await flush()
+    putCollection.mockResolvedValue(ok(write({ updatedAt: 77 })))
+    expect(await d.confirmPublish()).toBe(false)
+    expect(publish).not.toHaveBeenCalled()
+  })
+
+  it('C2: an invalid sequence blocks publish', async () => {
+    const d = await load(owner({ status: 'draft' }))
+    d.applySeq(insertText(d.seq.value, 1), 'structure')
+    expect(await d.confirmPublish()).toBe(false)
+    expect(publish).not.toHaveBeenCalled()
+  })
+})
+
+describe('fix round 1: C3 an id change isolates the old collection', () => {
+  it('C3: writes queued for the old id never reach the new id and late responses are ignored', async () => {
+    const c2 = owner({ id: 'c2', title: '山', updatedAt: 500 })
+    getOwnerCollection.mockImplementation(async (cid: string) => ({ ok: true, data: cid === 'c2' ? c2 : owner() }))
+    const id = ref('c1')
+    const d = useDesk(id)
+    await flush()
+    expect(d.state.value).toBe('ready')
+
+    const f = deferred<unknown>()
+    putFrames.mockReturnValueOnce(f.promise)
+    d.applySeq(insertPhotos(d.seq.value, 1, [deskPhoto('p2')]), 'structure')
+    await flush()
+    d.applyFields({ ...d.fields.value, title: '旧标题' }, 'field')
+    await vi.advanceTimersByTimeAsync(800) // queued behind putFrames on the chain
+
+    id.value = 'c2'
+    await nextTick()
+    await flush()
+    expect(d.collection.value?.id).toBe('c2')
+
+    f.resolve(ok(write({ updatedAt: 999, status: 'published' })))
+    await flush()
+    await flush()
+    for (const c of putCollection.mock.calls) expect(c[0]).not.toBe('c2')
+    for (const c of putFrames.mock.calls) expect(c[0]).not.toBe('c2')
+    expect(d.collection.value?.updatedAt).toBe(500)
+    expect(d.collection.value?.status).toBe('draft')
+    expect(d.fields.value.title).toBe('山')
+  })
+})
+
+describe('fix round 1: C4 restore and field widening', () => {
+  function wideBackup(c: OwnerCollection) {
+    const b: Backup<CollectionFields, FrameInput[]> = {
+      baseUpdatedAt: c.updatedAt,
+      savedAt: 1,
+      fields: { ...fieldsOf(c), visibility: 'public' },
+      frames: [
+        { layout: 'full', matteRatio: null, text: null, photoIds: ['p1'] },
+        { layout: 'full', matteRatio: null, text: null, photoIds: ['p2'] },
+      ],
+    }
+    localStorage.setItem('markr:desk:c1', JSON.stringify(b))
+  }
+
+  it('C4: restore runs one combined check; cancel reverts both and a later text edit carries no widening', async () => {
+    exposureCheck.mockResolvedValue(WIDE)
+    const c = owner({ status: 'published', visibility: 'unlisted' })
+    wideBackup(c)
+    const d = await load(c)
+    const before = snapshot(d.seq.value, d.fields.value)
+    d.backupOffer.value!.restore()
+    await flush()
+    expect(exposureCheck).toHaveBeenCalledTimes(1)
+    expect(exposureCheck.mock.calls[0]![1]).toHaveProperty('collection')
+    expect(exposureCheck.mock.calls[0]![1]).toHaveProperty('frames')
+    expect(putCollection).not.toHaveBeenCalled()
+    expect(putFrames).not.toHaveBeenCalled()
+
+    d.exposure.value!.cancel()
+    expect(d.exposure.value).toBeNull()
+    expect(d.fields.value).toEqual(before.fields)
+    expect(d.seq.value).toEqual(before.seq)
+
+    exposureCheck.mockResolvedValue(NOT_WIDE)
+    d.applyFields({ ...d.fields.value, title: '标题' }, 'field')
+    await vi.advanceTimersByTimeAsync(800)
+    await flush()
+    expect(putCollection).toHaveBeenCalledTimes(1)
+    expect(putCollection.mock.calls[0]![1].visibility).toBe('unlisted')
+    expect(putFrames).not.toHaveBeenCalled()
+  })
+
+  it('C4: confirming the combined restore check sends both fields and frames', async () => {
+    exposureCheck.mockResolvedValue(WIDE)
+    const c = owner({ status: 'published', visibility: 'unlisted' })
+    wideBackup(c)
+    const d = await load(c)
+    d.backupOffer.value!.restore()
+    await flush()
+    d.exposure.value!.confirm()
+    await flush()
+    await flush()
+    expect(putCollection.mock.calls.at(-1)![1].visibility).toBe('public')
+    expect(sentIds(putFrames.mock.calls.at(-1))).toEqual(['p1', 'p2'])
+  })
+
+  it("C4: a 'field' call that widens is still checked", async () => {
+    exposureCheck.mockResolvedValue(WIDE)
+    const d = await load(owner({ status: 'published', visibility: 'unlisted' }))
+    d.applyFields({ ...d.fields.value, visibility: 'public' }, 'field')
+    await vi.advanceTimersByTimeAsync(1000)
+    await flush()
+    expect(exposureCheck).toHaveBeenCalledTimes(1)
+    expect(putCollection).not.toHaveBeenCalled()
+    expect(d.exposure.value).not.toBeNull()
+  })
+})
+
+describe('fix round 1: Important', () => {
+  it('I1: a failed check shows error, reverts one step and keeps history', async () => {
+    const d = await load(owner({ status: 'published', frames: [frameOf(photo('p1')), frameOf(photo('p2'))] }))
+    d.applySeq(remove(d.seq.value, 1), 'structure')
+    await flush()
+    exposureCheck.mockResolvedValueOnce({ ok: false, status: 500, message: '检查失败' })
+    d.applySeq(insertPhotos(d.seq.value, 1, [deskPhoto('p3')]), 'structure')
+    await flush()
+    expect(d.seq.value.map((f) => f.photos[0]?.id)).toEqual(['p1'])
+    expect(d.saveState.value).toBe('error')
+    expect(d.errorMessage.value).toBe('检查失败')
+    expect(d.canUndo.value).toBe(true)
+    expect(d.canRedo.value).toBe(false)
+
+    d.undo() // back to p1, p2: checked again, not widening
+    await flush()
+    expect(d.seq.value.map((f) => f.photos[0]?.id)).toEqual(['p1', 'p2'])
+    expect(d.saveState.value).toBe('saved')
+  })
+
+  it('I2: an empty text frame on a published collection is not checked until it has text', async () => {
+    const d = await load(owner({ status: 'published' }))
+    d.applySeq(insertText(d.seq.value, 1), 'structure')
+    await flush()
+    expect(exposureCheck).not.toHaveBeenCalled()
+    expect(putFrames).not.toHaveBeenCalled()
+    d.applySeq(setText(d.seq.value, 1, '你好'), 'structure')
+    await flush()
+    expect(exposureCheck).toHaveBeenCalledTimes(1)
+    expect(putFrames).toHaveBeenCalledTimes(1)
+    expect(d.seq.value).toHaveLength(2)
+  })
+
+  it('I3: cancel of a pushed edit restores canUndo/canRedo exactly', async () => {
+    exposureCheck.mockResolvedValue(WIDE)
+    const d = await load(owner({ status: 'published' }))
+    d.applySeq(insertPhotos(d.seq.value, 1, [deskPhoto('p2')]), 'structure')
+    await flush()
+    d.exposure.value!.cancel()
+    expect(d.canUndo.value).toBe(false)
+    expect(d.canRedo.value).toBe(false)
+    d.redo()
+    await flush()
+    expect(d.seq.value).toHaveLength(1)
+    expect(putFrames).not.toHaveBeenCalled()
+  })
+
+  it('I3: cancel of a widening undo restores the history and a following undo matches', async () => {
+    const d = await load(owner({ status: 'published', frames: [frameOf(photo('p1')), frameOf(photo('p2'))] }))
+    d.applySeq(remove(d.seq.value, 1), 'structure')
+    await flush()
+    const ids = () => d.seq.value.map((f) => f.photos[0]?.id)
+    expect([d.canUndo.value, d.canRedo.value]).toEqual([true, false])
+
+    exposureCheck.mockResolvedValue(WIDE)
+    d.undo()
+    await flush()
+    expect(d.exposure.value).not.toBeNull()
+    d.exposure.value!.cancel()
+    expect(ids()).toEqual(['p1'])
+    expect([d.canUndo.value, d.canRedo.value]).toEqual([true, false])
+
+    d.undo()
+    await flush()
+    expect(ids()).toEqual(['p1', 'p2'])
+    expect(d.exposure.value).not.toBeNull()
+  })
+
+  it('I4: the overwrite is one-shot; later writes carry ifUpdatedAt again', async () => {
+    putCollection.mockResolvedValueOnce({ ok: false, status: 409, message: 'stale', conflictAt: 99 })
+    const d = await load(owner())
+    d.applyFields({ ...d.fields.value, title: 'A' }, 'field')
+    await vi.advanceTimersByTimeAsync(800)
+    await flush()
+    expect(d.conflict.value).not.toBeNull()
+    putCollection.mockResolvedValue(ok(write({ updatedAt: 120 })))
+    putFrames.mockResolvedValue(ok(write({ updatedAt: 121 })))
+    await d.conflict.value!.overwrite()
+    await flush()
+    await flush()
+    expect(putCollection.mock.calls.at(-1)![2]).toBeNull()
+    expect(putFrames.mock.calls.at(-1)![2]).toBeNull()
+
+    d.applyFields({ ...d.fields.value, title: 'B' }, 'field')
+    await vi.advanceTimersByTimeAsync(800)
+    await flush()
+    expect(putCollection.mock.calls.at(-1)![2]).toBe(121)
+  })
+
+  it('I5: a structural edit made during a fields check is applied once the check settles', async () => {
+    const c = deferred<unknown>()
+    exposureCheck.mockReturnValueOnce(c.promise)
+    const d = await load(owner({ status: 'published', visibility: 'unlisted', frames: [frameOf(photo('p1')), frameOf(photo('p2'))] }))
+    d.applyFields({ ...d.fields.value, visibility: 'public' }, 'exposure')
+    await flush()
+    d.applySeq(remove(d.seq.value, 1), 'structure')
+    c.resolve(NOT_WIDE)
+    await flush()
+    await flush()
+    expect(d.seq.value).toHaveLength(1)
+    expect(sentIds(putFrames.mock.calls.at(-1))).toEqual(['p1'])
+    expect(putCollection).toHaveBeenCalledTimes(1)
+  })
+
+  it('I7: overwrite with widens sends no put before confirm, then exactly one per lane', async () => {
+    putFrames.mockResolvedValueOnce({ ok: false, status: 409, message: 'stale', conflictAt: 99 })
+    const d = await load(owner({ status: 'published' }))
+    d.applySeq(remove(d.seq.value, 0), 'structure')
+    // published collections cannot be emptied in reality; the 409 is what matters here
+    await flush()
+    expect(d.conflict.value).not.toBeNull()
+    expect(putFrames).toHaveBeenCalledTimes(1)
+
+    exposureCheck.mockResolvedValue(WIDE)
+    await d.conflict.value!.overwrite()
+    await flush()
+    expect(d.exposure.value).not.toBeNull()
+    expect(putFrames).toHaveBeenCalledTimes(1)
+    expect(putCollection).not.toHaveBeenCalled()
+
+    d.exposure.value!.confirm()
+    await flush()
+    await flush()
+    expect(putFrames).toHaveBeenCalledTimes(2)
+    expect(putCollection).toHaveBeenCalledTimes(1)
+    expect(putFrames.mock.calls[1]![2]).toBeNull()
+    expect(putCollection.mock.calls[0]![2]).toBeNull()
   })
 })
