@@ -4,6 +4,7 @@
 //   ↑/↓        focus the previous / next frame
 //   ⌥↑ / ⌥↓    move the focused frame
 //   Delete / ⌫ remove it (undo via the toast or ⌘Z)
+//   ⌥M         merge the next frame into it (合成并排, the drop-on-frame twin)
 //   Enter      select it (opens the property slot)
 // Drop targets: the gaps between frames insert (archive photos) or move (a
 // frame); a frame itself merges a single photo into a pair (合成并排). Each
@@ -106,9 +107,39 @@ const canTakePhoto = (f: Frame, id: string | null) =>
 
 // --- Keyboard ---
 
+/** Why ⌥M cannot merge frame i+1 into frame i, or '' when it can. Same rule as the drop target. */
+function mergeRefusal(i: number): string {
+  const target = props.seq[i]
+  const next = props.seq[i + 1]
+  if (!target || !canTakePhoto(target, null)) return '这一帧不能合成并排'
+  if (!next) return '后面没有可合成的帧'
+  if (!isSingle(next)) return '下一帧不是单张照片，不能合成并排'
+  if (!canTakePhoto(target, next.photos[0]?.id ?? null)) return '两帧是同一张照片，不能合成并排'
+  return ''
+}
+
+function mergeNext(i: number) {
+  if (props.locked) return
+  const reason = mergeRefusal(i)
+  if (reason) {
+    emit('refuse', reason)
+    return
+  }
+  const target = props.seq[i]!
+  if (apply(merge(props.seq, i + 1, i), `已合成并排：第 ${i + 1} 帧`, '这一帧不能合成并排')) void focusKey(target.key)
+}
+
+/** ⌥M: macOS reports the key as 'µ', so the physical code counts too. */
+const isAltM = (e: KeyboardEvent) => e.altKey && !e.shiftKey && (e.code === 'KeyM' || e.key.toLowerCase() === 'm')
+
 function onItemKey(i: number, e: KeyboardEvent) {
   if (e.target !== e.currentTarget || e.metaKey || e.ctrlKey) return
   const k = e.key
+  if (isAltM(e)) {
+    e.preventDefault()
+    mergeNext(i)
+    return
+  }
   if (e.altKey && (k === 'ArrowUp' || k === 'ArrowDown')) {
     e.preventDefault()
     moveFrame(i, k === 'ArrowUp' ? i - 1 : i + 1)
@@ -170,7 +201,10 @@ function onDragStart(f: Frame, e: DragEvent) {
     e.preventDefault()
     return
   }
-  if (!e.dataTransfer || e.target !== e.currentTarget) return
+  // A drag may start on a thumbnail inside the card: it still moves the frame.
+  // Drop the image URL the browser pre-filled, so only the frame travels.
+  if (!e.dataTransfer) return
+  e.dataTransfer.clearData()
   writeFrame(e.dataTransfer, f.key)
   dragKey.value = f.key
 }
@@ -241,7 +275,7 @@ function onFrameDrop(i: number, e: DragEvent) {
     if (from < 0 || from === i) return
     const next = merge(props.seq, from, i)
     const at = from < i ? i - 1 : i
-    if (apply(next, `已合成并排，第 ${at + 1} 帧`, '这两帧不能合成并排')) void focusKey(target.key)
+    if (apply(next, `已合成并排：第 ${at + 1} 帧`, '这两帧不能合成并排')) void focusKey(target.key)
     return
   }
   const photos = readPhotos(e.dataTransfer)
@@ -250,7 +284,7 @@ function onFrameDrop(i: number, e: DragEvent) {
     emit('refuse', '一次只能把一张照片合成并排')
     return
   }
-  if (apply(mergePhoto(photo, i), `已合成并排，第 ${i + 1} 帧`, '这一帧不能再合成并排')) void focusKey(target.key)
+  if (apply(mergePhoto(photo, i), `已合成并排：第 ${i + 1} 帧`, '这一帧不能再合成并排')) void focusKey(target.key)
 }
 
 function onLeave(e: DragEvent) {
@@ -355,7 +389,7 @@ function onLeave(e: DragEvent) {
         </div>
       </li>
     </ol>
-    <p class="legend">Enter 加入或选中 · 空格 多选 · ⌥↑ ⌥↓ 移动 · Delete 删除 · ⌘Z 撤销 · ⇧⌘Z 重做</p>
+    <p class="legend">Enter 加入或选中 · 空格 多选 · ⌥↑ ⌥↓ 移动 · ⌥M 与下一帧合成并排 · Delete 删除 · ⌘Z 撤销 · ⇧⌘Z 重做</p>
   </section>
 </template>
 

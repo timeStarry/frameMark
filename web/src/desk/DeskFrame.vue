@@ -52,6 +52,12 @@ const text = computed(() => textPreview(props.frame))
   flex: 0 0 96px;
   width: 96px;
 }
+/* The card is the drag source: thumbnails must not start an image drag. */
+.thumb :deep(img) {
+  -webkit-user-drag: none;
+  user-select: none;
+  pointer-events: none;
+}
 .text {
   flex: 1 1 auto;
   min-width: 0;

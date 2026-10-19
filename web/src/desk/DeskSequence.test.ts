@@ -20,8 +20,8 @@ function seqOf(...ids: string[]): Seq {
   return insertPhotos([], 0, ids.map((id) => deskPhoto(id)))
 }
 
-function mountSeq(seq: Seq, selected = 0) {
-  w = mount(DeskSequence, { props: { seq, selected }, attachTo: document.body })
+function mountSeq(seq: Seq, selected = 0, locked = false) {
+  w = mount(DeskSequence, { props: { seq, selected, locked }, attachTo: document.body })
   return w
 }
 
@@ -63,7 +63,7 @@ describe('DeskSequence', () => {
     expect(dt.types).toEqual([FRAME_TYPE])
     drag(t, 'drop', dt)
     const [next, msg] = edits(wr)[0]!
-    expect(msg).toBe('已合成并排，第 1 帧')
+    expect(msg).toBe('已合成并排：第 1 帧')
     w!.unmount()
     const wr2 = mountSeq(next)
     expect(items(wr2).map((i) => i.attributes('aria-label'))).toEqual(['第 1 帧，并排，标题a、标题b'])
@@ -154,7 +154,7 @@ describe('DeskSequence', () => {
     const [next, msg] = edits(wr)[0]!
     expect(ids(next)).toEqual(['a', 'b+x'])
     expect(next[1]!.layout).toBe('pair')
-    expect(msg).toBe('已合成并排，第 2 帧')
+    expect(msg).toBe('已合成并排：第 2 帧')
   })
 
   it('refuses to merge into a text frame or with several photos', () => {
@@ -208,5 +208,72 @@ describe('DeskSequence', () => {
     await wr.find('[data-gap="2"] .plus').trigger('click')
     await wr.findAll('[data-gap="2"] .menu button')[1]!.trigger('click')
     expect(wr.emitted('fromArchive')).toHaveLength(1)
+  })
+
+  it('a drag started on a thumbnail image drags the whole frame', () => {
+    const wr = mountSeq(seqOf('a', 'b'))
+    const img = items(wr)[0]!.find('img')
+    expect(img.exists()).toBe(true)
+    // A browser pre-fills an image drag with its URL before dragstart runs.
+    const dt = new DTStub()
+    dt.setData('text/uri-list', '/m/a/w480.jpg')
+    drag(img.element, 'dragstart', dt)
+    expect(dt.types).toEqual([FRAME_TYPE])
+    expect(dt.getData('text/uri-list')).toBe('')
+    // The frame payload moves it like a drag from the card itself.
+    drag(wr.find('[data-gap="2"]').element, 'drop', dt)
+    expect(ids(edits(wr)[0]![0])).toEqual(['b', 'a'])
+  })
+
+  it('⌥M merges the next frame into the focused one', async () => {
+    const wr = mountSeq(seqOf('a', 'b', 'c'))
+    const key = items(wr)[1]!.attributes('data-frame-key')
+    ;(items(wr)[1]!.element as HTMLElement).focus()
+    // macOS reports ⌥M as key 'µ'; the physical code is what counts.
+    await items(wr)[1]!.trigger('keydown', { key: 'µ', code: 'KeyM', altKey: true })
+    const [next, msg] = edits(wr)[0]!
+    expect(ids(next)).toEqual(['a', 'b+c'])
+    expect(next[1]!.layout).toBe('pair')
+    expect(next[1]!.key).toBe(key)
+    expect(msg).toBe('已合成并排：第 2 帧')
+    await wr.setProps({ seq: next })
+    await nextTick()
+    expect((document.activeElement as HTMLElement).dataset.frameKey).toBe(key)
+    // A pair of 2 takes one more photo.
+    await items(wr)[0]!.trigger('keydown', { key: 'm', code: 'KeyM', altKey: true })
+    expect(edits(wr)).toHaveLength(1)
+    expect(wr.emitted('refuse')!.at(-1)).toEqual(['下一帧不是单张照片，不能合成并排'])
+  })
+
+  it('⌥M refuses with a reason and changes nothing when the merge is not allowed', async () => {
+    let s = insertText(seqOf('a', 'b'), 1)
+    s = setText(s, 1, '字')
+    s = insertPhotos(s, 3, [deskPhoto('b')])
+    // a, text, b, b
+    const wr = mountSeq(s)
+    const press = (i: number) => items(wr)[i]!.trigger('keydown', { key: 'm', code: 'KeyM', altKey: true })
+    await press(0)
+    await press(1)
+    await press(2)
+    await press(3)
+    expect(edits(wr)).toHaveLength(0)
+    expect(wr.emitted('refuse')).toEqual([
+      ['下一帧不是单张照片，不能合成并排'],
+      ['这一帧不能合成并排'],
+      ['两帧是同一张照片，不能合成并排'],
+      ['后面没有可合成的帧'],
+    ])
+  })
+
+  it('⌥M does nothing while locked', async () => {
+    const wr = mountSeq(seqOf('a', 'b'), 0, true)
+    await items(wr)[0]!.trigger('keydown', { key: 'm', code: 'KeyM', altKey: true })
+    expect(edits(wr)).toHaveLength(0)
+    expect(wr.emitted('refuse')).toBeUndefined()
+  })
+
+  it('lists ⌥M in the shortcut legend', () => {
+    const wr = mountSeq(seqOf('a'))
+    expect(wr.find('.legend').text()).toContain('⌥M 与下一帧合成并排')
   })
 })
