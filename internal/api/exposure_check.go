@@ -341,8 +341,9 @@ func loadExposureState(ctx context.Context, q querier, owner, id string) (exposu
 	return st, rows.Err()
 }
 
-// overrideOf maps photo_overrides columns to a domain.PhotoOverride the way
-// collectionPhotos does (nil when nothing is overridden).
+// overrideOf maps photo_overrides columns to a domain.PhotoOverride. It is
+// the single mapping shared by the visitor read path and exposure-check
+// (nil when nothing is overridden).
 func overrideOf(fields sql.NullString, hist sql.NullInt64) *domain.PhotoOverride {
 	if !fields.Valid && !hist.Valid {
 		return nil

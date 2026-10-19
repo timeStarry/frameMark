@@ -420,17 +420,8 @@ func (s *server) collectionPhotos(ctx context.Context, c collRow, viewer string)
 			v.Media = s.mediaFor(src, &c.Collection)
 		}
 		p := domain.Photo{ID: v.ID, OwnerID: owner, PublicFields: parsePublicFields(fields), HistogramPublic: hist == 1}
-		var o *domain.PhotoOverride
-		if oFields.Valid || oHist.Valid {
-			o = &domain.PhotoOverride{}
-			if oFields.Valid {
-				o.PublicFields = parsePublicFields(oFields.String) // non-nil, possibly empty
-			}
-			if oHist.Valid {
-				h := oHist.Int64 == 1
-				o.HistogramPublic = &h
-			}
-		}
+		// Same mapping exposure-check uses, so the two can never disagree.
+		o := overrideOf(oFields, oHist)
 		pub := domain.EffectivePublicFields(p, o)
 		if isOwner {
 			v.ownerPhotoFields = ownerFields(pub, o)
