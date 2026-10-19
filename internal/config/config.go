@@ -68,7 +68,7 @@ func Load(environ []string) (Config, error) {
 
 	// Validate scheme and dev exception
 	if u.Scheme != "https" {
-		allowed := cfg.Dev && u.Scheme == "http" && (u.Hostname() == "localhost" || u.Hostname() == "127.0.0.1")
+		allowed := cfg.Dev && isLocalHTTP(u)
 		if !allowed {
 			return cfg, fmt.Errorf("MARKR_ORIGIN must use https (dev localhost http allowed with MARKR_DEV=1)")
 		}
@@ -138,6 +138,25 @@ func defaultStr(v, d string) string {
 		return d
 	}
 	return v
+}
+
+// LocalDev reports whether this is a dev run on a local http origin
+// (MARKR_DEV=1 with http://localhost or http://127.0.0.1), the only setting in
+// which dev-only conveniences such as the log mailer may be enabled. MARKR_DEV
+// on an https origin is not local dev.
+func (c Config) LocalDev() bool {
+	if !c.Dev {
+		return false
+	}
+	u, err := url.Parse(c.Origin)
+	if err != nil {
+		return false
+	}
+	return isLocalHTTP(u)
+}
+
+func isLocalHTTP(u *url.URL) bool {
+	return u.Scheme == "http" && (u.Hostname() == "localhost" || u.Hostname() == "127.0.0.1")
 }
 
 func (c Config) Redacted() map[string]string {

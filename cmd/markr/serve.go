@@ -105,6 +105,9 @@ func openDB(cfg config.Config) (*sql.DB, error) {
 
 func cmdServe(ctx context.Context, cfg config.Config, role string, log *slog.Logger) error {
 	log.Info("markr starting", "config", cfg.Redacted(), "role", role)
+	if cfg.Dev && !cfg.LocalDev() {
+		log.Warn("MARKR_DEV=1 is set on a non-local origin; dev-only features (log mailer) stay off. Unset MARKR_DEV in production.", "origin", cfg.Origin)
+	}
 
 	// Spec §10: the worker refuses to start when libvips cannot write
 	// every derived format (AVIF needs heifsave).
@@ -279,7 +282,9 @@ func pickMailer(cfg config.Config, role string, logf func(format string, args ..
 		}
 		return mail.NewSMTP(s), nil
 	}
-	if cfg.Dev {
+	// Only a local http dev origin may log verification links: anyone who can
+	// read the logs could otherwise set the password for any address.
+	if cfg.LocalDev() {
 		return mail.LogSender{Log: logf}, nil
 	}
 	return nil, nil

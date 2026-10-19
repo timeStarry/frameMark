@@ -426,8 +426,8 @@ func TestPickMailer(t *testing.T) {
 	var logged []string
 	logf := func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }
 
-	// Dev without SMTP: the log mailer writes the verification link.
-	m, err := pickMailer(config.Config{Dev: true}, "api", logf)
+	// Local dev without SMTP: the log mailer writes the verification link.
+	m, err := pickMailer(config.Config{Dev: true, Origin: "http://localhost:18150"}, "api", logf)
 	if err != nil || m == nil {
 		t.Fatalf("dev mailer = %v, %v", m, err)
 	}
@@ -442,7 +442,16 @@ func TestPickMailer(t *testing.T) {
 	for _, c := range []struct {
 		cfg  config.Config
 		role string
-	}{{config.Config{}, "api"}, {config.Config{}, "all"}, {config.Config{Dev: true}, "worker"}} {
+	}{
+		{config.Config{}, "api"},
+		{config.Config{}, "all"},
+		{config.Config{Dev: true, Origin: "http://localhost:18150"}, "worker"},
+		// MARKR_DEV left on in production: an https origin never gets the log mailer.
+		{config.Config{Dev: true, Origin: "https://markr.example"}, "api"},
+		{config.Config{Dev: true, Origin: "https://markr.example"}, "all"},
+		// Dev with no origin at all is not local dev either.
+		{config.Config{Dev: true}, "api"},
+	} {
 		if m, err := pickMailer(c.cfg, c.role, logf); err != nil || m != nil {
 			t.Errorf("dev=%v role=%s: mailer %v err %v, want none", c.cfg.Dev, c.role, m, err)
 		}
@@ -454,15 +463,20 @@ func TestPickMailer(t *testing.T) {
 	}
 }
 
-// TestServeDevRegisterLogsLink drives /api/auth/register end to end: with
-// MARKR_DEV=1 and no SMTP the link lands in the log; without MARKR_DEV it is 503.
+// TestServeDevRegisterLogsLink drives /api/auth/register end to end. Local dev
+// (MARKR_DEV=1 on http://localhost) with no SMTP logs the link. Without
+// MARKR_DEV, and with MARKR_DEV left on for an https origin, register is 503
+// and no link is ever logged.
 func TestServeDevRegisterLogsLink(t *testing.T) {
-	for _, dev := range []bool{true, false} {
+	for _, mode := range []string{"local-dev", "prod", "prod-with-dev"} {
+		dev := mode == "local-dev"
 		dir := t.TempDir()
 		addr := freeAddr(t)
 		env := testEnv(dir, "MARKR_LISTEN="+addr, "MARKR_IDENTITY_ENABLED=true", "MARKR_REGISTRATION_OPEN=true")
 		if !dev {
-			env = slices.DeleteFunc(env, func(s string) bool { return s == "MARKR_DEV=1" })
+			if mode == "prod" {
+				env = slices.DeleteFunc(env, func(s string) bool { return s == "MARKR_DEV=1" })
+			}
 			env = slices.DeleteFunc(env, func(s string) bool { return strings.HasPrefix(s, "MARKR_ORIGIN=") })
 			env = append(env, "MARKR_ORIGIN=https://markr.example.com")
 		}

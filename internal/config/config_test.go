@@ -163,3 +163,23 @@ func TestLoad_ReplicaPathStyle(t *testing.T) {
 		t.Fatalf("replica path style = %v, %v", cfg.ReplicaPathStyle, err)
 	}
 }
+
+func TestConfig_LocalDev(t *testing.T) {
+	for _, c := range []struct {
+		dev    bool
+		origin string
+		want   bool
+	}{
+		{true, "http://localhost:18150", true},
+		{true, "http://127.0.0.1:5173", true},
+		{true, "https://markr.example", false}, // MARKR_DEV left on in production
+		{true, "https://localhost", false},
+		{true, "http://markr.example", false},
+		{true, "", false},
+		{false, "http://localhost:18150", false},
+	} {
+		if got := (config.Config{Dev: c.dev, Origin: c.origin}).LocalDev(); got != c.want {
+			t.Errorf("Dev=%v Origin=%q: LocalDev = %v, want %v", c.dev, c.origin, got, c.want)
+		}
+	}
+}
