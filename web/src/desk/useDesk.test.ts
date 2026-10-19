@@ -960,3 +960,83 @@ describe('fix round 2', () => {
 function fromOwnerLike(): Seq {
   return [{ key: 'x', layout: 'full', matteRatio: null, text: null, photos: [deskPhoto('p1')] }]
 }
+
+// ---------------------------------------------------------------------------
+// Task 8a: photoProps and clearOverride
+
+const OVERRIDDEN = () =>
+  photo('p1', { publicFields: ['iso', 'camera'], histogramPublic: true, override: { publicFields: ['iso', 'camera'], histogramPublic: true } })
+const withP1 = (p: OwnerFramePhoto, over: Partial<OwnerCollection> = {}) =>
+  owner({ cover: p, frames: [{ layout: 'full', matteRatio: null, text: null, photos: [p] }], ...over })
+const CLEAR = { publicFields: null, histogramPublic: null }
+
+async function settleAll() {
+  for (let i = 0; i < 5; i++) await flush()
+}
+
+describe('photoProps', () => {
+  it('reflects the loaded photos and later meta and override edits', async () => {
+    const d = await load(owner())
+    expect(d.photoProps.value).toEqual({
+      p1: { title: 'p1', caption: '', publicFields: ['iso'], histogramPublic: false, overridden: false },
+    })
+    d.setPhotoMeta('p1', { title: '浪', caption: '远处' })
+    expect(d.photoProps.value.p1).toMatchObject({ title: '浪', caption: '远处' })
+    d.setOverride('p1', { publicFields: ['camera'], histogramPublic: true })
+    expect(d.photoProps.value.p1).toMatchObject({ publicFields: ['camera'], histogramPublic: true, overridden: true })
+  })
+
+  it('marks a loaded override as overridden', async () => {
+    const d = await load(withP1(OVERRIDDEN()))
+    expect(d.photoProps.value.p1).toMatchObject({ publicFields: ['iso', 'camera'], histogramPublic: true, overridden: true })
+  })
+})
+
+describe('clearOverride', () => {
+  it('published + widening: opens the dialog and writes nothing before confirm', async () => {
+    exposureCheck.mockResolvedValue(WIDE)
+    const d = await load(withP1(OVERRIDDEN(), { status: 'published', visibility: 'public' }))
+    d.clearOverride('p1')
+    await flush()
+    expect(exposureCheck).toHaveBeenCalledWith('c1', { override: { photoId: 'p1', ...CLEAR } })
+    expect(putOverride).not.toHaveBeenCalled()
+    expect(d.exposure.value).not.toBeNull()
+    putOverride.mockResolvedValue(ok({ collectionId: 'c1', photoId: 'p1', ...CLEAR, updatedAt: 13 }))
+    getOwnerCollection.mockResolvedValue(ok(withP1(photo('p1', { publicFields: ['iso', 'lens', 'camera'], histogramPublic: true }), { status: 'published' })))
+    d.exposure.value!.confirm()
+    await settleAll()
+    expect(putOverride).toHaveBeenCalledTimes(1)
+    expect(putOverride).toHaveBeenCalledWith('c1', 'p1', CLEAR)
+    expect(d.photoProps.value.p1).toMatchObject({ publicFields: ['iso', 'lens', 'camera'], histogramPublic: true, overridden: false })
+  })
+
+  it('cancel leaves the override as it was and writes nothing', async () => {
+    exposureCheck.mockResolvedValue(WIDE)
+    const d = await load(withP1(OVERRIDDEN(), { status: 'published', visibility: 'public' }))
+    d.clearOverride('p1')
+    await flush()
+    d.exposure.value!.cancel()
+    await settleAll()
+    expect(putOverride).not.toHaveBeenCalled()
+    expect(d.exposure.value).toBeNull()
+    expect(d.photoProps.value.p1).toMatchObject({ publicFields: ['iso', 'camera'], histogramPublic: true, overridden: true })
+  })
+
+  it('a draft skips the exposure check', async () => {
+    const d = await load(withP1(OVERRIDDEN()))
+    d.clearOverride('p1')
+    await settleAll()
+    expect(exposureCheck).not.toHaveBeenCalled()
+    expect(putOverride).toHaveBeenCalledWith('c1', 'p1', CLEAR)
+    expect(d.photoProps.value.p1!.overridden).toBe(false)
+  })
+
+  it('a narrowing clear on a published collection opens no dialog', async () => {
+    const d = await load(withP1(OVERRIDDEN(), { status: 'published', visibility: 'public' }))
+    d.clearOverride('p1')
+    await settleAll()
+    expect(exposureCheck).toHaveBeenCalledTimes(1)
+    expect(d.exposure.value).toBeNull()
+    expect(putOverride).toHaveBeenCalledWith('c1', 'p1', CLEAR)
+  })
+})

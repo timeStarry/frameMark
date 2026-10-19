@@ -60,6 +60,16 @@ export interface PhotoMeta {
   caption: string
 }
 
+/** What the property panel shows for one photo in this collection. */
+export interface PhotoProps {
+  title: string
+  caption: string
+  publicFields: string[]
+  histogramPublic: boolean
+  /** This collection has an override row for the photo. */
+  overridden: boolean
+}
+
 export interface Desk {
   state: ComputedRef<DeskState>
   collection: ComputedRef<OwnerCollection | null>
@@ -80,6 +90,10 @@ export interface Desk {
   applyFields(next: CollectionFields, kind: 'field' | 'exposure'): void
   setPhotoMeta(photoId: string, m: PhotoMeta): void
   setOverride(photoId: string, o: OverrideInput): void
+  /** Per photo in the sequence: meta and effective exposure, local edits included. */
+  photoProps: ComputedRef<Record<string, PhotoProps>>
+  /** 恢复默认: drops this collection's override. Gated like setOverride, since it can widen. */
+  clearOverride(photoId: string): void
   undo(): void
   redo(): void
   /** Resends failed writes and re-runs a failed exposure check. */
@@ -282,6 +296,9 @@ function createSnapHistory(initial: Seq, max = 50) {
   }
 }
 
+/** An override value meaning "drop the row" (publicFields and histogramPublic both null). */
+const isClear = (o: OverrideInput | undefined) => !!o && o.publicFields === null && o.histogramPublic === null
+
 const sameOverride = (a: OverrideInput | undefined, b: OverrideInput | undefined) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null)
 
 type Guarded<T> = GuardedResult<T> | WriteResult<T>
@@ -459,7 +476,10 @@ export function useDesk(id: Ref<string>): Desk {
           guardedSend<OverrideView>(
             s,
             () => putOverride(s.cid, photoId, v),
-            (data) => noteUpdated(data.updatedAt),
+            (data) => {
+              noteUpdated(data.updatedAt)
+              if (isClear(v)) void refreshDefaults(s, photoId)
+            },
           ),
         () => onConflict(s),
       )
@@ -467,6 +487,29 @@ export function useDesk(id: Ref<string>): Desk {
       lanesVersion.value += 1
     }
     return l
+  }
+
+  /**
+   * After a cleared override the photo shows its snapshot defaults. The
+   * override response carries no defaults, so read them from the owner
+   * collection. Only this photo's exposure is taken; updatedAt and every
+   * other local edit stay as they are.
+   */
+  async function refreshDefaults(s: Session, photoId: string) {
+    let r: Awaited<ReturnType<typeof getOwnerCollection>>
+    try {
+      r = await getOwnerCollection(s.cid)
+    } catch {
+      return
+    }
+    if (!live(s) || !r.ok) return
+    // A newer override was set meanwhile: it wins.
+    if (!isClear(overrides[photoId]) || !isClear(confirmedOverrides[photoId])) return
+    const p = r.data.frames.flatMap((f) => f.photos).find((x) => x.id === photoId)
+    const d = photos[photoId]
+    if (p && d) photos[photoId] = { ...d, publicFields: p.publicFields, histogramPublic: p.histogramPublic }
+    delete overrides[photoId]
+    delete confirmedOverrides[photoId]
   }
 
   function lanesOf(s: Session | null): Lane<unknown>[] {
@@ -766,7 +809,20 @@ export function useDesk(id: Ref<string>): Desk {
 
   function setOverride(photoId: string, o: OverrideInput) {
     if (state.value !== 'ready' || exposureOpen.value || opBusy.value > 0) return
-    overrides[photoId] = { publicFields: [...o.publicFields], histogramPublic: o.histogramPublic }
+    overrides[photoId] = { publicFields: o.publicFields ? [...o.publicFields] : null, histogramPublic: o.histogramPublic }
+    reconcile()
+  }
+
+  /**
+   * The clear rides the override path: reconcile sends it on a draft, and on
+   * a published collection exposure-checks {photoId, publicFields: null,
+   * histogramPublic: null} first. Cancel reverts to the confirmed override.
+   */
+  function clearOverride(photoId: string) {
+    if (state.value !== 'ready' || exposureOpen.value || opBusy.value > 0) return
+    const cur = overrides[photoId]
+    if (!cur || isClear(cur)) return
+    overrides[photoId] = { publicFields: null, histogramPublic: null }
     reconcile()
   }
 
@@ -1098,9 +1154,28 @@ export function useDesk(id: Ref<string>): Desk {
     const view: Record<string, PhotoDetail> = {}
     for (const [pid, d] of Object.entries(photos)) {
       const o = overrides[pid]
-      view[pid] = o ? { ...d, publicFields: o.publicFields, histogramPublic: o.histogramPublic ?? d.histogramPublic } : d
+      view[pid] = o && !isClear(o) ? { ...d, publicFields: o.publicFields ?? d.publicFields, histogramPublic: o.histogramPublic ?? d.histogramPublic } : d
     }
     return toPreview({ id: c.id, owner: c.owner, publishedAt: c.publishedAt }, fields.value, seq.value, view)
+  })
+
+  const photoProps = computed<Record<string, PhotoProps>>(() => {
+    const out: Record<string, PhotoProps> = {}
+    for (const f of seq.value) {
+      for (const p of f.photos) {
+        const d = photos[p.id]
+        const o = overrides[p.id]
+        const live = o && !isClear(o) ? o : undefined
+        out[p.id] = {
+          title: d?.title ?? p.title,
+          caption: d?.caption ?? '',
+          publicFields: [...(live?.publicFields ?? d?.publicFields ?? [])],
+          histogramPublic: live?.histogramPublic ?? d?.histogramPublic ?? false,
+          overridden: live !== undefined,
+        }
+      }
+    }
+    return out
   })
 
   const exposure = computed<ExposureDialog | null>(() =>
@@ -1159,6 +1234,8 @@ export function useDesk(id: Ref<string>): Desk {
     applyFields,
     setPhotoMeta,
     setOverride,
+    photoProps,
+    clearOverride,
     undo: () => step('undo'),
     redo: () => step('redo'),
     retry,

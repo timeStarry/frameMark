@@ -309,7 +309,8 @@ export interface FrameInput {
 }
 
 export interface OverrideInput {
-  publicFields: string[]
+  /** null with histogramPublic null drops the override (恢复默认). */
+  publicFields: string[] | null
   histogramPublic: boolean | null
 }
 

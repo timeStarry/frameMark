@@ -1,5 +1,9 @@
 // Test-only helpers for the desk component tests. Never imported by app code.
-import type { DeskPhoto } from './sequence'
+import { vi } from 'vitest'
+import { computed, ref } from 'vue'
+import type { CollectionFields } from '../api/types'
+import type { DeskPhoto, Seq } from './sequence'
+import type { Desk, PhotoProps } from './useDesk'
 import { media } from '../viewer/testFixtures'
 
 export function deskPhoto(id: string, title = `标题${id}`): DeskPhoto {
@@ -35,4 +39,40 @@ export function drag(el: Element, type: string, dt: DTStub): DragEvent {
   Object.defineProperty(e, 'dataTransfer', { value: dt })
   el.dispatchEvent(e)
   return e
+}
+
+/** A Desk stand-in for panel tests: real refs, vi.fn methods. */
+export function fakeDesk(init: {
+  seq?: Seq
+  fields?: Partial<CollectionFields>
+  photoProps?: Record<string, PhotoProps>
+  errorMessage?: string
+}) {
+  const seq = ref<Seq>(init.seq ?? [])
+  const fields = ref<CollectionFields>({
+    title: '海边',
+    intro: '',
+    visibility: 'private',
+    distribute: false,
+    originalDownload: false,
+    license: null,
+    aiDeclaration: null,
+    coverPhotoId: null,
+    ...init.fields,
+  })
+  const photoProps = ref<Record<string, PhotoProps>>(init.photoProps ?? {})
+  const errorMessage = ref(init.errorMessage ?? '')
+  const desk = {
+    seq: computed(() => seq.value),
+    fields: computed(() => fields.value),
+    photoProps: computed(() => photoProps.value),
+    errorMessage: computed(() => errorMessage.value),
+    applySeq: vi.fn(),
+    applyFields: vi.fn(),
+    setPhotoMeta: vi.fn(),
+    setOverride: vi.fn(),
+    clearOverride: vi.fn(),
+    remove: vi.fn(async () => true),
+  }
+  return { desk: desk as unknown as Desk, mocks: desk, seq, fields, photoProps, errorMessage }
 }
