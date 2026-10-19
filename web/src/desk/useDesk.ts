@@ -204,6 +204,7 @@ function fieldsMayWiden(prev: CollectionFields, next: CollectionFields): boolean
 const UNSAVED_MSG = '还有未保存的修改，保存后再发布'
 const STALE_MANIFEST_MSG = '内容有变化，请重新确认发布清单'
 const OVERWRITE_INVALID_MSG = '序列还有问题，修好后再覆盖'
+const REFETCH_FAILED_MSG = '读取最新版本失败，暂时不能覆盖'
 const WIDEN_KEYS = ['visibility', 'distribute', 'originalDownload'] as const
 
 /** Lanes, chain and identity of one load. A stale session never sends or writes state. */
@@ -523,7 +524,11 @@ export function useDesk(id: Ref<string>): Desk {
     })
   }
 
-  watch(saveState, persistBackup)
+  watch(saveState, (v) => {
+    // A publish refusal is about unsaved work; it is moot once all is saved.
+    if (v === 'saved' && (errorMessage.value === UNSAVED_MSG || errorMessage.value === STALE_MANIFEST_MSG)) errorMessage.value = ''
+    persistBackup()
+  })
 
   const published = () => collection.value?.status === 'published'
   /** Structural edits, undo and redo wait while any of these is pending. */
@@ -864,9 +869,12 @@ export function useDesk(id: Ref<string>): Desk {
 
   function restoreBackup() {
     const b = storedBackup
+    if (!b || state.value !== 'ready') return
+    // Busy: keep the offer open and the backup in hand; the owner can retry
+    // once the check or dialog settles. Never drop it (review m3).
+    if (structBusy() || conflictOpen.value) return
     backupOfferOpen.value = false
     storedBackup = null
-    if (!b || state.value !== 'ready' || structBusy()) return
     // The backup holds photo ids only; rebuild DeskPhotos from the loaded ones.
     const byId = new Map<string, DeskPhoto>()
     for (const f of seq.value) for (const p of f.photos) byId.set(p.id, p)
@@ -897,6 +905,18 @@ export function useDesk(id: Ref<string>): Desk {
     await reloadFromServer()
   }
 
+  /**
+   * Takes the server's current version as the baseline (status, visibility,
+   * fields, frames, updatedAt) while keeping the owner's local edits.
+   */
+  function adoptServerCopy(c: OwnerCollection) {
+    collection.value = c
+    updatedAt.value = c.updatedAt
+    confirmedFields.value = pickFields(c)
+    confirmedSeq.value = fromOwner(c)
+    for (const [k, v] of Object.entries(detailsFrom(c))) if (!photos[k]) photos[k] = v
+  }
+
   /** Schedules the overwrite values into the paused lanes first, then resumes (review I7). */
   function startOverwrite(s: Session, f: CollectionFields, q: Seq) {
     s.force = { fields: true, frames: true }
@@ -917,11 +937,25 @@ export function useDesk(id: Ref<string>): Desk {
     errorMessage.value = ''
     const f = cloneFields(fields.value)
     const q = seq.value
-    if (!published()) {
-      startOverwrite(s, f, q)
+    // A conflict means our copy of the server is stale, its status included
+    // (another tab may have published). Refetch, then always run the combined
+    // check against the server's state; the server answers widens:false for a
+    // draft (review N1). Lanes stay paused throughout.
+    const token = ++checkToken
+    checkInFlight.value = true
+    let fresh: Awaited<ReturnType<typeof getOwnerCollection>>
+    try {
+      fresh = await getOwnerCollection(s.cid)
+    } catch {
+      fresh = { ok: false, status: 0 }
+    }
+    if (!live(s) || token !== checkToken) return
+    checkInFlight.value = false
+    if (!fresh.ok) {
+      errorMessage.value = REFETCH_FAILED_MSG
       return
     }
-    // Lanes stay paused until the check settles and, if it widens, until confirm.
+    adoptServerCopy(fresh.data)
     conflictOpen.value = false
     const res = await runCheck(s, { collection: f, frames: toInput(q) })
     if (!res) return
@@ -989,6 +1023,7 @@ export function useDesk(id: Ref<string>): Desk {
 
   function publish(): Promise<Manifest | null> {
     return op(async (s) => {
+      errorMessage.value = ''
       if (!(await settle(s))) return null
       const r = await serial(s, () => publishDryRun(s.cid))
       if (!live(s)) return null
@@ -1004,6 +1039,7 @@ export function useDesk(id: Ref<string>): Desk {
 
   function confirmPublish(): Promise<boolean> {
     return op(async (s) => {
+      errorMessage.value = ''
       if (!(await settle(s))) return false
       const r = await serial(s, async () => {
         // Checked on the chain, after every earlier write has landed.

@@ -845,3 +845,118 @@ describe('fix round 1: Important', () => {
     expect(putCollection.mock.calls[0]![2]).toBeNull()
   })
 })
+
+// ---------------------------------------------------------------------------
+// Fix round 2 (task-6-rereview-1.md)
+
+describe('fix round 2', () => {
+  async function conflicted(c: OwnerCollection) {
+    putFrames.mockResolvedValueOnce({ ok: false, status: 409, message: 'stale', conflictAt: 99 })
+    const d = await load(c)
+    d.applySeq(insertPhotos(d.seq.value, 1, [deskPhoto('p2')]), 'structure')
+    await flush()
+    expect(d.conflict.value).not.toBeNull()
+    expect(putFrames).toHaveBeenCalledTimes(1)
+    return d
+  }
+
+  it('N1: overwrite rechecks against the server even when the local copy is a draft', async () => {
+    const d = await conflicted(owner({ status: 'draft' }))
+    // Another tab published it meanwhile.
+    getOwnerCollection.mockResolvedValue({ ok: true, data: owner({ status: 'published', visibility: 'public', updatedAt: 99 }) })
+    exposureCheck.mockResolvedValue(WIDE)
+    await d.conflict.value!.overwrite()
+    await flush()
+    expect(getOwnerCollection).toHaveBeenCalledTimes(2)
+    expect(exposureCheck).toHaveBeenCalledTimes(1)
+    expect(exposureCheck.mock.calls[0]![1]).toHaveProperty('collection')
+    expect(exposureCheck.mock.calls[0]![1]).toHaveProperty('frames')
+    expect(d.exposure.value).not.toBeNull()
+    expect(putFrames).toHaveBeenCalledTimes(1)
+    expect(putCollection).not.toHaveBeenCalled()
+    expect(d.collection.value?.status).toBe('published')
+
+    d.exposure.value!.cancel()
+    await flush()
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(putFrames).toHaveBeenCalledTimes(1)
+    expect(putCollection).not.toHaveBeenCalled()
+    expect(d.conflict.value).not.toBeNull()
+  })
+
+  it('N1: overwrite confirmed after the server recheck sends once per lane without ifUpdatedAt', async () => {
+    const d = await conflicted(owner({ status: 'draft' }))
+    getOwnerCollection.mockResolvedValue({ ok: true, data: owner({ status: 'published', updatedAt: 99 }) })
+    exposureCheck.mockResolvedValue(WIDE)
+    await d.conflict.value!.overwrite()
+    await flush()
+    d.exposure.value!.confirm()
+    await flush()
+    await flush()
+    expect(putFrames).toHaveBeenCalledTimes(2)
+    expect(putFrames.mock.calls[1]![2]).toBeNull()
+    expect(putCollection).toHaveBeenCalledTimes(1)
+    expect(putCollection.mock.calls[0]![2]).toBeNull()
+  })
+
+  it('N1: a failed refetch refuses the overwrite and sends nothing', async () => {
+    const d = await conflicted(owner({ status: 'draft' }))
+    getOwnerCollection.mockResolvedValue({ ok: false, status: 0 })
+    await d.conflict.value!.overwrite()
+    await flush()
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(exposureCheck).not.toHaveBeenCalled()
+    expect(putFrames).toHaveBeenCalledTimes(1)
+    expect(putCollection).not.toHaveBeenCalled()
+    expect(d.conflict.value).not.toBeNull()
+    expect(d.errorMessage.value).toBe('读取最新版本失败，暂时不能覆盖')
+  })
+
+  it('m3: restoring while a check is in flight keeps the backup offer', async () => {
+    const c = owner({ status: 'published', visibility: 'unlisted' })
+    localStorage.setItem(
+      'markr:desk:c1',
+      JSON.stringify({ baseUpdatedAt: c.updatedAt, savedAt: 1, fields: { ...fieldsOf(c), title: '备份' }, frames: toInput(fromOwnerLike()) }),
+    )
+    const d = await load(c)
+    const chk = deferred<unknown>()
+    exposureCheck.mockReturnValueOnce(chk.promise)
+    d.applyFields({ ...d.fields.value, visibility: 'public' }, 'exposure')
+    await flush()
+    expect(d.checking.value).toBe(true)
+    d.backupOffer.value!.restore()
+    expect(d.backupOffer.value).not.toBeNull()
+    expect(d.fields.value.title).toBe('海边')
+
+    chk.resolve(NOT_WIDE)
+    await flush()
+    d.backupOffer.value!.restore()
+    expect(d.backupOffer.value).toBeNull()
+    expect(d.fields.value.title).toBe('备份')
+  })
+
+  it('m1: the unsaved refusal message clears once everything is saved', async () => {
+    putFrames.mockResolvedValueOnce({ ok: false, status: 500, message: '服务器出错' })
+    const d = await load(owner({ status: 'draft' }))
+    d.applySeq(insertPhotos(d.seq.value, 1, [deskPhoto('p2')]), 'structure')
+    await flush()
+    expect(await d.publish()).toBeNull()
+    d.retry()
+    await flush()
+    expect(d.saveState.value).toBe('saved')
+    expect(d.errorMessage.value).toBe('')
+  })
+
+  it('m1: the stale-manifest message clears when the next publish attempt starts', async () => {
+    const d = await load(owner({ status: 'draft' }))
+    expect(await d.confirmPublish()).toBe(false)
+    expect(d.errorMessage.value).toBe('内容有变化，请重新确认发布清单')
+    const m = d.publish()
+    expect(d.errorMessage.value).toBe('')
+    expect(await m).not.toBeNull()
+  })
+})
+
+function fromOwnerLike(): Seq {
+  return [{ key: 'x', layout: 'full', matteRatio: null, text: null, photos: [deskPhoto('p1')] }]
+}
