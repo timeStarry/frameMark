@@ -46,6 +46,21 @@ export const MATTE_MIN = 0.5
 export const MATTE_MAX = 0.95
 export const MATTE_DEFAULT = 0.8
 
+// Go's unicode.IsSpace set (strings.TrimSpace). Unlike String.prototype.trim it
+// excludes U+FEFF and includes U+0085.
+const GO_SPACE = '\\t\\n\\v\\f\\r \\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000'
+const TRIM_RE = new RegExp(`^[${GO_SPACE}]+|[${GO_SPACE}]+$`, 'gu')
+// Cc except LF, plus bidi embedding/override/isolate controls.
+const DROP_RE = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/gu
+
+/**
+ * Mirrors cleanText(s, true) in internal/api/collections.go: CRLF/CR become
+ * LF, other control and bidi characters are removed, and the result is trimmed.
+ */
+export function cleanText(s: string): string {
+  return s.replace(/\r\n?/g, '\n').replace(DROP_RE, '').replace(TRIM_RE, '')
+}
+
 let keySeq = 0
 function newKey(): string {
   keySeq += 1
@@ -78,7 +93,7 @@ export function toInput(s: Seq): FrameInput[] {
   return s.map((f) => ({
     layout: f.layout,
     matteRatio: f.layout === 'matted' ? f.matteRatio : null,
-    text: f.layout === 'text' ? f.text : null,
+    text: f.layout === 'text' ? cleanText(f.text ?? '') : null,
     photoIds: f.photos.map((p) => p.id),
   }))
 }
@@ -176,7 +191,7 @@ export function isValid(s: Seq): Validity {
     const n = f.photos.length
     switch (f.layout) {
       case 'text': {
-        const len = [...(f.text ?? '')].length
+        const len = [...cleanText(f.text ?? '')].length
         if (len === 0) return { ok: false, index: i, reason: 'text frame is empty' }
         if (len > MAX_TEXT) return { ok: false, index: i, reason: `text is longer than ${MAX_TEXT} characters` }
         if (n !== 0) return { ok: false, index: i, reason: 'text frame cannot hold photos' }

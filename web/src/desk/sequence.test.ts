@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   MAX_FRAMES,
   allowedLayouts,
+  cleanText,
   fromOwner,
   insertPhotos,
   insertText,
@@ -254,5 +255,44 @@ describe('isValid / photoIds', () => {
 
   it('collects photo ids', () => {
     expect(photoIds(seqOf(full('a'), pair('b', 'c'), text('t')))).toEqual(new Set(['a', 'b', 'c']))
+  })
+})
+
+describe('cleanText (mirrors collections.go cleanText multiline)', () => {
+  it('normalises CRLF and CR to LF', () => {
+    expect(cleanText('a\r\nb\rc')).toBe('a\nb\nc')
+  })
+
+  it('drops control characters except LF, and bidi controls', () => {
+    expect(cleanText('a\u0000b\tc\u007f\u0085d\u009f\ne')).toBe('abcd\ne')
+    expect(cleanText('\u202aa\u202eb\u2066c\u2069')).toBe('abc')
+  })
+
+  it('trims Go TrimSpace whitespace but keeps a BOM', () => {
+    expect(cleanText(' \n\u00a0\u3000 a b \u2028\n ')).toBe('a b')
+    expect(cleanText('\ufeffa')).toBe('\ufeffa')
+  })
+})
+
+describe('isValid after cleaning', () => {
+  it('rejects whitespace-only, control-only and bidi-only text', () => {
+    expect(isValid(seqOf(text(' \n\t\u3000 ')))).toMatchObject({ ok: false, index: 0 })
+    expect(isValid(seqOf(text('\u0001\u0085\u007f')))).toMatchObject({ ok: false, index: 0 })
+    expect(isValid(seqOf(text('\u202a\u2067\u202e')))).toMatchObject({ ok: false, index: 0 })
+  })
+
+  it('counts code points of the cleaned text', () => {
+    expect(isValid(seqOf(text('  ' + 'x'.repeat(2000) + '  \n')))).toEqual({ ok: true })
+    expect(isValid(seqOf(text(' ' + 'x'.repeat(2001) + ' ')))).toMatchObject({ ok: false, index: 0 })
+    expect(isValid(seqOf(text('\u{1F600}'.repeat(2000))))).toEqual({ ok: true })
+    expect(isValid(seqOf(text('\u{1F600}'.repeat(2001))))).toMatchObject({ ok: false, index: 0 })
+  })
+})
+
+describe('toInput sends cleaned text', () => {
+  it('equals cleanText of the frame text', () => {
+    const raw = ' \u202ahi\r\nthere\u0007 '
+    expect(toInput(seqOf(text(raw)))[0]!.text).toBe(cleanText(raw))
+    expect(cleanText(raw)).toBe('hi\nthere')
   })
 })
