@@ -20,6 +20,9 @@ function makeDesk(initial: Seq) {
   const seq = ref<Seq>(initial)
   const state = ref<'loading' | 'ready' | 'missing' | 'error'>('ready')
   const exposureOpen = ref(false)
+  const checking = ref(false)
+  const saveState = ref<'saved' | 'saving' | 'unsaved' | 'error' | 'conflict'>('saved')
+  const errorMessage = ref('')
   const preview: Collection = collection([fullFrame(photo('p1'))])
   const confirm = vi.fn()
   const cancel = vi.fn()
@@ -29,8 +32,8 @@ function makeDesk(initial: Seq) {
     fields: computed(() => ({ title: '海边', intro: '', visibility: 'private', distribute: false, originalDownload: false, license: null, aiDeclaration: null, coverPhotoId: null })),
     seq: computed(() => seq.value),
     selected: ref(0),
-    saveState: computed(() => 'saved' as const),
-    errorMessage: computed(() => ''),
+    saveState: computed(() => saveState.value),
+    errorMessage: computed(() => errorMessage.value),
     exposure: computed(() =>
       exposureOpen.value ? { open: true, changes: [{ kind: 'photos', detail: '加入了一张照片' }], confirm, cancel } : null,
     ),
@@ -39,7 +42,8 @@ function makeDesk(initial: Seq) {
     previewCollection: computed(() => preview),
     canUndo: computed(() => true),
     canRedo: computed(() => true),
-    checking: computed(() => false),
+    checking: computed(() => checking.value),
+    retry: vi.fn(),
     applySeq: vi.fn((next: Seq, _kind: 'structure') => {
       seq.value = next
     }),
@@ -58,6 +62,9 @@ function makeDesk(initial: Seq) {
     _seq: seq,
     _state: state,
     _exposure: exposureOpen,
+    _checking: checking,
+    _saveState: saveState,
+    _errorMessage: errorMessage,
     _preview: preview,
   }
   return d
@@ -247,6 +254,54 @@ describe('DeskRoute', () => {
     await cancel!.trigger('click')
     expect(desk.confirm).toHaveBeenCalledTimes(1)
     expect(desk.cancel).toHaveBeenCalledTimes(1)
+  })
+
+  it('locks structural edits and undo/redo while a check is in flight or the prompt is open', async () => {
+    for (const lock of ['checking', 'exposure'] as const) {
+      const wr = await open()
+      if (lock === 'checking') desk._checking.value = true
+      else desk._exposure.value = true
+      await nextTick()
+      const btn = (t: string) => wr.findAll('.tools button').find((b) => b.text() === t)!
+      expect(btn('撤销').attributes('disabled')).toBeDefined()
+      expect(btn('重做').attributes('disabled')).toBeDefined()
+      expect(wr.find('[data-gap="1"] .plus').attributes('disabled')).toBeDefined()
+      expect(frames(wr)[0]!.attributes('draggable')).toBe('false')
+      expect(tiles(wr)[0]!.attributes('draggable')).toBe('false')
+      expect(wr.find('.desk-archive .add').attributes('disabled')).toBeDefined()
+      await tiles(wr)[1]!.trigger('keydown', { key: 'Enter' })
+      await frames(wr)[0]!.trigger('keydown', { key: 'ArrowDown', altKey: true })
+      await frames(wr)[0]!.trigger('keydown', { key: 'Delete' })
+      key(document.body, { key: 'z', metaKey: true })
+      key(document.body, { key: 'y', ctrlKey: true })
+      expect(desk.applySeq).not.toHaveBeenCalled()
+      expect(desk.undo).not.toHaveBeenCalled()
+      expect(desk.redo).not.toHaveBeenCalled()
+      expect(wr.find('[data-undo-toast]').exists()).toBe(false)
+      // Unlocking restores editing.
+      desk._checking.value = false
+      desk._exposure.value = false
+      await nextTick()
+      expect(frames(wr)[0]!.attributes('draggable')).toBe('true')
+      await frames(wr)[0]!.trigger('keydown', { key: 'Delete' })
+      expect(desk.applySeq).toHaveBeenCalledTimes(1)
+      w!.unmount()
+      w = null
+      desk = makeDesk(insertPhotos([], 0, [deskPhoto('a'), deskPhoto('x')]))
+      holder.desk = desk
+    }
+  })
+
+  it('a save error shows 重试, which calls desk.retry', async () => {
+    const wr = await open()
+    expect(wr.findAll('button').some((b) => b.text() === '重试')).toBe(false)
+    desk._saveState.value = 'error'
+    desk._errorMessage.value = '网络连接出了问题'
+    await nextTick()
+    expect(wr.find('.save').text()).toContain('未保存')
+    expect(wr.find('.save').text()).toContain('网络连接出了问题')
+    await wr.find('button.retry').trigger('click')
+    expect(desk.retry).toHaveBeenCalledTimes(1)
   })
 
   it('shows 找不到这个合集 for a missing collection', async () => {

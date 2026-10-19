@@ -17,7 +17,8 @@ import WallStatus from '../walls/WallStatus.vue'
 import { writePhotos } from './dnd'
 import type { DeskPhoto } from './sequence'
 
-const props = defineProps<{ inSequence: ReadonlySet<string> }>()
+/** `locked`: an exposure check is pending; adding (and dragging out) is off. */
+const props = defineProps<{ inSequence: ReadonlySet<string>; locked?: boolean }>()
 const emit = defineEmits<{ add: [photos: DeskPhoto[]] }>()
 
 const uid = useId()
@@ -140,6 +141,7 @@ function toggle(p: OwnerPhoto) {
 }
 
 function addSelection(fallback?: OwnerPhoto) {
+  if (props.locked) return
   const list = selectedPhotos.value.length > 0 ? selectedPhotos.value : fallback ? [fallback] : []
   if (list.length === 0) return
   emit('add', list.map(toDesk))
@@ -176,6 +178,10 @@ function onTileKey(p: OwnerPhoto, i: number, e: KeyboardEvent) {
 }
 
 function onDragStart(p: OwnerPhoto, e: DragEvent) {
+  if (props.locked) {
+    e.preventDefault()
+    return
+  }
   if (!e.dataTransfer) return
   // Dragging a selected tile carries the whole selection.
   const list = selection.value.has(p.id) ? selectedPhotos.value : [p]
@@ -210,7 +216,7 @@ void load()
   <section ref="root" class="desk-archive" :aria-labelledby="`${uid}-h`" tabindex="-1">
     <div class="head">
       <h2 :id="`${uid}-h`">归档</h2>
-      <button type="button" class="add" :disabled="selectedPhotos.length === 0" @click="addSelection()">
+      <button type="button" class="add" :disabled="locked || selectedPhotos.length === 0" @click="addSelection()">
         加入<template v-if="selectedPhotos.length > 0">（{{ selectedPhotos.length }}）</template>
       </button>
     </div>
@@ -224,7 +230,7 @@ void load()
             :key="p.id"
             role="option"
             tabindex="0"
-            draggable="true"
+            :draggable="locked ? 'false' : 'true'"
             class="tile"
             :class="{ used: inSequence.has(p.id), selected: selection.has(p.id) }"
             :data-photo-id="p.id"

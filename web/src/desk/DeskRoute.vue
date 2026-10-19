@@ -24,6 +24,11 @@ const title = computed(() => (desk.state.value === 'ready' ? desk.fields.value.t
 usePageHeading(heading, () => title.value)
 
 const seq = desk.seq
+/**
+ * Structural edits and undo/redo are off while an exposure check is in flight
+ * or its dialog is open. useDesk also queues or blocks them; the UI says so.
+ */
+const locked = computed(() => desk.checking.value || desk.exposure.value !== null)
 const inSequence = computed(() => photoIds(seq.value))
 const archive = ref<InstanceType<typeof DeskArchive> | null>(null)
 const sequence = ref<InstanceType<typeof DeskSequence> | null>(null)
@@ -56,6 +61,7 @@ function showUndoToast() {
 }
 
 function onEdit(next: Seq, message: string, removed = false) {
+  if (locked.value) return
   desk.applySeq(next, 'structure')
   // applySeq may defer the edit behind an open exposure check; the message
   // still describes what was asked for.
@@ -70,6 +76,7 @@ function onEdit(next: Seq, message: string, removed = false) {
  * Local helper: belongs in useDesk as an `append(photos)` action later.
  */
 function appendPhotos(photos: DeskPhoto[]) {
+  if (locked.value) return
   const s = seq.value
   const next = insertPhotos(s, s.length, photos)
   if (next === s) {
@@ -80,14 +87,14 @@ function appendPhotos(photos: DeskPhoto[]) {
 }
 
 function undo() {
-  if (!desk.canUndo.value) return
+  if (locked.value || !desk.canUndo.value) return
   desk.undo()
   hideToast()
   announce('已撤销')
 }
 
 function redo() {
-  if (!desk.canRedo.value) return
+  if (locked.value || !desk.canRedo.value) return
   desk.redo()
   announce('已重做')
 }
@@ -174,7 +181,8 @@ const SAVE_LABEL: Record<SaveState, string> = {
   saved: '已保存',
   saving: '保存中…',
   unsaved: '未保存',
-  error: '未保存·重试',
+  // The adjacent 重试 button completes 「未保存·重试」.
+  error: '未保存 ·',
   conflict: '有冲突，未保存',
 }
 const saveLabel = computed(() => SAVE_LABEL[desk.saveState.value])
@@ -189,9 +197,12 @@ const saveLabel = computed(() => SAVE_LABEL[desk.saveState.value])
         {{ desk.state.value === 'ready' ? saveLabel : '' }}
         <span v-if="desk.state.value === 'ready' && desk.errorMessage.value" class="save-error">{{ desk.errorMessage.value }}</span>
       </p>
+      <button v-if="desk.state.value === 'ready' && desk.saveState.value === 'error'" type="button" class="retry" @click="desk.retry()">
+        重试
+      </button>
       <div v-if="desk.state.value === 'ready'" class="tools">
-        <button type="button" :disabled="!desk.canUndo.value" @click="undo">撤销</button>
-        <button type="button" :disabled="!desk.canRedo.value" @click="redo">重做</button>
+        <button type="button" :disabled="locked || !desk.canUndo.value" @click="undo">撤销</button>
+        <button type="button" :disabled="locked || !desk.canRedo.value" @click="redo">重做</button>
         <button type="button" class="drawer-btn" :aria-expanded="drawerOpen ? 'true' : 'false'" @click="drawerOpen = !drawerOpen">
           添加照片
         </button>
@@ -201,13 +212,14 @@ const saveLabel = computed(() => SAVE_LABEL[desk.saveState.value])
     <template v-if="desk.state.value === 'ready'">
       <div class="cols">
         <div class="col archive-col" :class="{ open: drawerOpen }">
-          <DeskArchive ref="archive" :in-sequence="inSequence" @add="appendPhotos" />
+          <DeskArchive ref="archive" :in-sequence="inSequence" :locked="locked" @add="appendPhotos" />
         </div>
         <div class="col seq-col">
           <DeskSequence
             ref="sequence"
             :seq="seq"
             :selected="desk.selected.value"
+            :locked="locked"
             @edit="onEdit"
             @refuse="announce"
             @focus="onFocusFrame"
@@ -242,7 +254,7 @@ const saveLabel = computed(() => SAVE_LABEL[desk.saveState.value])
 
     <div v-if="undoToast" class="toast" data-undo-toast>
       <span>已删除一帧</span>
-      <button type="button" @click="undoDelete">撤销</button>
+      <button type="button" :disabled="locked" @click="undoDelete">撤销</button>
     </div>
     <div class="sr-only" aria-live="polite" aria-atomic="true" data-desk-live>{{ announcement }}</div>
   </main>

@@ -9,14 +9,16 @@
 // frame); a frame itself merges a single photo into a pair (合成并排). Each
 // gap also has a 「＋」 menu: 文字页, 从归档添加.
 // The column never mutates the sequence: it computes the next Seq with the
-// pure ops in sequence.ts and emits it with an announcement.
+// pure ops in sequence.ts and emits it with an announcement. While `locked`
+// (an exposure check in flight or its dialog open) every edit is refused:
+// buttons are disabled, frames are not draggable and drops are not accepted.
 import { nextTick, ref, useId } from 'vue'
 import { FRAME_TYPE, PHOTO_TYPE, hasType, readFrame, readPhotos, writeFrame } from './dnd'
 import { frameLabel } from './labels'
 import DeskFrame from './DeskFrame.vue'
 import { insertPhotos, insertText, merge, move, remove, type DeskFrame as Frame, type DeskPhoto, type Seq } from './sequence'
 
-const props = defineProps<{ seq: Seq; selected: number }>()
+const props = defineProps<{ seq: Seq; selected: number; locked?: boolean }>()
 const emit = defineEmits<{
   /** A structural edit. `removed` marks a delete, which shows the undo toast. */
   edit: [next: Seq, message: string, removed?: boolean]
@@ -52,6 +54,7 @@ defineExpose({ focusIndex })
 // --- Edits ---
 
 function apply(next: Seq, message: string, refusal: string, removed = false): boolean {
+  if (props.locked) return false
   if (next === props.seq) {
     emit('refuse', refusal)
     return false
@@ -136,6 +139,7 @@ function onItemKey(i: number, e: KeyboardEvent) {
 const menuAt = ref<number | null>(null)
 
 async function toggleMenu(at: number) {
+  if (props.locked) return
   menuAt.value = menuAt.value === at ? null : at
   if (menuAt.value === null) return
   await nextTick()
@@ -162,6 +166,10 @@ const dropGap = ref<number | null>(null)
 const dropFrame = ref<number | null>(null)
 
 function onDragStart(f: Frame, e: DragEvent) {
+  if (props.locked) {
+    e.preventDefault()
+    return
+  }
   if (!e.dataTransfer || e.target !== e.currentTarget) return
   writeFrame(e.dataTransfer, f.key)
   dragKey.value = f.key
@@ -173,7 +181,7 @@ function onDragEnd() {
   dropFrame.value = null
 }
 
-const accepts = (e: DragEvent) => hasType(e, PHOTO_TYPE) || hasType(e, FRAME_TYPE)
+const accepts = (e: DragEvent) => !props.locked && (hasType(e, PHOTO_TYPE) || hasType(e, FRAME_TYPE))
 
 function onGapOver(at: number, e: DragEvent) {
   if (!accepts(e)) return
@@ -206,7 +214,7 @@ function draggedFrame(): Frame | null {
 
 function onFrameOver(i: number, e: DragEvent) {
   const target = props.seq[i]
-  if (!target) return
+  if (!target || props.locked) return
   if (hasType(e, FRAME_TYPE)) {
     const src = draggedFrame()
     // A frame's own key can only be read on drop; during dragover we rely on
@@ -266,7 +274,7 @@ function onLeave(e: DragEvent) {
       @drop="onGapDrop(0, $event)"
     >
       <p>从左侧归档拖入照片，或按 Enter 加入</p>
-      <button type="button" class="text-add" @click="addText(0)">加入文字页</button>
+      <button type="button" class="text-add" :disabled="locked" @click="addText(0)">加入文字页</button>
     </div>
     <ol
       ref="list"
@@ -289,13 +297,14 @@ function onLeave(e: DragEvent) {
           <button
             type="button"
             class="plus"
+            :disabled="locked"
             :aria-label="`在第 ${i + 1} 帧前插入`"
             :aria-expanded="menuAt === i ? 'true' : 'false'"
             @click="toggleMenu(i)"
           >
             ＋
           </button>
-          <div v-if="menuAt === i" class="menu" @keydown="onMenuKey(i, $event)">
+          <div v-if="menuAt === i && !locked" class="menu" @keydown="onMenuKey(i, $event)">
             <button type="button" @click="addText(i)">文字页</button>
             <button type="button" @click="fromArchive">从归档添加</button>
           </div>
@@ -303,7 +312,7 @@ function onLeave(e: DragEvent) {
         <li
           role="listitem"
           tabindex="0"
-          draggable="true"
+          :draggable="locked ? 'false' : 'true'"
           class="item"
           :class="{ current: i === selected, dragging: dragKey === f.key, merge: dropFrame === i }"
           :data-frame-key="f.key"
@@ -333,13 +342,14 @@ function onLeave(e: DragEvent) {
         <button
           type="button"
           class="plus"
+          :disabled="locked"
           aria-label="在末尾插入"
           :aria-expanded="menuAt === seq.length ? 'true' : 'false'"
           @click="toggleMenu(seq.length)"
         >
           ＋
         </button>
-        <div v-if="menuAt === seq.length" class="menu" @keydown="onMenuKey(seq.length, $event)">
+        <div v-if="menuAt === seq.length && !locked" class="menu" @keydown="onMenuKey(seq.length, $event)">
           <button type="button" @click="addText(seq.length)">文字页</button>
           <button type="button" @click="fromArchive">从归档添加</button>
         </div>
