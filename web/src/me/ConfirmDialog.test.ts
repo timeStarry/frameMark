@@ -94,3 +94,31 @@ describe('ConfirmDialog', () => {
     expect(w!.emitted('cancel')).toBeUndefined()
   })
 })
+
+describe('ConfirmDialog options', () => {
+  it('renders a default slot after the body and a custom cancel label', async () => {
+    w = mount(ConfirmDialog, {
+      props: { title: 't', body: '正文', confirmLabel: '好', open: true, cancelLabel: '撤销' },
+      slots: { default: '<button type="button" class="extra">额外</button>' },
+      attachTo: document.body,
+    })
+    await flushPromises()
+    const d = w.find('dialog')
+    expect(d.find('p + .extra').exists()).toBe(true)
+    expect(d.findAll('button').map((b) => b.text())).toEqual(['额外', '撤销', '好'])
+    expect((document.activeElement as HTMLElement).textContent).toBe('撤销')
+  })
+
+  it('disables confirm with confirmDisabled without marking it busy', async () => {
+    w = mount(ConfirmDialog, {
+      props: { title: 't', body: 'b', confirmLabel: '好', open: true, confirmDisabled: true },
+      attachTo: document.body,
+    })
+    await flushPromises()
+    const confirm = w.find('dialog').findAll('button')[1]!
+    expect(confirm.attributes('disabled')).toBeDefined()
+    expect(confirm.attributes('aria-busy')).toBeUndefined()
+    await confirm.trigger('click')
+    expect(w.emitted('confirm')).toBeUndefined()
+  })
+})

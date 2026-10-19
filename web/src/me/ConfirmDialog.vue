@@ -14,6 +14,10 @@ const props = defineProps<{
   /** Server message from a failed confirm. */
   error?: string
   busy?: boolean
+  /** Label for the cancel button; defaults to 取消. */
+  cancelLabel?: string
+  /** Disables confirm without marking it busy (e.g. a stale manifest). */
+  confirmDisabled?: boolean
 }>()
 const emit = defineEmits<{ confirm: []; cancel: [] }>()
 
@@ -78,7 +82,7 @@ function onKeydown(e: KeyboardEvent) {
 }
 
 function onConfirm() {
-  if (!props.busy) emit('confirm')
+  if (!props.busy && !props.confirmDisabled) emit('confirm')
 }
 </script>
 
@@ -94,10 +98,11 @@ function onConfirm() {
   >
     <h2 :id="`${id}-title`">{{ title }}</h2>
     <p :id="`${id}-body`">{{ body }}</p>
+    <slot />
     <p v-if="error" class="error" role="alert">{{ error }}</p>
     <div class="actions">
-      <button ref="cancelBtn" type="button" @click="emit('cancel')">取消</button>
-      <button type="button" class="danger" :disabled="busy" :aria-busy="busy ? 'true' : undefined" @click="onConfirm">
+      <button ref="cancelBtn" type="button" @click="emit('cancel')">{{ cancelLabel ?? '取消' }}</button>
+      <button type="button" class="danger" :disabled="busy || confirmDisabled" :aria-busy="busy ? 'true' : undefined" @click="onConfirm">
         {{ confirmLabel }}
       </button>
     </div>
