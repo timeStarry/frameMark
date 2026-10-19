@@ -549,6 +549,30 @@ describe('ArchiveRoute delete', () => {
     expect((document.activeElement as HTMLElement).textContent).toBe('删除')
   })
 
+  it('a close while the delete is in flight still lets the dialog reopen', async () => {
+    let finish: (r: WriteResult<unknown>) => void = () => {}
+    api.deletePhoto.mockImplementation(() => new Promise((r) => (finish = r)))
+    await openDelete('p2')
+    await w!.find('dialog').findAll('button').find((b) => b.text() === '删除')!.trigger('click')
+    await flushPromises()
+    // Esc mid-request: the dialog closes instead of staying stuck as "open".
+    w!.find('dialog').element.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await flushPromises()
+    expect(w!.find('dialog').attributes('open')).toBeUndefined()
+    // The request fails: the dialog reopens to show why.
+    finish({ ok: false, status: 409, message: '照片正在处理，稍后再删。' })
+    await flushPromises()
+    expect(w!.find('dialog').attributes('open')).toBeDefined()
+    expect(w!.find('dialog [role="alert"]').text()).toBe('照片正在处理，稍后再删。')
+    // And it can be cancelled and opened again.
+    await w!.find('dialog').findAll('button').find((b) => b.text() === '取消')!.trigger('click')
+    await flushPromises()
+    expect(w!.find('dialog').attributes('open')).toBeUndefined()
+    await w!.find('aside [data-delete]').trigger('click')
+    await flushPromises()
+    expect(w!.find('dialog').attributes('open')).toBeDefined()
+  })
+
   it('Esc inside the dialog cancels it without closing the panel', async () => {
     await openDelete('p2')
     w!.find('dialog').element.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))

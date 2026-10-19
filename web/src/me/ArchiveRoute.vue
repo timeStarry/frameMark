@@ -21,14 +21,13 @@ import { fromRoute, isFiltered, toQuery } from './archiveQuery'
 import UploadTray from './UploadTray.vue'
 import { ACCEPT, createQueue, sleep, xhrPut } from './uploadQueue'
 import { sha256Hex } from './sha256'
+import { usePageHeading } from './pageHeading'
 
 const route = useRoute()
 const router = useRouter()
 const ownName = route.name
 const uid = useId()
 const panelId = `${uid}-panel`
-
-document.title = '归档 — Markr'
 
 const q = computed<ArchiveQuery>(() => fromRoute(route.query))
 const items = shallowRef<OwnerPhoto[]>([])
@@ -37,6 +36,7 @@ const nextCursor = ref<string | null>(null)
 const state = ref<'loading' | 'error' | 'idle'>('loading')
 const root = ref<HTMLElement | null>(null)
 const heading = ref<HTMLElement | null>(null)
+usePageHeading(heading, () => '归档')
 
 // --- First page ---
 
@@ -155,8 +155,12 @@ function askDelete() {
 }
 
 async function cancelDelete() {
-  if (deleting.value) return
+  // A close during the request (Esc, or a native close the dialog could not
+  // veto) must still close: keeping `dialogOpen` true while the element is
+  // closed would leave the dialog unable to reopen. The request finishes on
+  // its own; a failure reopens the dialog to show its message.
   dialogOpen.value = false
+  if (deleting.value) return
   deleteError.value = ''
   await nextTick()
   root.value?.querySelector<HTMLElement>('[data-delete]')?.focus()
@@ -171,6 +175,7 @@ async function confirmDelete() {
   deleting.value = false
   if (!r.ok) {
     deleteError.value = r.message
+    dialogOpen.value = true
     return
   }
   const list = items.value
@@ -260,7 +265,6 @@ onBeforeUnmount(() => {
   io?.disconnect()
   ctrl?.abort()
   moreCtrl?.abort()
-  document.title = 'Markr'
 })
 
 void load()
