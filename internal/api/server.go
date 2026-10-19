@@ -96,6 +96,7 @@ func (s *server) routes(r chi.Router) {
 	r.Post("/api/collections/{id}/publish", s.handle(s.publishCollection))
 	r.Post("/api/collections/{id}/unpublish", s.handle(s.unpublishCollection))
 	r.Put("/api/collections/{id}/overrides/{photoId}", s.handle(s.putOverride))
+	r.Post("/api/collections/{id}/exposure-check", s.handle(s.exposureCheck))
 
 	r.Post("/api/albums", s.handle(s.createAlbum))
 	r.Put("/api/albums/{id}", s.handle(s.updateAlbum))

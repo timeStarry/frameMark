@@ -171,25 +171,9 @@ func (s *server) updateCollection(w http.ResponseWriter, r *http.Request) (int, 
 	if err := decodeJSON(r, &in); err != nil {
 		return 0, nil, err
 	}
-	title, err := validTitle(in.Title)
+	title, intro, err := validCollection(in)
 	if err != nil {
 		return 0, nil, err
-	}
-	intro, err := validIntro(in.Intro)
-	if err != nil {
-		return 0, nil, err
-	}
-	if in.Visibility == nil || !validVisibility(*in.Visibility) {
-		return 0, nil, httperr.Fail(http.StatusBadRequest, msgVisibility)
-	}
-	if in.Distribute == nil || in.OriginalDownload == nil {
-		return 0, nil, httperr.Fail(http.StatusBadRequest, msgBadJSON)
-	}
-	if in.License != nil && !domain.ValidLicense(*in.License) {
-		return 0, nil, httperr.Fail(http.StatusBadRequest, msgLicense)
-	}
-	if in.AIDeclaration != nil && !domain.ValidAIDeclaration(*in.AIDeclaration) {
-		return 0, nil, httperr.Fail(http.StatusBadRequest, msgAIDeclaration)
 	}
 	ctx := r.Context()
 	err = s.inTx(ctx, func(tx *sql.Tx) error {
@@ -221,6 +205,30 @@ func (s *server) updateCollection(w http.ResponseWriter, r *http.Request) (int, 
 		return 0, nil, err
 	}
 	return s.collectionResponse(ctx, http.StatusOK, owner, id)
+}
+
+// validCollection checks a collectionInput's own fields (not the cover,
+// which needs the frames) and returns the cleaned title and intro.
+func validCollection(in collectionInput) (title, intro string, err error) {
+	if title, err = validTitle(in.Title); err != nil {
+		return "", "", err
+	}
+	if intro, err = validIntro(in.Intro); err != nil {
+		return "", "", err
+	}
+	if in.Visibility == nil || !validVisibility(*in.Visibility) {
+		return "", "", httperr.Fail(http.StatusBadRequest, msgVisibility)
+	}
+	if in.Distribute == nil || in.OriginalDownload == nil {
+		return "", "", httperr.Fail(http.StatusBadRequest, msgBadJSON)
+	}
+	if in.License != nil && !domain.ValidLicense(*in.License) {
+		return "", "", httperr.Fail(http.StatusBadRequest, msgLicense)
+	}
+	if in.AIDeclaration != nil && !domain.ValidAIDeclaration(*in.AIDeclaration) {
+		return "", "", httperr.Fail(http.StatusBadRequest, msgAIDeclaration)
+	}
+	return title, intro, nil
 }
 
 // checkCover requires photo to be one of owner's ready photos placed in the
@@ -300,18 +308,9 @@ func (s *server) putFrames(w http.ResponseWriter, r *http.Request) (int, any, er
 	if err != nil {
 		return 0, nil, err
 	}
-	if len(frames) > maxFrames {
-		return 0, nil, httperr.Fail(http.StatusBadRequest, msgTooManyFrames)
-	}
-	texts := make([]*string, len(frames))
-	var refs []string
-	for i, f := range frames {
-		t, err := validFrame(f)
-		if err != nil {
-			return 0, nil, err
-		}
-		texts[i] = t
-		refs = append(refs, f.PhotoIDs...)
+	texts, refs, err := validFrames(frames)
+	if err != nil {
+		return 0, nil, err
 	}
 
 	ctx := r.Context()
@@ -420,6 +419,25 @@ func checkFresh(ctx context.Context, tx *sql.Tx, id string, want *int64) error {
 		return httperr.FailWith(http.StatusConflict, msgStale, map[string]any{"updatedAt": cur})
 	}
 	return nil
+}
+
+// validFrames checks a frame sequence's length and every frame's shape. It
+// returns the cleaned texts by position and every referenced photo id. The
+// referenced photos still need checkReadyPhotos.
+func validFrames(frames []frameInput) (texts []*string, refs []string, err error) {
+	if len(frames) > maxFrames {
+		return nil, nil, httperr.Fail(http.StatusBadRequest, msgTooManyFrames)
+	}
+	texts = make([]*string, len(frames))
+	for i, f := range frames {
+		t, err := validFrame(f)
+		if err != nil {
+			return nil, nil, err
+		}
+		texts[i] = t
+		refs = append(refs, f.PhotoIDs...)
+	}
+	return texts, refs, nil
 }
 
 // validFrame checks one frame's shape and returns its cleaned text (nil for
