@@ -545,6 +545,9 @@ test('reduced motion: login → archive → settings round trip', async ({ page 
   await expect(tiles(page)).toHaveCount(30)
   await meNav(page).getByRole('link', { name: '偏好' }).click()
   await expect(page.getByRole('heading', { level: 1, name: '偏好' })).toBeVisible()
+  // An in-app navigation lands focus on the new page's h1, with its own title.
+  await expect(page.getByRole('heading', { level: 1, name: '偏好' })).toBeFocused()
+  await expect(page).toHaveTitle('偏好 — Markr')
   await expect(meNav(page).getByRole('link', { name: '偏好' })).toHaveAttribute('aria-current', 'page')
   await meNav(page).getByRole('link', { name: '归档' }).click()
   await expect(archiveHeading(page)).toBeVisible()

@@ -538,8 +538,10 @@ export async function mockAccount(page: Page, opts: AccountOptions = {}): Promis
       const a = st.archive.find((x) => x.photo.id === done[1])
       if (!a) return fail(404, '未找到。')
       if (!putDone.has(a.photo.id)) return fail(409, '原图尚未上传。')
+      // Like completeUpload: 202 when it queues processing, 200 if already done.
+      if (a.photo.status === 'processing' || a.photo.status === 'ready') return reply(200, a.photo)
       a.photo.status = 'processing'
-      return reply(200, a.photo)
+      return reply(202, a.photo)
     }
     const ph = path.match(/^\/api\/photos\/([^/]+)$/)
     if (ph) {
