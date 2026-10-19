@@ -254,6 +254,8 @@ export interface OwnerCollection extends Omit<Collection, 'frames' | 'cover' | '
   distribute: boolean
   updatedAt: number
   cover: OwnerFramePhoto | null
+  /** Owner's explicit cover choice; omitted when null. */
+  coverPhotoId?: string | null
   frames: OwnerFrame[]
 }
 
