@@ -493,6 +493,9 @@ export async function mockAccount(page: Page, opts: AccountOptions = {}): Promis
       return reply(200, { user: null })
     }
     if (path === `/api/u/${ME.id}` && method === 'GET') return reply(200, userWall())
+    // The draft is private: the backend answers 404 to anyone but its owner.
+    const draft = path.match(/^\/api\/collections\/([^/]+)(\/neighbors)?$/)
+    if (draft && draft[1] === MINE_DRAFT.id && method === 'GET' && st.user !== ME.id) return fail(404, '未找到。')
 
     // Everything below is the owner API.
     const owner = /^\/api\/(archive|uploads|photos|upload-prefs|profile)(\/|$)/.test(path)

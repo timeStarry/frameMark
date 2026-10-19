@@ -508,6 +508,34 @@ test('owner badges show to the owner only; logout leaves no owner wall cache', a
   expect(m.state.user).toBeNull()
 })
 
+test('logout then returning to a private collection shows not-found, not the cached owner view', async ({ page }) => {
+  const m = await mockAccount(page, { signedIn: true })
+  await page.goto('/me/collections')
+  await page.locator('a.row[data-card-id="d1"]').click()
+  await expect(page).toHaveURL(/\/c\/d1/)
+  const privateFrame = page.locator('img[src*="d1p"], img[srcset*="d1p"]')
+  await expect(privateFrame.first()).toBeAttached()
+  expect(await page.title()).toContain('未完成的海')
+
+  // Leave in-app (no reload, so the in-memory cache survives). The row was
+  // opened with fromWall, so Esc goes back to /me/collections; logout then
+  // replaces that entry with /, leaving /c/d1 one step forward in history.
+  await page.keyboard.press('Escape')
+  await expect(page).toHaveURL(/\/me\/collections$/)
+  await meNav(page).getByRole('button', { name: '登出' }).click()
+  await expect(page).toHaveURL(/127\.0\.0\.1:4173\/$/)
+  expect(m.state.user).toBeNull()
+
+  const fetched = m.order.length
+  await page.goForward()
+  await expect(page).toHaveURL(/\/c\/d1/)
+  await expect(page.getByText('这组照片不存在或已不再公开')).toBeVisible()
+  await expect(privateFrame).toHaveCount(0)
+  await expect(page.getByText('未完成的海')).toHaveCount(0)
+  // The anonymous viewer really asked the server, and was told 404.
+  expect(m.order.slice(fetched)).toContain('GET /api/collections/d1')
+})
+
 test('reduced motion: login → archive → settings round trip', async ({ page }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' })
   const m = await mockAccount(page)

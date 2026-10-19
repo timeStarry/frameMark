@@ -1,7 +1,11 @@
 // In-memory cache of collections fetched ahead of horizontal navigation, so
 // switching to a neighbour shows it at once. At most 4 entries, oldest out.
+// The shared instance is emptied on every identity change, so one person's
+// view of a collection (owner-only fields, private frames) is never shown to
+// the next person in the same tab.
 import type { Collection } from '../api/types'
 import { getCollection } from '../api/client'
+import { onIdentityChange } from '../api/session'
 
 export const CACHE_MAX = 4
 
@@ -16,6 +20,8 @@ export interface CollectionCache {
 export function createCollectionCache(max = CACHE_MAX): CollectionCache {
   const items = new Map<string, Collection>()
   const inflight = new Map<string, Promise<Collection | null>>()
+  /** Bumped by clear(); a prefetch only stores its result if no clear() happened meanwhile. */
+  let generation = 0
 
   const put = (c: Collection) => {
     items.delete(c.id)
@@ -35,7 +41,9 @@ export function createCollectionCache(max = CACHE_MAX): CollectionCache {
       if (hit) return Promise.resolve(hit)
       const running = inflight.get(id)
       if (running) return running
+      const gen = generation
       const p = getCollection(id).then((r) => {
+        if (gen !== generation) return null // cleared meanwhile: fetched under an older identity
         inflight.delete(id)
         if (!r.ok) return null
         put(r.data)
@@ -45,6 +53,7 @@ export function createCollectionCache(max = CACHE_MAX): CollectionCache {
       return p
     },
     clear() {
+      generation++
       items.clear()
       inflight.clear()
     },
@@ -52,3 +61,4 @@ export function createCollectionCache(max = CACHE_MAX): CollectionCache {
 }
 
 export const collectionCache = createCollectionCache()
+onIdentityChange(() => collectionCache.clear())

@@ -50,11 +50,33 @@ function writeIdentity(v: string): void {
   }
 }
 
+const identityListeners = new Set<() => void>()
+
+/**
+ * Registers `fn` to run whenever the tab's identity changes (login, verify,
+ * logout, or a refresh that finds a different user), at the same point the
+ * sessionStorage caches are cleared. In-memory caches holding viewer data
+ * register here. Returns an unsubscribe function.
+ */
+export function onIdentityChange(fn: () => void): () => void {
+  identityListeners.add(fn)
+  return () => {
+    identityListeners.delete(fn)
+  }
+}
+
 /** Records `user` as the tab's identity; clears caches if it changed or `force`. */
 function track(user: string | null, force: boolean): void {
   const next = user ?? NULL_MARKER
   if (force || readIdentity() !== next) {
     clearViewerCaches()
+    for (const fn of identityListeners) {
+      try {
+        fn()
+      } catch {
+        // One listener failing must not keep the others from clearing.
+      }
+    }
     writeIdentity(next)
   }
 }
