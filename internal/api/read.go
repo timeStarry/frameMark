@@ -121,8 +121,11 @@ type collectionReadView struct {
 	Cover            *publicPhotoView `json:"cover"`
 	PublishedAt      *int64           `json:"publishedAt"`
 	// UpdatedAt is present for the owner only (optimistic concurrency).
-	UpdatedAt *int64          `json:"updatedAt,omitempty"`
-	Frames    []readFrameView `json:"frames"`
+	UpdatedAt *int64 `json:"updatedAt,omitempty"`
+	// CoverPhotoID is the owner's explicit cover choice, owner only; Cover may
+	// be the first-photo fallback, so the desk cannot infer the choice from it.
+	CoverPhotoID *string         `json:"coverPhotoId,omitempty"`
+	Frames       []readFrameView `json:"frames"`
 }
 
 type neighborsView struct {
@@ -515,6 +518,7 @@ func (s *server) readCollection(w http.ResponseWriter, r *http.Request) (int, an
 			return 0, nil, err
 		}
 		v.UpdatedAt = &updated
+		v.CoverPhotoID = nullStr(c.Cover)
 	}
 	if src, ok, err := coverSource(ctx, s.db, c); err != nil {
 		return 0, nil, err

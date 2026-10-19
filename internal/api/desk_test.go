@@ -181,6 +181,12 @@ func TestOwnerReadFields(t *testing.T) {
 	if r.code != 200 || r.body["updatedAt"] != float64(updated) {
 		t.Fatalf("updatedAt: %d %s", r.code, r.raw)
 	}
+	if r.body["coverPhotoId"] != a {
+		t.Errorf("owner coverPhotoId = %v, want %s", r.body["coverPhotoId"], a)
+	}
+	if _, leaked := e.anon().get("/api/collections/" + cid).body["coverPhotoId"]; leaked {
+		t.Error("visitor read carries coverPhotoId")
+	}
 	frames := r.body["frames"].([]any)
 	photos := map[string]map[string]any{}
 	for _, f := range frames {
