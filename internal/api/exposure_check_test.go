@@ -125,6 +125,13 @@ func TestExposureCheckKinds(t *testing.T) {
 	// distribute on while staying unlisted is not the square.
 	wantChanges(t, "distribute unlisted", u1.mustCheck(unl, map[string]any{
 		"collection": collFields(map[string]any{"visibility": "unlisted", "distribute": true})}))
+
+	// unlisted→public with distribute already on: both the visibility and the
+	// square widen in one step (review Minor: this combination was untested).
+	unlDist := u1.coll("published", "unlisted", map[string]any{"distribute": true}, b)
+	wantChanges(t, "unlisted→public, distribute on", u1.mustCheck(unlDist, map[string]any{
+		"collection": collFields(map[string]any{"visibility": "public", "distribute": true})}),
+		"visibility:改为公开", "square:进入广场")
 }
 
 func TestExposureCheckNarrowingAndNoop(t *testing.T) {
@@ -470,4 +477,111 @@ func joinLabels(l []string) string {
 		return strings.Join(l, "")
 	}
 	return strings.Join(l[:len(l)-1], "、") + "与" + l[len(l)-1]
+}
+
+// anonExposure reads a collection anonymously and returns what a visitor sees:
+// visible photo ids, the public field keys and the histogram per photo, and
+// whether any photo is downloadable.
+func anonExposure(t *testing.T, c *client, cid string) (map[string]map[string]bool, map[string]bool, bool) {
+	t.Helper()
+	r := c.get("/api/collections/" + cid)
+	if r.code != 200 {
+		t.Fatalf("anon read: %d %s", r.code, r.raw)
+	}
+	var read struct {
+		Frames []struct {
+			Photos []struct {
+				ID           string                     `json:"id"`
+				EXIF         map[string]json.RawMessage `json:"exif"`
+				Histogram    json.RawMessage            `json:"histogram"`
+				Downloadable bool                       `json:"downloadable"`
+			} `json:"photos"`
+		} `json:"frames"`
+	}
+	if err := json.Unmarshal([]byte(r.raw), &read); err != nil {
+		t.Fatal(err)
+	}
+	fields, hist, dl := map[string]map[string]bool{}, map[string]bool{}, false
+	for _, f := range read.Frames {
+		for _, p := range f.Photos {
+			if fields[p.ID] == nil {
+				fields[p.ID] = map[string]bool{}
+			}
+			for k := range p.EXIF {
+				fields[p.ID][exifKeys[k]] = true
+			}
+			hist[p.ID] = hist[p.ID] || (len(p.Histogram) > 0 && string(p.Histogram) != "null")
+			dl = dl || p.Downloadable
+		}
+	}
+	return fields, hist, dl
+}
+
+// TestExposureCheckMatchesReadFromVisible starts from a collection visitors can
+// already see, so only what the change adds may be reported. It applies the
+// proposal and compares the anonymous read before and after with the check's
+// prediction (review Minor: the existing fixture starts from private).
+func TestExposureCheckMatchesReadFromVisible(t *testing.T) {
+	e := newEnv(t)
+	u1 := e.user("u1")
+	a, b := e.mediaPhoto("u1", "A"), e.mediaPhoto("u1", "B") // snapshot: camera+iso, histogram on
+	cid := published(u1, "unlisted", a)
+	// Start narrower than the snapshot: a shows only camera, no histogram.
+	if r := u1.put("/api/collections/"+cid+"/overrides/"+a, `{"publicFields":["camera"],"histogramPublic":false}`); r.code != 200 {
+		t.Fatal(r.raw)
+	}
+	beforeFields, beforeHist, beforeDL := anonExposure(t, e.anon(), cid)
+	if len(beforeFields) != 1 || !beforeFields[a]["camera"] || beforeFields[a]["iso"] || beforeHist[a] || beforeDL {
+		t.Fatalf("unexpected starting exposure: %v %v %v", beforeFields, beforeHist, beforeDL)
+	}
+
+	// Proposal: add b (snapshot camera+iso, histogram) after a. a is unchanged.
+	frames := []frameIn{full(a), full(b)}
+	ch := u1.mustCheck(cid, map[string]any{"frames": frames})
+
+	if r := u1.put("/api/collections/"+cid+"/frames", jsonBody(frames)); r.code != 200 {
+		t.Fatal(r.raw)
+	}
+	afterFields, afterHist, afterDL := anonExposure(t, e.anon(), cid)
+
+	// Expected changes: only what is newly visible after the write.
+	newPhotos := 0
+	newFields := map[string]bool{}
+	newHist := false
+	for id, fs := range afterFields {
+		if beforeFields[id] == nil {
+			newPhotos++
+		}
+		for k := range fs {
+			if !beforeFields[id][k] {
+				newFields[k] = true
+			}
+		}
+		if afterHist[id] && !beforeHist[id] {
+			newHist = true
+		}
+	}
+	var want []string
+	if newPhotos > 0 {
+		want = append(want, fmt.Sprintf("photos:新增 %d 张公开照片", newPhotos))
+	}
+	var labels []string
+	for _, k := range []string{"camera", "lens", "focal_length", "aperture", "shutter", "iso", "exposure_bias", "taken_date"} {
+		if newFields[k] {
+			labels = append(labels, fieldLabel[k])
+		}
+	}
+	if len(labels) > 0 {
+		want = append(want, "fields:公开"+joinLabels(labels))
+	}
+	if newHist {
+		want = append(want, "histogram:公开直方图")
+	}
+	if afterDL && !beforeDL {
+		want = append(want, "original:开放原图下载")
+	}
+	wantChanges(t, "from visible", ch, want...)
+	if len(want) == 0 {
+		t.Fatal("fixture should widen; nothing was predicted")
+	}
 }
