@@ -378,7 +378,7 @@ func TestFramesValidation(t *testing.T) {
 			t.Errorf("%s: %d %s", name, r.code, r.raw)
 		}
 	}
-	for _, body := range []string{`{}`, `{"frames":null}`, `[]`} {
+	for _, body := range []string{`{}`, `{"frames":null}`, `null`} {
 		if r := u.put("/api/collections/"+cid+"/frames", body); r.code != 400 {
 			t.Errorf("%s: %d %s", body, r.code, r.raw)
 		}

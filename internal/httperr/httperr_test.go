@@ -74,3 +74,18 @@ func TestFailInvalidStatusCode(t *testing.T) {
 		})
 	}
 }
+
+func TestFailWithAddsFields(t *testing.T) {
+	w := httptest.NewRecorder()
+	httperr.Write(w, httperr.FailWith(409, "冲突", map[string]any{"updatedAt": int64(42), "error": "ignored"}))
+	if w.Code != 409 {
+		t.Fatalf("want 409, got %d", w.Code)
+	}
+	var body map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body["error"] != "冲突" || body["updatedAt"] != 42.0 || len(body) != 2 {
+		t.Fatalf("body %v", body)
+	}
+}

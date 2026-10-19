@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net/http"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -77,6 +78,24 @@ type publicPhotoView struct {
 	Histogram    *[4][64]uint16   `json:"histogram"`
 	Attribution  *json.RawMessage `json:"attribution"`
 	Downloadable bool             `json:"downloadable"`
+	// ownerPhotoFields is set only when the viewer owns the collection. As a
+	// nil embedded pointer its keys are absent from the visitor JSON.
+	*ownerPhotoFields
+}
+
+// ownerPhotoFields are the owner-only keys of a photo in the owner's read of
+// their collection: the effective exposure in this collection's context and
+// the raw override (null when there is none).
+type ownerPhotoFields struct {
+	PublicFields    []string           `json:"publicFields"`
+	HistogramPublic bool               `json:"histogramPublic"`
+	Override        *ownerOverrideView `json:"override"`
+}
+
+// ownerOverrideView is a photo_overrides row; a null field is not overridden.
+type ownerOverrideView struct {
+	PublicFields    []string `json:"publicFields"`
+	HistogramPublic *bool    `json:"histogramPublic"`
 }
 
 type readFrameView struct {
@@ -101,7 +120,9 @@ type collectionReadView struct {
 	OriginalDownload bool             `json:"originalDownload"`
 	Cover            *publicPhotoView `json:"cover"`
 	PublishedAt      *int64           `json:"publishedAt"`
-	Frames           []readFrameView  `json:"frames"`
+	// UpdatedAt is present for the owner only (optimistic concurrency).
+	UpdatedAt *int64          `json:"updatedAt,omitempty"`
+	Frames    []readFrameView `json:"frames"`
 }
 
 type neighborsView struct {
@@ -387,7 +408,14 @@ func (s *server) collectionPhotos(ctx context.Context, c collRow, viewer string)
 			return nil, err
 		}
 		v.Width, v.Height = intPtr(width), intPtr(height)
-		v.Media = s.mediaFor(mediaSource{ID: v.ID, Status: status, Width: width, Height: height, Hash: hash}, &c.Collection)
+		src := mediaSource{ID: v.ID, Status: status, Width: width, Height: height, Hash: hash}
+		isOwner := domain.IsOwner(c.OwnerID, viewer)
+		if isOwner {
+			// The owner always goes through /m/…?c= (draft or not, CDN or not).
+			v.Media = s.collectionMedia(src, c.ID)
+		} else {
+			v.Media = s.mediaFor(src, &c.Collection)
+		}
 		p := domain.Photo{ID: v.ID, OwnerID: owner, PublicFields: parsePublicFields(fields), HistogramPublic: hist == 1}
 		var o *domain.PhotoOverride
 		if oFields.Valid || oHist.Valid {
@@ -401,6 +429,9 @@ func (s *server) collectionPhotos(ctx context.Context, c collRow, viewer string)
 			}
 		}
 		pub := domain.EffectivePublicFields(p, o)
+		if isOwner {
+			v.ownerPhotoFields = ownerFields(pub, o)
+		}
 		if exifRow.Valid && status == statusReady {
 			ex := exifView{}
 			set := func(key string, apply func()) {
@@ -436,6 +467,22 @@ func (s *server) collectionPhotos(ctx context.Context, c collRow, viewer string)
 	return out, rows.Err()
 }
 
+// ownerFields builds the owner-only photo keys from the effective field set
+// and the override (nil when the photo has none in this collection).
+func ownerFields(pub map[string]bool, o *domain.PhotoOverride) *ownerPhotoFields {
+	f := &ownerPhotoFields{PublicFields: []string{}, HistogramPublic: pub[domain.HistogramKey]}
+	for k, on := range pub {
+		if on && k != domain.HistogramKey {
+			f.PublicFields = append(f.PublicFields, k)
+		}
+	}
+	sort.Strings(f.PublicFields)
+	if o != nil {
+		f.Override = &ownerOverrideView{PublicFields: o.PublicFields, HistogramPublic: o.HistogramPublic}
+	}
+	return f
+}
+
 // --- GET /api/collections/{id} ---
 
 func (s *server) readCollection(w http.ResponseWriter, r *http.Request) (int, any, error) {
@@ -463,6 +510,11 @@ func (s *server) readCollection(w http.ResponseWriter, r *http.Request) (int, an
 	if domain.IsOwner(c.OwnerID, viewer) {
 		st, vis, dist := c.Status, c.Visibility, c.Distribute
 		v.Status, v.Visibility, v.Distribute = &st, &vis, &dist
+		var updated int64
+		if err := s.db.QueryRowContext(ctx, `SELECT updated_at FROM collections WHERE id=?`, c.ID).Scan(&updated); err != nil {
+			return 0, nil, err
+		}
+		v.UpdatedAt = &updated
 	}
 	if src, ok, err := coverSource(ctx, s.db, c); err != nil {
 		return 0, nil, err

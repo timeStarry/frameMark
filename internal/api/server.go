@@ -84,6 +84,7 @@ func (s *server) routes(r chi.Router) {
 	r.Post("/api/uploads", s.handle(s.createUpload))
 	r.Post("/api/uploads/{id}/complete", s.handle(s.completeUpload))
 	r.Get("/api/photos/{id}", s.handle(s.getPhoto))
+	r.Put("/api/photos/{id}", s.handle(s.putPhoto))
 	r.Delete("/api/photos/{id}", s.handle(s.deletePhoto))
 	r.Get("/api/photos/{id}/original", s.handle(s.originalDownload))
 	r.Get("/m/{photoId}/{hash}/{file}", s.mediaRedirect)

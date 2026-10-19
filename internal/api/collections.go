@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -50,6 +51,7 @@ const (
 	msgDryRun           = "dry_run 参数无效。"
 	msgPublicFields     = "公开字段无效。"
 	msgOverridePhoto    = "照片不在该合集中。"
+	msgStale            = "这个合集在别处被修改过。"
 )
 
 // --- response shapes ---
@@ -96,6 +98,8 @@ type overrideView struct {
 	PhotoID         string   `json:"photoId"`
 	PublicFields    []string `json:"publicFields"`
 	HistogramPublic *bool    `json:"histogramPublic"`
+	// UpdatedAt is the collection's updated_at after the write.
+	UpdatedAt int64 `json:"updatedAt"`
 }
 
 // --- POST /api/collections ---
@@ -123,9 +127,13 @@ func (s *server) createCollection(w http.ResponseWriter, r *http.Request) (int, 
 	ctx := r.Context()
 	now := s.now()
 	err = s.inTx(ctx, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `INSERT INTO collections(id,owner_id,title,status,visibility,distribute,wall_rank,created_at,updated_at)
-			VALUES(?,?,?,'draft','private',1,(SELECT coalesce(max(wall_rank),0)+1 FROM collections WHERE owner_id=?),?,?)`,
-			id, owner, title, owner, now, now)
+		// license and ai_declaration are prefilled from the owner's upload
+		// prefs (NULL without a prefs row or default).
+		_, err := tx.ExecContext(ctx, `INSERT INTO collections(id,owner_id,title,status,visibility,distribute,wall_rank,
+			license,ai_declaration,created_at,updated_at)
+			VALUES(?,?,?,'draft','private',1,(SELECT coalesce(max(wall_rank),0)+1 FROM collections WHERE owner_id=?),
+			(SELECT default_license FROM upload_prefs WHERE user_id=?),(SELECT default_ai_declaration FROM upload_prefs WHERE user_id=?),?,?)`,
+			id, owner, title, owner, owner, owner, now, now)
 		return err
 	})
 	if err != nil {
@@ -145,6 +153,9 @@ type collectionInput struct {
 	License          *string `json:"license"`
 	AIDeclaration    *string `json:"aiDeclaration"`
 	CoverPhotoID     *string `json:"coverPhotoId"`
+	// IfUpdatedAt, when set, must equal the current updated_at or the write
+	// is refused with 409 (optimistic concurrency).
+	IfUpdatedAt *int64 `json:"ifUpdatedAt"`
 }
 
 func (s *server) updateCollection(w http.ResponseWriter, r *http.Request) (int, any, error) {
@@ -183,6 +194,9 @@ func (s *server) updateCollection(w http.ResponseWriter, r *http.Request) (int, 
 	ctx := r.Context()
 	err = s.inTx(ctx, func(tx *sql.Tx) error {
 		if _, _, err := ownedCollection(ctx, tx, owner, id); err != nil {
+			return err
+		}
+		if err := checkFresh(ctx, tx, id, in.IfUpdatedAt); err != nil {
 			return err
 		}
 		if in.CoverPhotoID != nil {
@@ -282,16 +296,10 @@ func (s *server) putFrames(w http.ResponseWriter, r *http.Request) (int, any, er
 	if err != nil {
 		return 0, nil, err
 	}
-	var in struct {
-		Frames *[]frameInput `json:"frames"`
-	}
-	if err := decodeJSON(r, &in); err != nil {
+	frames, ifUpdatedAt, err := decodeFrames(r)
+	if err != nil {
 		return 0, nil, err
 	}
-	if in.Frames == nil {
-		return 0, nil, httperr.Fail(http.StatusBadRequest, msgBadJSON)
-	}
-	frames := *in.Frames
 	if len(frames) > maxFrames {
 		return 0, nil, httperr.Fail(http.StatusBadRequest, msgTooManyFrames)
 	}
@@ -311,6 +319,9 @@ func (s *server) putFrames(w http.ResponseWriter, r *http.Request) (int, any, er
 	err = s.inTx(ctx, func(tx *sql.Tx) error {
 		status, _, err := ownedCollection(ctx, tx, owner, id)
 		if err != nil {
+			return err
+		}
+		if err := checkFresh(ctx, tx, id, ifUpdatedAt); err != nil {
 			return err
 		}
 		if status == domain.StatusPublished && len(frames) == 0 {
@@ -354,6 +365,61 @@ func (s *server) putFrames(w http.ResponseWriter, r *http.Request) (int, any, er
 		return 0, nil, err
 	}
 	return s.collectionResponse(ctx, http.StatusOK, owner, id)
+}
+
+// decodeFrames reads the frames body: {"frames": [...], "ifUpdatedAt"?: n},
+// or, for compatibility, a bare array of frames.
+func decodeFrames(r *http.Request) ([]frameInput, *int64, error) {
+	var raw json.RawMessage
+	if err := decodeJSON(r, &raw); err != nil {
+		return nil, nil, err
+	}
+	trimmed := bytes.TrimLeft(raw, " \t\r\n")
+	if len(trimmed) > 0 && trimmed[0] == '[' {
+		var frames []frameInput
+		if err := decodeStrict(trimmed, &frames); err != nil {
+			return nil, nil, err
+		}
+		return frames, nil, nil
+	}
+	var in struct {
+		Frames      *[]frameInput `json:"frames"`
+		IfUpdatedAt *int64        `json:"ifUpdatedAt"`
+	}
+	if err := decodeStrict(trimmed, &in); err != nil {
+		return nil, nil, err
+	}
+	if in.Frames == nil {
+		return nil, nil, httperr.Fail(http.StatusBadRequest, msgBadJSON)
+	}
+	return *in.Frames, in.IfUpdatedAt, nil
+}
+
+// decodeStrict decodes one JSON value from data with unknown fields
+// rejected; any failure is a 400.
+func decodeStrict(data []byte, dst any) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		return httperr.Fail(http.StatusBadRequest, msgBadJSON)
+	}
+	return nil
+}
+
+// checkFresh refuses a write with 409 and the current updated_at when want
+// is set and differs from it. The caller has already checked ownership.
+func checkFresh(ctx context.Context, tx *sql.Tx, id string, want *int64) error {
+	if want == nil {
+		return nil
+	}
+	var cur int64
+	if err := tx.QueryRowContext(ctx, `SELECT updated_at FROM collections WHERE id=?`, id).Scan(&cur); err != nil {
+		return err
+	}
+	if cur != *want {
+		return httperr.FailWith(http.StatusConflict, msgStale, map[string]any{"updatedAt": cur})
+	}
+	return nil
 }
 
 // validFrame checks one frame's shape and returns its cleaned text (nil for
@@ -651,6 +717,11 @@ func (s *server) putOverride(w http.ResponseWriter, r *http.Request) (int, any, 
 		_, err = tx.ExecContext(ctx, `INSERT INTO photo_overrides(collection_id,photo_id,public_fields,histogram_public) VALUES(?,?,?,?)
 			ON CONFLICT(collection_id,photo_id) DO UPDATE SET public_fields=excluded.public_fields,histogram_public=excluded.histogram_public`,
 			id, pid, fieldsJSON, hist)
+		if err != nil {
+			return err
+		}
+		view.UpdatedAt = s.now()
+		_, err = tx.ExecContext(ctx, `UPDATE collections SET updated_at=? WHERE id=?`, view.UpdatedAt, id)
 		return err
 	})
 	if err != nil {

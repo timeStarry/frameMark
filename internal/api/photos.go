@@ -5,11 +5,72 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
+	"unicode/utf8"
 
 	"github.com/timeStarry/frameMark/internal/httperr"
 )
 
-const jobDeletePhotoObjects = "delete_photo_objects"
+const (
+	jobDeletePhotoObjects = "delete_photo_objects"
+	maxCaptionRunes       = 2000
+
+	msgPhotoTitle   = "标题不能超过 120 个字符。"
+	msgPhotoCaption = "图注不能超过 2000 个字符。"
+)
+
+// --- PUT /api/photos/{id} ---
+
+// putPhoto sets an owner's photo title and caption (both required, either
+// may be empty) and bumps updated_at on every collection containing it.
+func (s *server) putPhoto(w http.ResponseWriter, r *http.Request) (int, any, error) {
+	owner, err := requireUser(r)
+	if err != nil {
+		return 0, nil, err
+	}
+	id, err := pathID(r)
+	if err != nil {
+		return 0, nil, err
+	}
+	var in struct {
+		Title   *string `json:"title"`
+		Caption *string `json:"caption"`
+	}
+	if err := decodeJSON(r, &in); err != nil {
+		return 0, nil, err
+	}
+	if in.Title == nil || in.Caption == nil {
+		return 0, nil, httperr.Fail(http.StatusBadRequest, msgBadJSON)
+	}
+	title := cleanText(*in.Title, false)
+	if utf8.RuneCountInString(title) > maxTitleRunes {
+		return 0, nil, httperr.Fail(http.StatusBadRequest, msgPhotoTitle)
+	}
+	caption := cleanText(*in.Caption, true)
+	if utf8.RuneCountInString(caption) > maxCaptionRunes {
+		return 0, nil, httperr.Fail(http.StatusBadRequest, msgPhotoCaption)
+	}
+	ctx := r.Context()
+	err = s.inTx(ctx, func(tx *sql.Tx) error {
+		now := s.now()
+		res, err := tx.ExecContext(ctx, `UPDATE photos SET title=?,caption=?,updated_at=? WHERE id=? AND owner_id=?`,
+			title, caption, now, id, owner)
+		if err != nil {
+			return err
+		}
+		if n, err := res.RowsAffected(); err != nil {
+			return err
+		} else if n == 0 {
+			return httperr.Fail(http.StatusNotFound, msgPhotoAbsent)
+		}
+		_, err = tx.ExecContext(ctx, `UPDATE collections SET updated_at=? WHERE id IN
+			(SELECT f.collection_id FROM frame_photos fp JOIN frames f ON f.id=fp.frame_id WHERE fp.photo_id=?)`, now, id)
+		return err
+	})
+	if err != nil {
+		return 0, nil, err
+	}
+	return s.photoResponse(ctx, http.StatusOK, owner, id)
+}
 
 // --- DELETE /api/photos/{id} ---
 

@@ -66,9 +66,6 @@ type mediaSource struct {
 // domain.UsesCDN allows them for coll; everything else, unlisted included,
 // goes through the re-authorizing /m/ redirect.
 func (s *server) mediaFor(p mediaSource, coll *domain.Collection) *mediaView {
-	if p.Status != statusReady || !p.Hash.Valid || p.Hash.String == "" || !p.Width.Valid || !p.Height.Valid {
-		return nil
-	}
 	prefix := p.ID + "/" + p.Hash.String + "/"
 	url := func(file string) string { return "/m/" + prefix + file + "?c=" }
 	if coll != nil {
@@ -78,6 +75,22 @@ func (s *server) mediaFor(p mediaSource, coll *domain.Collection) *mediaView {
 			cid := coll.ID
 			url = func(file string) string { return "/m/" + prefix + file + "?c=" + cid }
 		}
+	}
+	return buildMedia(p, url)
+}
+
+// collectionMedia is the owner's media for a photo inside collection cid:
+// always the re-authorizing /m/…?c=cid redirect, never the CDN.
+func (s *server) collectionMedia(p mediaSource, cid string) *mediaView {
+	prefix := p.ID + "/" + p.Hash.String + "/"
+	return buildMedia(p, func(file string) string { return "/m/" + prefix + file + "?c=" + cid })
+}
+
+// buildMedia returns the media block with url(file) per tier and format, or
+// nil when the photo is not ready or has no derived hash.
+func buildMedia(p mediaSource, url func(file string) string) *mediaView {
+	if p.Status != statusReady || !p.Hash.Valid || p.Hash.String == "" || !p.Width.Valid || !p.Height.Valid {
+		return nil
 	}
 	m := &mediaView{Width: p.Width.Int64, Height: p.Height.Int64, Tiers: make(map[string]mediaFormats, len(mediaTiers))}
 	for _, t := range mediaTiers {
