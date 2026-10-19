@@ -20,6 +20,18 @@ const (
 
 // --- PUT /api/photos/{id} ---
 
+// photoMetaView is the owner photoView plus the collections whose
+// updated_at the write bumped, so the desk keeps a fresh ifUpdatedAt.
+type photoMetaView struct {
+	*photoView
+	Collections []bumpedCollection `json:"collections"`
+}
+
+type bumpedCollection struct {
+	ID        string `json:"id"`
+	UpdatedAt int64  `json:"updatedAt"`
+}
+
 // putPhoto sets an owner's photo title and caption (both required, either
 // may be empty) and bumps updated_at on every collection containing it.
 func (s *server) putPhoto(w http.ResponseWriter, r *http.Request) (int, any, error) {
@@ -50,6 +62,7 @@ func (s *server) putPhoto(w http.ResponseWriter, r *http.Request) (int, any, err
 		return 0, nil, httperr.Fail(http.StatusBadRequest, msgPhotoCaption)
 	}
 	ctx := r.Context()
+	bumped := []bumpedCollection{}
 	err = s.inTx(ctx, func(tx *sql.Tx) error {
 		now := s.now()
 		res, err := tx.ExecContext(ctx, `UPDATE photos SET title=?,caption=?,updated_at=? WHERE id=? AND owner_id=?`,
@@ -62,14 +75,27 @@ func (s *server) putPhoto(w http.ResponseWriter, r *http.Request) (int, any, err
 		} else if n == 0 {
 			return httperr.Fail(http.StatusNotFound, msgPhotoAbsent)
 		}
-		_, err = tx.ExecContext(ctx, `UPDATE collections SET updated_at=? WHERE id IN
-			(SELECT f.collection_id FROM frame_photos fp JOIN frames f ON f.id=fp.frame_id WHERE fp.photo_id=?)`, now, id)
-		return err
+		ids, err := stringsOf(ctx, tx, `SELECT DISTINCT f.collection_id FROM frame_photos fp JOIN frames f ON f.id=fp.frame_id
+			WHERE fp.photo_id=? ORDER BY f.collection_id`, id)
+		if err != nil {
+			return err
+		}
+		for _, cid := range ids {
+			if _, err := tx.ExecContext(ctx, `UPDATE collections SET updated_at=? WHERE id=?`, now, cid); err != nil {
+				return err
+			}
+			bumped = append(bumped, bumpedCollection{ID: cid, UpdatedAt: now})
+		}
+		return nil
 	})
 	if err != nil {
 		return 0, nil, err
 	}
-	return s.photoResponse(ctx, http.StatusOK, owner, id)
+	p, err := s.loadPhoto(ctx, owner, id)
+	if err != nil {
+		return 0, nil, err
+	}
+	return http.StatusOK, photoMetaView{photoView: p, Collections: bumped}, nil
 }
 
 // --- DELETE /api/photos/{id} ---

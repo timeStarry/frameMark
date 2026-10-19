@@ -457,3 +457,42 @@ func TestCollectionWritesReportUpdatedAt(t *testing.T) {
 		t.Errorf("photo delete pruning: updated_at %d", n)
 	}
 }
+
+func TestPutPhotoReturnsBumpedCollections(t *testing.T) {
+	e := newEnv(t)
+	u := e.user("u1")
+	p, lone := e.readyPhoto("u1"), e.readyPhoto("u1")
+	c1, c2 := u.newCollection("one"), u.newCollection("two")
+	u.mustFrames(c1, full(p))
+	u.mustFrames(c2, full(p), textFrame("x"))
+	e.now.Add(1000)
+	r := u.put("/api/photos/"+p, `{"title":"T","caption":""}`)
+	if r.code != 200 || r.body["id"] != p || r.body["title"] != "T" || r.body["status"] != "ready" {
+		t.Fatalf("%d %s", r.code, r.raw)
+	}
+	want := []string{c1, c2}
+	sort.Strings(want)
+	cs, _ := r.body["collections"].([]any)
+	if len(cs) != 2 {
+		t.Fatalf("collections %s", r.raw)
+	}
+	for i, x := range cs {
+		m := x.(map[string]any)
+		if m["id"] != want[i] || m["updatedAt"] != float64(t0+1000) || len(m) != 2 {
+			t.Errorf("collections[%d] %v", i, m)
+		}
+	}
+	// The returned value is a fresh ifUpdatedAt: no self-conflict.
+	e.now.Add(1000)
+	if r := u.updateCollection(c1, map[string]any{"ifUpdatedAt": t0 + 1000}); r.code != 200 {
+		t.Fatalf("follow-up update: %d %s", r.code, r.raw)
+	}
+	if r := u.put("/api/collections/"+c2+"/frames", jsonBody(map[string]any{"frames": []frameIn{full(p)}, "ifUpdatedAt": t0 + 1000})); r.code != 200 {
+		t.Fatalf("follow-up frames: %d %s", r.code, r.raw)
+	}
+	// A photo in no collection lists none.
+	r = u.put("/api/photos/"+lone, `{"title":"","caption":""}`)
+	if cs, ok := r.body["collections"].([]any); r.code != 200 || !ok || len(cs) != 0 {
+		t.Fatalf("lone: %d %s", r.code, r.raw)
+	}
+}
