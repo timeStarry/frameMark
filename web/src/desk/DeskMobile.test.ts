@@ -281,4 +281,56 @@ describe('DeskMobile', () => {
       '第 3 帧，文字页，第一行',
     ])
   })
+  describe('focus after an edit', () => {
+    const active = () => document.activeElement?.getAttribute('aria-label') ?? document.activeElement?.tagName
+
+    async function press(wr: VueWrapper, label: string) {
+      const b = btn(wr, label)
+      ;(b.element as HTMLButtonElement).focus()
+      await b.trigger('click')
+      await flushPromises()
+    }
+
+    it('a middle move keeps focus on the same button in the new row', async () => {
+      const { desk } = makeDesk(sample())
+      const wr = mountMobile(desk)
+      await press(wr, '下移第 1 帧')
+      expect(ids(desk.seq.value)).toEqual(['b+c', 'a', 'text'])
+      expect(active()).toBe('下移第 2 帧')
+    })
+
+    it('a move to the top falls back to 下移 in the new row', async () => {
+      const wr = mountMobile(makeDesk(sample()).desk)
+      await press(wr, '上移第 2 帧')
+      expect(active()).toBe('下移第 1 帧')
+    })
+
+    it('a move to the bottom falls back to 上移 in the new row', async () => {
+      const wr = mountMobile(makeDesk(sample()).desk)
+      await press(wr, '下移第 2 帧')
+      expect(active()).toBe('上移第 3 帧')
+    })
+
+    it('a delete focuses the row now at that index, the previous row when last, then the heading', async () => {
+      const wr = mountMobile(makeDesk(sample()).desk)
+      await press(wr, '删除第 2 帧')
+      expect(active()).toBe('删除第 2 帧')
+      await press(wr, '删除第 2 帧')
+      expect(active()).toBe('删除第 1 帧')
+      await press(wr, '删除第 1 帧')
+      expect(rows(wr)).toHaveLength(0)
+      expect(document.activeElement).toBe(wr.find('[data-mobile-heading]').element)
+    })
+
+    it('remaps the selection when frames move or are deleted before it', async () => {
+      const { desk } = makeDesk(sample())
+      const wr = mountMobile(desk)
+      desk.selected.value = 1
+      await press(wr, '下移第 1 帧') // b+c moves up to 0
+      expect(desk.selected.value).toBe(0)
+      desk.selected.value = 2
+      await press(wr, '删除第 1 帧')
+      expect(desk.selected.value).toBe(1)
+    })
+  })
 })

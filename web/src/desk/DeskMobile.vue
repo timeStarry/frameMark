@@ -5,7 +5,7 @@
 // Owns no state: every edit goes through `desk`, so switching breakpoints in
 // DeskRoute keeps everything. Publish / unpublish are emitted; DeskRoute opens
 // the confirmation dialogs.
-import { computed, ref, useId } from 'vue'
+import { computed, nextTick, ref, useId } from 'vue'
 import type { FrameLayout } from '../api/types'
 import Cover from '../walls/Cover.vue'
 import { LAYOUT_LABEL, frameLabel, textPreview } from './labels'
@@ -45,25 +45,53 @@ function announce(msg: string) {
 
 // --- Structural edits ---
 
-function moveFrame(i: number, delta: -1 | 1) {
+const list = ref<HTMLElement | null>(null)
+const heading = ref<HTMLElement | null>(null)
+
+/** The row's button for `action`, found by frame key so it survives keyed reorders. */
+function rowButton(key: string, action: 'up' | 'down' | 'delete'): HTMLButtonElement | null {
+  return list.value?.querySelector<HTMLButtonElement>(`[data-key="${CSS.escape(key)}"] [data-action="${action}"]`) ?? null
+}
+
+async function moveFrame(i: number, delta: -1 | 1) {
   if (locked.value) return
   const s = seq.value
   const to = i + delta
   const next = move(s, i, to)
   if (next === s) return
+  const key = s[i]!.key
   desk.applySeq(next, 'structure')
-  if (desk.selected.value === i) desk.selected.value = to
+  // Adjacent swap: the selected frame follows its own move.
+  const sel = desk.selected.value
+  if (sel === i) desk.selected.value = to
+  else if (sel === to) desk.selected.value = i
   announce(`已移到第 ${to + 1} 帧`)
+  // Keep focus on the moved frame; at an edge the pressed button is now
+  // disabled, so fall back to the opposite one.
+  await nextTick()
+  const same = rowButton(key, delta < 0 ? 'up' : 'down')
+  const target = same && !same.disabled ? same : rowButton(key, delta < 0 ? 'down' : 'up')
+  target?.focus()
 }
 
-function removeFrame(i: number) {
+async function removeFrame(i: number) {
   if (locked.value) return
   const s = seq.value
   const next = remove(s, i)
   if (next === s) return
   desk.applySeq(next, 'structure')
+  const sel = desk.selected.value
+  if (sel > i) desk.selected.value = sel - 1
   if (desk.selected.value >= next.length) desk.selected.value = Math.max(0, next.length - 1)
   announce(`已删除第 ${i + 1} 帧`)
+  // Focus the row now at this index, the previous one if the last went, or
+  // the list heading when nothing is left.
+  await nextTick()
+  const cur = seq.value
+  const f = cur[Math.min(i, cur.length - 1)]
+  const target = f ? rowButton(f.key, 'delete') : null
+  if (target) target.focus()
+  else heading.value?.focus()
 }
 
 function changeLayout(i: number, e: Event) {
@@ -129,15 +157,17 @@ function onPublish() {
       </div>
     </header>
 
+    <h2 :id="`${uid}-frames`" ref="heading" class="frames-heading" tabindex="-1" data-mobile-heading>帧</h2>
     <p class="note">在电脑上添加和编排照片</p>
 
-    <ol class="frames" role="list">
+    <ol ref="list" class="frames" role="list" :aria-labelledby="`${uid}-frames`">
       <li
         v-for="(f, i) in seq"
         :key="f.key"
         class="frame"
         role="listitem"
         data-mobile-frame
+        :data-key="f.key"
         :aria-label="frameLabel(f, i)"
       >
         <div class="top">
@@ -172,11 +202,11 @@ function onPublish() {
         </div>
 
         <div class="actions">
-          <button type="button" :aria-label="`上移第 ${i + 1} 帧`" :disabled="locked || i === 0" @click="moveFrame(i, -1)">上移</button>
-          <button type="button" :aria-label="`下移第 ${i + 1} 帧`" :disabled="locked || i === seq.length - 1" @click="moveFrame(i, 1)">
+          <button type="button" data-action="up" :aria-label="`上移第 ${i + 1} 帧`" :disabled="locked || i === 0" @click="moveFrame(i, -1)">上移</button>
+          <button type="button" data-action="down" :aria-label="`下移第 ${i + 1} 帧`" :disabled="locked || i === seq.length - 1" @click="moveFrame(i, 1)">
             下移
           </button>
-          <button type="button" :aria-label="`删除第 ${i + 1} 帧`" :disabled="locked" @click="removeFrame(i)">删除</button>
+          <button type="button" data-action="delete" :aria-label="`删除第 ${i + 1} 帧`" :disabled="locked" @click="removeFrame(i)">删除</button>
         </div>
       </li>
     </ol>
@@ -216,6 +246,16 @@ function onPublish() {
 .save-error {
   margin-left: var(--space-8);
   color: var(--fg);
+}
+.frames-heading {
+  margin: 0;
+  font-family: var(--font-title);
+  font-weight: 400;
+  font-size: 1.125rem;
+}
+.frames-heading:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 .note {
   margin: 0;
