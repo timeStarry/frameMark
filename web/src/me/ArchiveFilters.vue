@@ -5,7 +5,12 @@ import { computed, useId } from 'vue'
 import type { ArchiveFacets, ArchiveQuery, PhotoStatus } from '../api/types'
 import { isFiltered } from './archiveQuery'
 
-const props = defineProps<{ q: ArchiveQuery; facets: ArchiveFacets | null }>()
+const props = defineProps<{
+  q: ArchiveQuery
+  facets: ArchiveFacets | null
+  /** The desk lists only ready photos, so it hides the status filter. */
+  hideStatus?: boolean
+}>()
 const emit = defineEmits<{ update: [q: ArchiveQuery] }>()
 
 const id = useId()
@@ -117,7 +122,7 @@ function onStatus(e: Event) {
         @change="onFocal('focalMax', $event)"
       />
     </div>
-    <div class="field">
+    <div v-if="!hideStatus" class="field">
       <label :for="`${id}-status`">状态</label>
       <select :id="`${id}-status`" name="status" :value="q.status ?? ''" @change="onStatus">
         <option v-for="o in STATUS_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</option>

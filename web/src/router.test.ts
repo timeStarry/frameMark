@@ -53,6 +53,18 @@ describe('router', () => {
     }
   })
 
+  it('resolves the curation desk under /me with requiresUser and props', async () => {
+    const r = router.resolve('/me/c/c%201')
+    expect(r.name).toBe('desk')
+    expect(r.params.id).toBe('c 1')
+    expect(r.matched).toHaveLength(2)
+    expect(r.matched.every((m) => m.meta.requiresUser === true)).toBe(true)
+    expect(r.meta.title).toBe('策展台')
+    expect(r.matched[1]!.props.default).toBe(true)
+    const loader = r.matched[1]!.components!.default as () => Promise<{ default: { __name?: string } }>
+    expect((await loader()).default.__name).toBe('DeskRoute')
+  })
+
   it('no longer ships Home.vue', () => {
     expect(Object.keys(import.meta.glob('./routes/Home.vue'))).toEqual([])
     expect(Object.keys(import.meta.glob('./routes/SquareRoute.vue'))).toHaveLength(1)

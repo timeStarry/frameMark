@@ -45,6 +45,7 @@ export function createAppRouter(history: RouterHistory = createWebHistory()): Ro
           { path: '', name: 'archive', component: () => import('./me/ArchiveRoute.vue'), meta: { requiresUser: true, title: '归档' } },
           { path: 'collections', name: 'me-collections', component: () => import('./me/CollectionsRoute.vue'), meta: { requiresUser: true, title: '合集' } },
           { path: 'settings', name: 'me-settings', component: () => import('./me/SettingsRoute.vue'), meta: { requiresUser: true, title: '偏好' } },
+          { path: 'c/:id', name: 'desk', component: () => import('./desk/DeskRoute.vue'), props: true, meta: { requiresUser: true, title: '策展台' } },
         ],
       },
       {

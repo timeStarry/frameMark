@@ -55,7 +55,8 @@ describe('CollectionsRoute', () => {
     const h1 = wr.find('h1')
     expect(h1.text()).toBe('我的合集')
     expect(wr.find('main').attributes('aria-labelledby')).toBe(h1.attributes('id'))
-    expect(wr.text()).toContain('编排和发布在策展台中进行（即将推出）')
+    expect(wr.text()).toContain('编排和发布在策展台中进行')
+    expect(wr.text()).not.toContain('即将推出')
     expect(env.calls).toEqual(['/api/u/u1'])
     expect(document.title).toBe('我的合集 — Markr')
   })
@@ -127,6 +128,72 @@ describe('CollectionsRoute', () => {
     s.user = 'u2'
     await flushPromises()
     expect(rows(wr).map((a) => a.attributes('href'))).toEqual(['/c/c9?wall=user:u2'])
+  })
+
+  it('each row has an 编排 link to the desk', async () => {
+    env.routes['/api/u/u1'] = { status: 200, body: wallData() }
+    const wr = await open()
+    const links = wr.findAll('a.arrange')
+    expect(links.map((a) => a.text())).toEqual(['编排', '编排', '编排', '编排'])
+    expect(links.map((a) => a.attributes('href'))).toEqual(['/me/c/c3', '/me/c/c1', '/me/c/c2', '/me/c/c4'])
+    expect(links[1]!.attributes('aria-label')).toBe('编排 海边')
+    // The row itself still opens the viewer.
+    expect(rows(wr)[1]!.attributes('href')).toBe('/c/c1?wall=user:u1')
+  })
+
+  it('新建合集 opens a title-only dialog, creates the collection and opens the desk', async () => {
+    env.routes['/api/u/u1'] = { status: 200, body: wallData() }
+    const posts: unknown[] = []
+    const base = globalThis.fetch
+    vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
+      if (url === '/api/collections' && init?.method === 'POST') {
+        posts.push(JSON.parse(String(init.body)))
+        return new Response(JSON.stringify({ id: 'n1', title: '新的' }), { status: 201, headers: { 'Content-Type': 'application/json' } })
+      }
+      return base(url)
+    })
+    const wr = await open()
+    const btn = wr.findAll('button').find((b) => b.text() === '新建合集')!
+    await btn.trigger('click')
+    await flushPromises()
+    const dlg = wr.find('dialog')
+    expect(dlg.attributes('open')).toBeDefined()
+    expect(dlg.findAll('input')).toHaveLength(1)
+    expect(dlg.find('label').text()).toBe('标题')
+    expect(document.activeElement).toBe(dlg.find('input').element)
+    // An empty title is refused locally.
+    await dlg.find('form').trigger('submit')
+    expect(dlg.find('.error').text()).toBe('请填写标题')
+    expect(posts).toEqual([])
+    await dlg.find('input').setValue('  新的  ')
+    await dlg.find('form').trigger('submit')
+    await flushPromises()
+    expect(posts).toEqual([{ title: '新的' }])
+    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/me/c/n1'))
+  })
+
+  it('shows the server message when creating fails, and 取消 closes the dialog', async () => {
+    env.routes['/api/u/u1'] = { status: 200, body: wallData() }
+    const base = globalThis.fetch
+    vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
+      if (url === '/api/collections' && init?.method === 'POST') {
+        return new Response(JSON.stringify({ error: '标题太长' }), { status: 400, headers: { 'Content-Type': 'application/json' } })
+      }
+      return base(url)
+    })
+    const wr = await open()
+    const push = vi.spyOn(router, 'push')
+    const btn = wr.findAll('button').find((b) => b.text() === '新建合集')!
+    await btn.trigger('click')
+    await wr.find('dialog input').setValue('x')
+    await wr.find('dialog form').trigger('submit')
+    await flushPromises()
+    expect(wr.find('dialog .error').text()).toBe('标题太长')
+    expect(push).not.toHaveBeenCalled()
+    await wr.findAll('dialog button').find((b) => b.text() === '取消')!.trigger('click')
+    await flushPromises()
+    expect(wr.find('dialog').attributes('open')).toBeUndefined()
+    expect(document.activeElement).toBe(btn.element)
   })
 
   it('restores the document title on unmount', async () => {
