@@ -5,6 +5,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { login, register, session, verify } from '../api/session'
 import WallNav from '../walls/WallNav.vue'
 import { safeNext } from './guard'
+import { usePageHeading } from './pageHeading'
 
 const route = useRoute()
 const router = useRouter()
@@ -36,6 +37,8 @@ const tab = ref<Tab>('login')
 const tabEls = ref<HTMLButtonElement[]>([])
 
 const title = computed(() => (verifying ? '设置密码' : tab.value === 'login' ? '登录' : '注册'))
+const heading = ref<HTMLElement | null>(null)
+usePageHeading(heading, () => title.value)
 
 const email = ref('')
 const password = ref('')
@@ -119,7 +122,7 @@ async function onVerify(): Promise<void> {
 <template>
   <WallNav />
   <main class="login" aria-labelledby="login-title">
-    <h1 id="login-title">{{ title }}</h1>
+    <h1 id="login-title" ref="heading" tabindex="-1">{{ title }}</h1>
 
     <form v-if="verifying" class="form" novalidate @submit.prevent="onVerify">
       <div class="field">

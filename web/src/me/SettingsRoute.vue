@@ -8,6 +8,7 @@ import { logout, logoutAll } from '../api/session'
 import ConfirmDialog from './ConfirmDialog.vue'
 import PrefsForm from './PrefsForm.vue'
 import ProfileForm from './ProfileForm.vue'
+import { usePageHeading } from './pageHeading'
 
 const LEAVE_MESSAGE = '有未保存的修改，确定离开？'
 
@@ -19,8 +20,8 @@ const accountId = `${id}-account`
 const prefsDirty = ref(false)
 const profileDirty = ref(false)
 const dirty = computed(() => prefsDirty.value || profileDirty.value)
-
-document.title = '偏好 — Markr'
+const heading = ref<HTMLElement | null>(null)
+usePageHeading(heading, () => '偏好')
 
 function onBeforeUnload(e: BeforeUnloadEvent): void {
   e.preventDefault()
@@ -44,7 +45,6 @@ onBeforeRouteLeave(() => {
 
 onBeforeUnmount(() => {
   setListener(false)
-  document.title = 'Markr'
 })
 
 // --- 账户 ---
@@ -103,7 +103,7 @@ async function onConfirmAll(): Promise<void> {
 
 <template>
   <main class="me-settings" :aria-labelledby="headingId">
-    <h1 :id="headingId">偏好</h1>
+    <h1 :id="headingId" ref="heading" tabindex="-1">偏好</h1>
     <PrefsForm @dirty="prefsDirty = $event" />
     <ProfileForm @dirty="profileDirty = $event" />
     <form class="account" :aria-labelledby="accountId" @submit.prevent>

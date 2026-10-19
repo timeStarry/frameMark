@@ -9,17 +9,18 @@ import type { Card } from '../api/types'
 import Cover from '../walls/Cover.vue'
 import WallStatus from '../walls/WallStatus.vue'
 import { cardStatus, openCollection } from '../walls/open'
+import { usePageHeading } from './pageHeading'
 
 const router = useRouter()
 const headingId = `${useId()}-title`
+const heading = ref<HTMLElement | null>(null)
+usePageHeading(heading, () => '我的合集')
 
 const items = shallowRef<Card[] | null>(null)
 const state = ref<'loading' | 'error' | 'idle'>('loading')
 // The wall the viewer returns to; fixed to the user the list was loaded for.
 const wall = ref('')
 let ctrl: AbortController | null = null
-
-document.title = '合集 — Markr'
 
 async function load(): Promise<void> {
   ctrl?.abort()
@@ -54,13 +55,12 @@ watch(() => session.user, () => void load(), { immediate: true })
 onBeforeUnmount(() => {
   ctrl?.abort()
   ctrl = null
-  document.title = 'Markr'
 })
 </script>
 
 <template>
   <main class="me-collections" :aria-labelledby="headingId">
-    <h1 :id="headingId">我的合集</h1>
+    <h1 :id="headingId" ref="heading" tabindex="-1">我的合集</h1>
     <p class="note">编排和发布在策展台中进行（即将推出）</p>
     <template v-if="items && state === 'idle'">
       <ul v-if="items.length > 0" class="list">

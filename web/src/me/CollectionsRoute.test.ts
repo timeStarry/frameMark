@@ -57,7 +57,7 @@ describe('CollectionsRoute', () => {
     expect(wr.find('main').attributes('aria-labelledby')).toBe(h1.attributes('id'))
     expect(wr.text()).toContain('编排和发布在策展台中进行（即将推出）')
     expect(env.calls).toEqual(['/api/u/u1'])
-    expect(document.title).toBe('合集 — Markr')
+    expect(document.title).toBe('我的合集 — Markr')
   })
 
   it('lists in wall order with title, count and status label', async () => {
