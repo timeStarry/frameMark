@@ -227,3 +227,127 @@ export interface UploadInit {
   upload: { url: string; method: string; headers: Record<string, string> }
   expiresAt: number
 }
+
+// --- Curation desk (internal/api/collections.go, photos.go, read.go) ---
+
+export type Visibility = 'private' | 'unlisted' | 'public'
+
+/** A frame photo in the owner's read: effective exposure plus the raw override. */
+export interface OwnerFramePhoto extends PhotoView {
+  publicFields: string[]
+  histogramPublic: boolean
+  /** The photo_overrides row for this collection; a null key is not overridden. */
+  override: { publicFields: string[] | null; histogramPublic: boolean | null } | null
+}
+
+export interface OwnerFrame {
+  layout: FrameLayout
+  matteRatio: number | null
+  text: string | null
+  photos: OwnerFramePhoto[]
+}
+
+/** GET /api/collections/{id} as the owner. */
+export interface OwnerCollection extends Omit<Collection, 'frames' | 'cover' | 'status' | 'visibility' | 'distribute'> {
+  status: 'draft' | 'published'
+  visibility: Visibility
+  distribute: boolean
+  updatedAt: number
+  cover: OwnerFramePhoto | null
+  frames: OwnerFrame[]
+}
+
+/** A frame as stored, in the write responses (frameView). */
+export interface OwnerFrameRef {
+  id: string
+  position: number
+  layout: FrameLayout
+  matteRatio: number | null
+  text: string | null
+  photoIds: string[]
+}
+
+/** collectionView: returned by create (201), PUT fields, PUT frames, publish and unpublish. */
+export interface OwnerCollectionWrite {
+  id: string
+  title: string
+  intro: string
+  status: 'draft' | 'published'
+  visibility: Visibility
+  distribute: boolean
+  originalDownload: boolean
+  license: string | null
+  aiDeclaration: string | null
+  coverPhotoId: string | null
+  wallRank: number
+  publishedAt: number | null
+  createdAt: number
+  updatedAt: number
+  frames: OwnerFrameRef[]
+}
+
+/** PUT /api/collections/{id} body (collectionInput, without ifUpdatedAt). */
+export interface CollectionFields {
+  title: string
+  intro: string
+  visibility: Visibility
+  distribute: boolean
+  originalDownload: boolean
+  license: string | null
+  aiDeclaration: string | null
+  coverPhotoId: string | null
+}
+
+/** Frame as written to the server (frameInput). */
+export interface FrameInput {
+  layout: FrameLayout
+  matteRatio: number | null
+  text: string | null
+  photoIds: string[]
+}
+
+export interface OverrideInput {
+  publicFields: string[]
+  histogramPublic: boolean | null
+}
+
+/** overrideView. updatedAt is the collection's after the write. */
+export interface OverrideView {
+  collectionId: string
+  photoId: string
+  publicFields: string[] | null
+  histogramPublic: boolean | null
+  updatedAt: number
+}
+
+/** PUT /api/photos/{id}: the owner photo plus the collections whose updatedAt it bumped. */
+export interface PhotoMetaView extends OwnerPhoto {
+  collections: { id: string; updatedAt: number }[]
+}
+
+export interface ExposureChange {
+  kind: 'photos' | 'fields' | 'histogram' | 'original' | 'visibility' | 'square'
+  detail: string
+}
+
+/** POST /api/collections/{id}/exposure-check body; no part is written. */
+export interface ExposureCheckInput {
+  collection?: CollectionFields
+  frames?: FrameInput[]
+  override?: OverrideInput & { photoId: string }
+}
+
+export interface ExposureCheck {
+  widens: boolean
+  changes: ExposureChange[]
+}
+
+/** POST /api/collections/{id}/publish?dry_run=1 (manifestView). */
+export interface Manifest {
+  photos: number
+  publicFields: string[]
+  histogram: boolean
+  originalDownload: boolean
+  visibility: Visibility
+  inSquare: boolean
+}

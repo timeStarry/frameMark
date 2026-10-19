@@ -83,6 +83,16 @@ describe('send', () => {
     expect(await send('PUT', '/api/x', {})).toEqual({ ok: false, status, message: '文件太大。' })
   })
 
+  it('carries extra error-body keys as body', async () => {
+    mockFetch(async () => json({ error: '这个合集在别处被修改过。', updatedAt: 7 }, 409))
+    expect(await send('PUT', '/api/x', {})).toEqual({
+      ok: false,
+      status: 409,
+      message: '这个合集在别处被修改过。',
+      body: { error: '这个合集在别处被修改过。', updatedAt: 7 },
+    })
+  })
+
   it('maps a network error to status 0', async () => {
     mockFetch(async () => {
       throw new TypeError('Failed to fetch')

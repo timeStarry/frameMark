@@ -1,7 +1,7 @@
 // Curation desk sequence model (spec §4.3). Pure and immutable: every operation
 // returns a new array, or the input itself when the edit is out of range or
 // illegal. Rules mirror internal/api/collections.go.
-import type { FrameLayout, Media } from '../api/types'
+import type { FrameInput, FrameLayout, Media } from '../api/types'
 
 export interface DeskPhoto {
   id: string
@@ -21,14 +21,6 @@ export interface DeskFrame {
 }
 
 export type Seq = readonly DeskFrame[]
-
-/** Frame as written to the server. Task 3 may move this into api/types.ts. */
-export interface FrameInput {
-  layout: FrameLayout
-  matteRatio: number | null
-  text: string | null
-  photoIds: string[]
-}
 
 /** Minimal shape of an owner collection that fromOwner reads. */
 export interface OwnerSequenceSource {

@@ -7,7 +7,15 @@ import { refresh, session } from './session'
  * status -1: the request was aborted; callers ignore it.
  * `message` is the server's own Chinese text, shown as is.
  */
-export type WriteResult<T> = { ok: true; status: number; data: T } | { ok: false; status: number; message: string }
+export type WriteResult<T> =
+  | { ok: true; status: number; data: T }
+  | {
+      ok: false
+      status: number
+      message: string
+      /** The parsed error body, present only when it carries keys besides `error` (e.g. a 409's updatedAt). */
+      body?: Record<string, unknown>
+    }
 
 export const NETWORK_MESSAGE = '网络连接出了问题'
 const CSRF_MESSAGE = '会话校验失败，请刷新页面后重试。'
@@ -45,13 +53,20 @@ async function once<T>(
   }
   if (!res.ok) {
     let message = ''
+    let extra: Record<string, unknown> | undefined
     try {
-      const b = (await res.json()) as { error?: unknown }
-      if (typeof b?.error === 'string') message = b.error
+      const b = (await res.json()) as unknown
+      if (b !== null && typeof b === 'object' && !Array.isArray(b)) {
+        const o = b as Record<string, unknown>
+        if (typeof o.error === 'string') message = o.error
+        if (Object.keys(o).some((k) => k !== 'error')) extra = o
+      }
     } catch (err) {
       if (isAbort(err, signal)) return fail(err)
     }
-    return { ok: false, status: res.status, message: message || `请求失败（${res.status}）` }
+    const r: WriteResult<T> = { ok: false, status: res.status, message: message || `请求失败（${res.status}）` }
+    if (extra) r.body = extra
+    return r
   }
   // 204 (e.g. DELETE /api/photos/{id}) and any empty 2xx body are success
   // with no data; a non-empty body that is not JSON is still a failure.
