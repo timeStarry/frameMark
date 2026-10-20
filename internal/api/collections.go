@@ -91,6 +91,9 @@ type manifestView struct {
 	OriginalDownload bool     `json:"originalDownload"`
 	Visibility       string   `json:"visibility"`
 	InSquare         bool     `json:"inSquare"`
+	// UpdatedAt is the collection state the manifest describes; the confirm
+	// sends it back as ifUpdatedAt so nothing newer gets published.
+	UpdatedAt int64 `json:"updatedAt"`
 }
 
 type overrideView struct {
@@ -548,7 +551,13 @@ func (s *server) publishCollection(w http.ResponseWriter, r *http.Request) (int,
 		}
 		dry = true
 	}
-	if err := decodeJSON(r, &struct{}{}); err != nil && err != errEmptyBody {
+	// The publish body may carry ifUpdatedAt: the updated_at of the manifest
+	// the author confirmed. Publishing anything newer would expose content the
+	// author never saw in that manifest (another tab may have added photos).
+	var in struct {
+		IfUpdatedAt *int64 `json:"ifUpdatedAt"`
+	}
+	if err := decodeJSON(r, &in); err != nil && err != errEmptyBody {
 		return 0, nil, err
 	}
 	ctx := r.Context()
@@ -556,6 +565,11 @@ func (s *server) publishCollection(w http.ResponseWriter, r *http.Request) (int,
 	err = s.inTx(ctx, func(tx *sql.Tx) error {
 		if _, _, err := ownedCollection(ctx, tx, owner, id); err != nil {
 			return err
+		}
+		if !dry {
+			if err := checkFresh(ctx, tx, id, in.IfUpdatedAt); err != nil {
+				return err
+			}
 		}
 		var frames int
 		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM frames WHERE collection_id=?`, id).Scan(&frames); err != nil {
@@ -589,8 +603,9 @@ func (s *server) publishCollection(w http.ResponseWriter, r *http.Request) (int,
 func buildManifest(ctx context.Context, tx *sql.Tx, owner, id string) (*manifestView, error) {
 	var vis string
 	var dist, orig int
-	if err := tx.QueryRowContext(ctx, `SELECT visibility,distribute,original_download FROM collections WHERE id=? AND owner_id=?`,
-		id, owner).Scan(&vis, &dist, &orig); err != nil {
+	var updated int64
+	if err := tx.QueryRowContext(ctx, `SELECT visibility,distribute,original_download,updated_at FROM collections WHERE id=? AND owner_id=?`,
+		id, owner).Scan(&vis, &dist, &orig, &updated); err != nil {
 		return nil, err
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT p.id,p.public_fields,p.histogram_public,o.public_fields,o.histogram_public
@@ -600,7 +615,7 @@ func buildManifest(ctx context.Context, tx *sql.Tx, owner, id string) (*manifest
 		return nil, err
 	}
 	defer rows.Close()
-	m := &manifestView{PublicFields: []string{}, OriginalDownload: orig == 1, Visibility: vis}
+	m := &manifestView{PublicFields: []string{}, OriginalDownload: orig == 1, Visibility: vis, UpdatedAt: updated}
 	union := map[string]bool{}
 	for rows.Next() {
 		var (
@@ -698,6 +713,10 @@ func (s *server) putOverride(w http.ResponseWriter, r *http.Request) (int, any, 
 	var in struct {
 		PublicFields    *[]string `json:"publicFields"`
 		HistogramPublic *bool     `json:"histogramPublic"`
+		// IfUpdatedAt guards the write like the field and frame PUTs: an
+		// override can widen a published collection, so a stale desk must
+		// not apply it on top of another tab's change.
+		IfUpdatedAt *int64 `json:"ifUpdatedAt"`
 	}
 	if err := decodeJSON(r, &in); err != nil {
 		return 0, nil, err
@@ -721,6 +740,9 @@ func (s *server) putOverride(w http.ResponseWriter, r *http.Request) (int, any, 
 	ctx := r.Context()
 	err = s.inTx(ctx, func(tx *sql.Tx) error {
 		if _, _, err := ownedCollection(ctx, tx, owner, id); err != nil {
+			return err
+		}
+		if err := checkFresh(ctx, tx, id, in.IfUpdatedAt); err != nil {
 			return err
 		}
 		var one int

@@ -490,7 +490,7 @@ func TestPublishDryRunManifest(t *testing.T) {
 		fields = append(fields, f.(string))
 	}
 	if r.body["photos"] != 2.0 || !sameIDs(fields, []string{"iso", "lens", "taken_date"}) || r.body["histogram"] != true ||
-		r.body["originalDownload"] != true || r.body["visibility"] != "public" || r.body["inSquare"] != true || len(r.body) != 6 {
+		r.body["originalDownload"] != true || r.body["visibility"] != "public" || r.body["inSquare"] != true || r.body["updatedAt"] == nil || len(r.body) != 7 {
 		t.Fatalf("manifest: %s", r.raw)
 	}
 	var status string

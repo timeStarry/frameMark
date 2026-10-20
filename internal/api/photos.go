@@ -30,6 +30,11 @@ type photoMetaView struct {
 type bumpedCollection struct {
 	ID        string `json:"id"`
 	UpdatedAt int64  `json:"updatedAt"`
+	// PreviousUpdatedAt is updated_at before this write. Photo metadata never
+	// widens exposure, so the write is not refused; instead the desk adopts
+	// UpdatedAt only when PreviousUpdatedAt equals its own baseline. Otherwise
+	// another tab wrote in between and the desk must treat it as a conflict.
+	PreviousUpdatedAt int64 `json:"previousUpdatedAt"`
 }
 
 // putPhoto sets an owner's photo title and caption (both required, either
@@ -81,10 +86,14 @@ func (s *server) putPhoto(w http.ResponseWriter, r *http.Request) (int, any, err
 			return err
 		}
 		for _, cid := range ids {
+			var prev int64
+			if err := tx.QueryRowContext(ctx, `SELECT updated_at FROM collections WHERE id=?`, cid).Scan(&prev); err != nil {
+				return err
+			}
 			if _, err := tx.ExecContext(ctx, `UPDATE collections SET updated_at=? WHERE id=?`, now, cid); err != nil {
 				return err
 			}
-			bumped = append(bumped, bumpedCollection{ID: cid, UpdatedAt: now})
+			bumped = append(bumped, bumpedCollection{ID: cid, UpdatedAt: now, PreviousUpdatedAt: prev})
 		}
 		return nil
 	})

@@ -484,7 +484,9 @@ func TestPutPhotoReturnsBumpedCollections(t *testing.T) {
 	}
 	for i, x := range cs {
 		m := x.(map[string]any)
-		if m["id"] != want[i] || m["updatedAt"] != float64(t0+1000) || len(m) != 2 {
+		// previousUpdatedAt is the value before this write: both collections
+		// were last written at t0 by mustFrames.
+		if m["id"] != want[i] || m["updatedAt"] != float64(t0+1000) || m["previousUpdatedAt"] != float64(t0) || len(m) != 3 {
 			t.Errorf("collections[%d] %v", i, m)
 		}
 	}
@@ -500,5 +502,92 @@ func TestPutPhotoReturnsBumpedCollections(t *testing.T) {
 	r = u.put("/api/photos/"+lone, `{"title":"","caption":""}`)
 	if cs, ok := r.body["collections"].([]any); r.code != 200 || !ok || len(cs) != 0 {
 		t.Fatalf("lone: %d %s", r.code, r.raw)
+	}
+}
+
+// --- final review C1/C2: every write that can widen is guarded ---
+
+func TestOverrideIfUpdatedAt(t *testing.T) {
+	e := newEnv(t)
+	u := e.user("u1")
+	cid := u.newCollection("A")
+	a := e.readyPhoto("u1")
+	u.mustFrames(cid, full(a))
+	e.now.Add(1000)
+	// Another tab wrote: the stale override is refused with the current value.
+	if r := u.updateCollection(cid, map[string]any{"title": "B"}); r.code != 200 {
+		t.Fatal(r.raw)
+	}
+	r := u.put("/api/collections/"+cid+"/overrides/"+a, jsonBody(map[string]any{"publicFields": []string{"iso"}, "ifUpdatedAt": t0}))
+	if r.code != 409 || r.errMsg() != "这个合集在别处被修改过。" || r.body["updatedAt"] != float64(t0+1000) {
+		t.Fatalf("stale override: %d %s", r.code, r.raw)
+	}
+	var n int
+	_ = e.d.QueryRow(`SELECT count(*) FROM photo_overrides WHERE collection_id=?`, cid).Scan(&n)
+	if n != 0 {
+		t.Fatal("stale override was written")
+	}
+	// Matching, and omitted (legacy callers), both write.
+	e.now.Add(1000)
+	if r := u.put("/api/collections/"+cid+"/overrides/"+a, jsonBody(map[string]any{"publicFields": []string{"iso"}, "ifUpdatedAt": t0 + 1000})); r.code != 200 {
+		t.Fatalf("matching: %d %s", r.code, r.raw)
+	}
+	if r := u.put("/api/collections/"+cid+"/overrides/"+a, `{"publicFields":["lens"]}`); r.code != 200 {
+		t.Fatalf("omitted: %d %s", r.code, r.raw)
+	}
+}
+
+func TestPublishIfUpdatedAt(t *testing.T) {
+	e := newEnv(t)
+	u := e.user("u1")
+	cid := u.newCollection("A")
+	a, b := e.readyPhoto("u1"), e.readyPhoto("u1")
+	u.mustFrames(cid, full(a))
+	// The dry-run manifest says which state it describes.
+	r := u.post("/api/collections/"+cid+"/publish?dry_run=1", "")
+	if r.code != 200 || r.body["updatedAt"] != float64(t0) || r.body["photos"] != float64(1) {
+		t.Fatalf("dry run: %d %s", r.code, r.raw)
+	}
+	// Another tab adds a photo after the author saw the manifest.
+	e.now.Add(1000)
+	u.mustFrames(cid, full(a), full(b))
+	r = u.post("/api/collections/"+cid+"/publish", jsonBody(map[string]any{"ifUpdatedAt": t0}))
+	if r.code != 409 || r.body["updatedAt"] != float64(t0+1000) {
+		t.Fatalf("stale publish: %d %s", r.code, r.raw)
+	}
+	var status string
+	_ = e.d.QueryRow(`SELECT status FROM collections WHERE id=?`, cid).Scan(&status)
+	if status != "draft" {
+		t.Fatalf("stale publish went through: %s", status)
+	}
+	// Publishing the state the author confirmed works; an empty body still works.
+	if r := u.post("/api/collections/"+cid+"/publish", jsonBody(map[string]any{"ifUpdatedAt": t0 + 1000})); r.code != 200 || r.body["status"] != "published" {
+		t.Fatalf("fresh publish: %d %s", r.code, r.raw)
+	}
+	c2 := u.newCollection("B")
+	u.mustFrames(c2, full(a))
+	if r := u.post("/api/collections/"+c2+"/publish", ""); r.code != 200 {
+		t.Fatalf("legacy publish: %d %s", r.code, r.raw)
+	}
+}
+
+func TestPutPhotoReportsInterveningWrites(t *testing.T) {
+	e := newEnv(t)
+	u := e.user("u1")
+	p := e.readyPhoto("u1")
+	cid := u.newCollection("A")
+	u.mustFrames(cid, full(p))
+	// Another tab wrote the collection at t0+1000; this tab still holds t0.
+	e.now.Add(1000)
+	if r := u.updateCollection(cid, map[string]any{"title": "B"}); r.code != 200 {
+		t.Fatal(r.raw)
+	}
+	e.now.Add(1000)
+	r := u.put("/api/photos/"+p, `{"title":"T","caption":""}`)
+	m := r.body["collections"].([]any)[0].(map[string]any)
+	// The desk compares previousUpdatedAt (t0+1000) with its baseline (t0) and
+	// sees the intervening write instead of silently adopting t0+2000.
+	if r.code != 200 || m["previousUpdatedAt"] != float64(t0+1000) || m["updatedAt"] != float64(t0+2000) {
+		t.Fatalf("%d %s", r.code, r.raw)
 	}
 }
