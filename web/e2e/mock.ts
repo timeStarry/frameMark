@@ -257,6 +257,14 @@ const MINE = [
   { c: MINE_PUBLIC, status: 'published', visibility: 'public' },
 ] as const
 
+/** collections.go cleanText: CRLF→LF, drop controls (LF kept when multiline) and bidi, trim. */
+export function cleanTextMock(t: string, multiline: boolean): string {
+  return t
+    .replace(/\r\n?/g, '\n')
+    .replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, (c) => (c === '\n' && multiline ? c : ''))
+    .trim()
+}
+
 export const fixtureFile = (shape: Shape) => readFileSync(`${imgDir}${shape}.jpg`)
 const sha256 = (b: Buffer) => createHash('sha256').update(b).digest('hex')
 /** land.jpg is already in the archive (the duplicate); port.jpg is new. */
@@ -318,6 +326,25 @@ export interface AccountState {
   archive: Archived[]
   prefs: Record<string, unknown>
   profile: { name: string; bio: string; wallLayout: 'salon' | 'grid' }
+  /** Desk collections by id (owner-editable). */
+  desk: Record<string, DeskColl>
+}
+
+/** A desk collection as the mock stores it. */
+export interface DeskColl {
+  id: string
+  title: string
+  intro: string
+  status: 'draft' | 'published'
+  visibility: 'private' | 'unlisted' | 'public'
+  distribute: boolean
+  originalDownload: boolean
+  license: string | null
+  aiDeclaration: string | null
+  coverPhotoId: string | null
+  updatedAt: number
+  frames: { layout: string; matteRatio: number | null; text: string | null; photoIds: string[] }[]
+  overrides: Record<string, { publicFields: string[] | null; histogramPublic: boolean | null }>
 }
 
 export interface AccountMock extends Mock {
@@ -334,6 +361,10 @@ export interface AccountMock extends Mock {
   order: string[]
   /** Rotate the server's token behind the page's back: its next write is stale. */
   staleToken(): void
+  /** Seed a desk collection; returns it (photos come from the archive). */
+  seedDesk(c: Partial<DeskColl> & { id: string; photoIds?: string[] }): DeskColl
+  /** Simulate another tab's write: bumps updatedAt and applies the patch. */
+  editElsewhere(id: string, patch: Partial<DeskColl>): void
 }
 
 export interface AccountOptions {
@@ -351,6 +382,9 @@ export async function mockAccount(page: Page, opts: AccountOptions = {}): Promis
   const rotate = () => `csrf-${++seq}`
   const polls = new Map<string, number>()
   const putDone = new Set<string>()
+  // Monotonic updated_at (the backend uses wall time; a counter keeps tests exact).
+  let clock = 1000
+  let created = 0
 
   const m: AccountMock = {
     requests: base.requests,
@@ -370,6 +404,7 @@ export async function mockAccount(page: Page, opts: AccountOptions = {}): Promis
         updatedAt: null,
       },
       profile: { name: ME.name, bio: '只拍海。', wallLayout: 'salon' },
+      desk: {},
     },
     writes: [],
     s3: [],
@@ -378,6 +413,19 @@ export async function mockAccount(page: Page, opts: AccountOptions = {}): Promis
     order: [],
     staleToken: () => {
       m.state.csrf = rotate()
+    },
+    seedDesk: (c) => {
+      const d: DeskColl = {
+        title: '海边的早晨', intro: '', status: 'draft', visibility: 'private', distribute: false, originalDownload: false,
+        license: null, aiDeclaration: null, coverPhotoId: null, updatedAt: ++clock, frames: [], overrides: {},
+        ...c,
+      }
+      if (c.photoIds) d.frames = c.photoIds.map((id) => ({ layout: 'full', matteRatio: null, text: null, photoIds: [id] }))
+      m.state.desk[d.id] = d
+      return d
+    },
+    editElsewhere: (id, patch) => {
+      Object.assign(m.state.desk[id]!, patch, { updatedAt: ++clock })
     },
   }
   const st = m.state
@@ -424,6 +472,217 @@ export async function mockAccount(page: Page, opts: AccountOptions = {}): Promis
     putDone.add(new URL(req.url()).pathname.split('/').pop()!)
     return route.fulfill({ status: 200, headers: cors, body: '' })
   })
+
+
+  const FIELD_ORDER = ['camera', 'lens', 'focal_length', 'aperture', 'shutter', 'iso', 'exposure_bias', 'taken_date']
+  const FIELD_LABEL: Record<string, string> = {
+    camera: '机身', lens: '镜头', focal_length: '焦段', aperture: '光圈', shutter: '快门', iso: 'ISO', exposure_bias: '曝光补偿', taken_date: '拍摄日期',
+  }
+  const EXIF_OF: Record<string, string[]> = {
+    camera: ['camera'], lens: ['lens'], focal_length: ['focalLength', 'focalLength35mm'], aperture: ['aperture'],
+    shutter: ['shutter', 'exposureSeconds'], iso: ['iso'], exposure_bias: ['exposureBias'], taken_date: ['takenAt', 'takenOffsetMinutes'],
+  }
+  const joinLabels = (l: string[]) => (l.length <= 1 ? l.join('') : l.slice(0, -1).join('、') + '与' + l[l.length - 1])
+  const archived = (id: string) => st.archive.find((x) => x.photo.id === id)
+  type Eff = { fields: Set<string>; hist: boolean }
+  const effective = (d: Pick<DeskColl, 'overrides'>, id: string): Eff => {
+    const ph = archived(id)!.photo as unknown as { publicFields: string[]; histogramPublic: boolean }
+    const o = d.overrides[id]
+    return { fields: new Set(o?.publicFields ?? ph.publicFields), hist: o?.histogramPublic ?? ph.histogramPublic }
+  }
+  const visibleTo = (d: Pick<DeskColl, 'status' | 'visibility'>) => d.status === 'published' && d.visibility !== 'private'
+  const inSquare = (d: Pick<DeskColl, 'status' | 'visibility' | 'distribute'>) => d.status === 'published' && d.visibility === 'public' && d.distribute
+  const photoSet = (d: Pick<DeskColl, 'frames'>) => new Set(d.frames.flatMap((f) => f.photoIds))
+
+  function ownerPhotoView(d: DeskColl, id: string) {
+    const ph = archived(id)!.photo as Record<string, unknown>
+    const e = effective(d, id)
+    return {
+      id, title: ph.title, caption: ph.caption, width: ph.width, height: ph.height, media: ph.media,
+      exif: ph.exif, histogram: null, attribution: null, downloadable: true,
+      publicFields: FIELD_ORDER.filter((k) => e.fields.has(k)), histogramPublic: e.hist,
+      override: d.overrides[id] ?? null,
+    }
+  }
+  function ownerRead(d: DeskColl) {
+    const frames = d.frames.map((f) => ({ layout: f.layout, matteRatio: f.matteRatio, text: f.text, photos: f.photoIds.map((id) => ownerPhotoView(d, id)) }))
+    const first = d.frames.find((f) => f.photoIds.length)?.photoIds[0]
+    const coverId = d.coverPhotoId ?? first
+    return {
+      id: d.id, title: d.title, intro: d.intro, owner: ME, license: d.license, aiDeclaration: d.aiDeclaration,
+      originalDownload: d.originalDownload, publishedAt: d.status === 'published' ? 1 : null,
+      cover: coverId ? ownerPhotoView(d, coverId) : null,
+      status: d.status, visibility: d.visibility, distribute: d.distribute, updatedAt: d.updatedAt,
+      ...(d.coverPhotoId ? { coverPhotoId: d.coverPhotoId } : {}),
+      frames,
+    }
+  }
+  function writeView(d: DeskColl) {
+    return {
+      id: d.id, title: d.title, intro: d.intro, status: d.status, visibility: d.visibility, distribute: d.distribute,
+      originalDownload: d.originalDownload, license: d.license, aiDeclaration: d.aiDeclaration, coverPhotoId: d.coverPhotoId,
+      wallRank: 1, publishedAt: d.status === 'published' ? 1 : null, createdAt: 1, updatedAt: d.updatedAt,
+      frames: d.frames.map((f, i) => ({ id: `${d.id}-f${i}`, position: i, layout: f.layout, matteRatio: f.matteRatio, text: f.text, photoIds: f.photoIds })),
+    }
+  }
+  /** Same rules as validFrames in collections.go; returns an error message or null. */
+  function frameError(frames: unknown): string | null {
+    if (!Array.isArray(frames)) return '请求格式无效。'
+    if (frames.length > 200) return '帧序列最多 200 帧。'
+    for (const f of frames as Record<string, unknown>[]) {
+      const ids = (f.photoIds as string[] | undefined) ?? []
+      const n = ids.length
+      if (!['full', 'matted', 'pair', 'text'].includes(String(f.layout))) return '帧版式无效。'
+      if ((f.layout === 'full' || f.layout === 'matted') && n !== 1) return '帧中的照片数量与版式不符。'
+      if (f.layout === 'pair' && (n < 2 || n > 3 || new Set(ids).size !== n)) return '帧中的照片数量与版式不符。'
+      if (f.layout === 'text') {
+        const t = cleanTextMock(String(f.text ?? ''), true)
+        if (n !== 0 || [...t].length < 1 || [...t].length > 2000) return '文字帧需要 1–2000 个字符的文字，且只有文字帧可以带文字。'
+      } else if (f.text != null) return '文字帧需要 1–2000 个字符的文字，且只有文字帧可以带文字。'
+      if (f.layout === 'matted') {
+        const r = Number(f.matteRatio)
+        if (!(r >= 0.5 && r <= 0.95)) return '留白帧的画面占比需在 0.5–0.95 之间，其他版式不能设置。'
+      } else if (f.matteRatio != null) return '留白帧的画面占比需在 0.5–0.95 之间，其他版式不能设置。'
+      for (const id of ids) if (!archived(id) || archived(id)!.photo.status !== 'ready') return '帧引用的照片不存在或尚未处理完成。'
+    }
+    return null
+  }
+  /** exposure_check.go: what visitors would newly see after the proposal. */
+  function exposureChanges(d: DeskColl, after: DeskColl) {
+    if (d.status !== 'published') return []
+    const before = { vis: visibleTo(d), photos: visibleTo(d) ? photoSet(d) : new Set<string>() }
+    const aft = { vis: visibleTo(after), photos: visibleTo(after) ? photoSet(after) : new Set<string>() }
+    const out: { kind: string; detail: string }[] = []
+    const newPhotos = [...aft.photos].filter((id) => !before.photos.has(id))
+    if (newPhotos.length) out.push({ kind: 'photos', detail: `新增 ${newPhotos.length} 张公开照片` })
+    const widened = new Set<string>()
+    let hist = false
+    for (const id of aft.photos) {
+      const ea = effective(after, id)
+      const eb = before.photos.has(id) ? effective(d, id) : { fields: new Set<string>(), hist: false }
+      for (const k of ea.fields) if (!eb.fields.has(k)) widened.add(k)
+      if (ea.hist && !eb.hist) hist = true
+    }
+    const labels = FIELD_ORDER.filter((k) => widened.has(k)).map((k) => FIELD_LABEL[k]!)
+    if (labels.length) out.push({ kind: 'fields', detail: '公开' + joinLabels(labels) })
+    if (hist) out.push({ kind: 'histogram', detail: '公开直方图' })
+    const dlBefore = before.vis && d.originalDownload && before.photos.size > 0
+    if (aft.vis && after.originalDownload && aft.photos.size > 0 && !dlBefore) out.push({ kind: 'original', detail: '开放原图下载' })
+    const rank = { private: 0, unlisted: 1, public: 2 } as const
+    if (rank[after.visibility] > rank[d.visibility]) out.push({ kind: 'visibility', detail: after.visibility === 'public' ? '改为公开' : '改为仅链接' })
+    if (inSquare(after) && !inSquare(d)) out.push({ kind: 'square', detail: '进入广场' })
+    return out
+  }
+  const conflict = (d: DeskColl, b: Record<string, unknown>) =>
+    typeof b.ifUpdatedAt === 'number' && b.ifUpdatedAt !== d.updatedAt
+  const applyFields = (d: DeskColl, b: Record<string, unknown>) => {
+    d.title = cleanTextMock(String(b.title ?? ''), false)
+    d.intro = cleanTextMock(String(b.intro ?? ''), true)
+    d.visibility = b.visibility as DeskColl['visibility']
+    d.distribute = b.distribute === true
+    d.originalDownload = b.originalDownload === true
+    d.license = (b.license as string | null) ?? null
+    d.aiDeclaration = (b.aiDeclaration as string | null) ?? null
+    d.coverPhotoId = (b.coverPhotoId as string | null) ?? null
+  }
+  const framesOf = (b: unknown) => (Array.isArray(b) ? b : (b as Record<string, unknown>).frames)
+
+  type DeskIO = {
+    reply: (status: number, body?: unknown) => Promise<void>
+    fail: (status: number, error: string) => Promise<void>
+    input: () => Record<string, unknown>
+  }
+  // Per request: concurrent desk requests must each answer their own route.
+  function deskRoute(io: DeskIO, id: string | undefined, sub: string, method: string, url: URL) {
+    const { reply: deskReply, fail: deskFail, input: deskInput } = io
+    if (id === undefined) {
+      if (method !== 'POST') return deskFail(404, '未找到。')
+      const b = deskInput()
+      const title = cleanTextMock(String(b.title ?? ''), false)
+      if ([...title].length < 1 || [...title].length > 120) return deskFail(400, '标题需为 1–120 个字符。')
+      const d = m.seedDesk({ id: `new${++created}`, title, license: (st.prefs.defaultLicense as string | null) ?? null, aiDeclaration: (st.prefs.defaultAiDeclaration as string | null) ?? null, distribute: true })
+      return deskReply(201, writeView(d))
+    }
+    const d = st.desk[id]!
+    if (sub === '' && method === 'GET') return deskReply(200, ownerRead(d))
+    if (sub === '' && method === 'PUT') {
+      const b = deskInput()
+      if (conflict(d, b)) return deskReply(409, { error: '这个合集在别处被修改过。', updatedAt: d.updatedAt })
+      applyFields(d, b)
+      d.updatedAt = ++clock
+      return deskReply(200, writeView(d))
+    }
+    if (sub === '' && method === 'DELETE') {
+      delete st.desk[id]
+      return deskReply(204)
+    }
+    if (sub === '/frames' && method === 'PUT') {
+      const b = deskInput()
+      if (!Array.isArray(b) && conflict(d, b)) return deskReply(409, { error: '这个合集在别处被修改过。', updatedAt: d.updatedAt })
+      const frames = framesOf(b)
+      const err = frameError(frames)
+      if (err) return deskFail(400, err)
+      d.frames = (frames as DeskColl['frames']).map((f) => ({ layout: f.layout, matteRatio: f.matteRatio ?? null, text: f.layout === 'text' ? cleanTextMock(String(f.text), true) : null, photoIds: f.photoIds ?? [] }))
+      const kept = photoSet(d)
+      for (const pid of Object.keys(d.overrides)) if (!kept.has(pid)) delete d.overrides[pid]
+      d.updatedAt = ++clock
+      return deskReply(200, writeView(d))
+    }
+    if (sub.startsWith('/overrides/') && method === 'PUT') {
+      const pid = decodeURIComponent(sub.slice('/overrides/'.length))
+      if (!photoSet(d).has(pid)) return deskFail(404, '照片不在该合集中。')
+      const b = deskInput()
+      const o = { publicFields: (b.publicFields as string[] | null | undefined) ?? null, histogramPublic: (b.histogramPublic as boolean | null | undefined) ?? null }
+      if (o.publicFields === null && o.histogramPublic === null) delete d.overrides[pid]
+      else d.overrides[pid] = o
+      d.updatedAt = ++clock
+      return deskReply(200, { collectionId: d.id, photoId: pid, ...o, updatedAt: d.updatedAt })
+    }
+    if (sub === '/exposure-check' && method === 'POST') {
+      const b = deskInput()
+      const after: DeskColl = JSON.parse(JSON.stringify(d))
+      if (b.collection) applyFields(after, b.collection as Record<string, unknown>)
+      if (b.frames) {
+        const err = frameError(b.frames)
+        if (err) return deskFail(400, err)
+        after.frames = b.frames as DeskColl['frames']
+      }
+      if (b.override) {
+        const o = b.override as { photoId: string; publicFields?: string[] | null; histogramPublic?: boolean | null }
+        const next = { publicFields: o.publicFields ?? null, histogramPublic: o.histogramPublic ?? null }
+        if (next.publicFields === null && next.histogramPublic === null) delete after.overrides[o.photoId]
+        else after.overrides[o.photoId] = next
+      }
+      const changes = exposureChanges(d, after)
+      return deskReply(200, { widens: changes.length > 0, changes })
+    }
+    if (sub === '/publish' && method === 'POST') {
+      if (d.frames.length === 0) return deskFail(400, '合集至少需要一帧才能发布。')
+      if (url.searchParams.get('dry_run') === '1') {
+        const ids = [...photoSet(d)]
+        const fields = new Set<string>()
+        let hist = false
+        for (const pid of ids) {
+          const e = effective(d, pid)
+          e.fields.forEach((k) => fields.add(k))
+          hist = hist || e.hist
+        }
+        return deskReply(200, {
+          photos: ids.length, publicFields: FIELD_ORDER.filter((k) => fields.has(k)), histogram: hist,
+          originalDownload: d.originalDownload, visibility: d.visibility, inSquare: d.visibility === 'public' && d.distribute,
+        })
+      }
+      d.status = 'published'
+      d.updatedAt = ++clock
+      return deskReply(200, writeView(d))
+    }
+    if (sub === '/unpublish' && method === 'POST') {
+      d.status = 'draft'
+      d.updatedAt = ++clock
+      return deskReply(200, writeView(d))
+    }
+    return deskFail(404, '未找到。')
+  }
 
   await page.route('**/api/**', async (route: Route) => {
     const req: Request = route.request()
@@ -496,6 +755,30 @@ export async function mockAccount(page: Page, opts: AccountOptions = {}): Promis
     // The draft is private: the backend answers 404 to anyone but its owner.
     const draft = path.match(/^\/api\/collections\/([^/]+)(\/neighbors)?$/)
     if (draft && draft[1] === MINE_DRAFT.id && method === 'GET' && st.user !== ME.id) return fail(404, '未找到。')
+
+
+    // --- Curation desk (internal/api/collections.go, photos.go, exposure_check.go) ---
+    const deskM = path.match(/^\/api\/collections(?:\/([^/]+))?(\/frames|\/overrides\/[^/]+|\/publish|\/unpublish|\/exposure-check)?$/)
+    if (deskM && (deskM[1] === undefined || st.desk[deskM[1]])) {
+      if (st.user !== ME.id) return fail(deskM[1] && method === 'GET' ? 404 : 401, deskM[1] && method === 'GET' ? '未找到。' : '请先登录。')
+      return deskRoute({ reply, fail, input }, deskM[1], deskM[2] ?? '', method, url)
+    }
+    const metaM = path.match(/^\/api\/photos\/([^/]+)$/)
+    if (metaM && method === 'PUT') {
+      if (st.user !== ME.id) return fail(401, '请先登录。')
+      const a = st.archive.find((x) => x.photo.id === metaM[1])
+      if (!a) return fail(404, '照片不存在。')
+      const b = input()
+      if (typeof b.title !== 'string' || typeof b.caption !== 'string') return fail(400, '请求格式无效。')
+      a.photo.title = cleanTextMock(b.title, false)
+      a.photo.caption = cleanTextMock(b.caption, true)
+      const bumped = Object.values(st.desk)
+        .filter((d) => d.frames.some((f) => f.photoIds.includes(a.photo.id)))
+        .sort((x, y) => (x.id < y.id ? -1 : 1))
+      const now = ++clock
+      for (const d of bumped) d.updatedAt = now
+      return reply(200, { ...a.photo, collections: bumped.map((d) => ({ id: d.id, updatedAt: d.updatedAt })) })
+    }
 
     // Everything below is the owner API.
     const owner = /^\/api\/(archive|uploads|photos|upload-prefs|profile)(\/|$)/.test(path)
