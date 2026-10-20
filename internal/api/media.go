@@ -228,6 +228,33 @@ func (s *server) originalDownload(w http.ResponseWriter, r *http.Request) (int, 
 	return 0, nil, errRedirected
 }
 
+// sourceRead is GET /api/photos/{id}/source: the owner of a ready photo
+// gets a 302 to a 5-minute presigned GET of the original, with no
+// attachment disposition so the tools can read the bytes in the browser.
+func (s *server) sourceRead(w http.ResponseWriter, r *http.Request) (int, any, error) {
+	id, err := pathID(r)
+	if err != nil {
+		return 0, nil, err
+	}
+	ctx := r.Context()
+	viewer := identity.User(ctx)
+	var owner, status, key string
+	err = s.db.QueryRowContext(ctx, `SELECT owner_id,status,original_key FROM photos WHERE id=?`, id).
+		Scan(&owner, &status, &key)
+	if errors.Is(err, sql.ErrNoRows) || viewer == "" || viewer != owner || status != statusReady {
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return 0, nil, err
+		}
+		return 0, nil, httperr.Fail(http.StatusNotFound, msgPhotoAbsent)
+	}
+	loc, err := s.store.PresignGet(ctx, s.cfg.BucketOriginals, key, mediaTTL, "")
+	if err != nil {
+		return 0, nil, err
+	}
+	redirect(w, loc)
+	return 0, nil, errRedirected
+}
+
 // redirect sends a bare 302 with no body. http.Redirect would add an HTML
 // body echoing the presigned URL; the Location header is all a client needs.
 func redirect(w http.ResponseWriter, loc string) {

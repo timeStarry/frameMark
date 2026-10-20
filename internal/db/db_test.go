@@ -38,8 +38,8 @@ func TestMigrateCreatesTables(t *testing.T) {
 	if err := d.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('users','photos','collections','frames','jobs')`).Scan(&n); err != nil || n != 5 {
 		t.Fatalf("expected 5 tables, got %d err=%v", n, err)
 	}
-	if uv := userVersion(t, d); uv != 2 {
-		t.Fatalf("expected user_version 2, got %d", uv)
+	if uv := userVersion(t, d); uv != 3 {
+		t.Fatalf("expected user_version 3, got %d", uv)
 	}
 }
 
@@ -50,7 +50,7 @@ func TestMigrateCreatesEverySpecTable(t *testing.T) {
 		"profiles", "upload_prefs",
 		"photos", "photo_exif", "photo_histograms",
 		"collections", "frames", "frame_photos", "photo_overrides",
-		"albums", "album_items", "attributions",
+		"albums", "album_items", "attributions", "photo_sources",
 		"jobs",
 	}
 	for _, name := range tables {
@@ -110,8 +110,8 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	if err := db.Migrate(d); err != nil {
 		t.Fatalf("second Migrate: %v", err)
 	}
-	if uv := userVersion(t, d); uv != 2 {
-		t.Fatalf("expected user_version 2, got %d", uv)
+	if uv := userVersion(t, d); uv != 3 {
+		t.Fatalf("expected user_version 3, got %d", uv)
 	}
 }
 
@@ -331,5 +331,51 @@ func TestMigrateAddsTakenOffset(t *testing.T) {
 		if _, err := d.Exec(`INSERT OR REPLACE INTO photo_exif(photo_id,taken_offset_min) VALUES('p',?)`, v); err == nil {
 			t.Errorf("offset %d accepted", v)
 		}
+	}
+}
+
+func TestMigrateAddsToolOutput(t *testing.T) {
+	d := openMigrated(t)
+	exec := func(q string, args ...any) error { _, err := d.Exec(q, args...); return err }
+	if err := exec(`INSERT INTO users(id,email,password,created_at) VALUES('u','u@x.test','!',1)`); err != nil {
+		t.Fatal(err)
+	}
+	photo := func(id string) error {
+		return exec(`INSERT INTO photos(id,owner_id,status,original_key,original_sha256,original_bytes,format,
+			public_fields,histogram_public,original_download,created_at,updated_at)
+			VALUES(?,'u','ready','k'||?,?,1,'jpeg','[]',0,0,1,1)`, id, id, id)
+	}
+	for _, id := range []string{"src", "out"} {
+		if err := photo(id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var v int
+	if err := d.QueryRow(`SELECT tool_output FROM photos WHERE id='src'`).Scan(&v); err != nil || v != 0 {
+		t.Fatalf("default tool_output %d %v", v, err)
+	}
+	if err := exec(`UPDATE photos SET tool_output=2 WHERE id='out'`); err == nil {
+		t.Fatal("tool_output=2 accepted")
+	}
+	if err := exec(`UPDATE photos SET tool_output=1 WHERE id='out'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := exec(`INSERT INTO photo_sources(photo_id,source_id,position) VALUES('out','src',0)`); err != nil {
+		t.Fatal(err)
+	}
+	// source_id is not a foreign key: deleting the source keeps the output and its row.
+	if err := exec(`DELETE FROM photos WHERE id='src'`); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := d.QueryRow(`SELECT count(*) FROM photo_sources WHERE photo_id='out'`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("sources after source delete: %d %v", n, err)
+	}
+	// Deleting the output cascades its source rows.
+	if err := exec(`DELETE FROM photos WHERE id='out'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.QueryRow(`SELECT count(*) FROM photo_sources`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("sources after output delete: %d %v", n, err)
 	}
 }

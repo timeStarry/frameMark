@@ -558,6 +558,114 @@ func TestProcessPhotoWatermark(t *testing.T) {
 	}
 }
 
+// shadedJPEG is a small JPEG without EXIF whose pixels (and so hash) vary with shade.
+func shadedJPEG(t *testing.T, shade uint8) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, 32, 24))
+	for y := 0; y < 24; y++ {
+		for x := 0; x < 32; x++ {
+			img.Set(x, y, color.RGBA{shade * 40, uint8(x * 8), uint8(y * 10), 255})
+		}
+	}
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 90}); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func TestProcessPhotoSkipsWatermarkForToolOutput(t *testing.T) {
+	e := newEnv(t, nil)
+	e.prefs("off", wmJSON)
+	body := testJPEG(t, false)
+	id := e.addPhoto("processing", body)
+	e.exec(`UPDATE photos SET tool_output=1 WHERE id=?`, id)
+	e.enqueue("process_photo", map[string]string{"photoId": id})
+	e.runOne()
+	p, _ := e.photo(id)
+	if p.status != "ready" {
+		t.Fatalf("status %s", p.status)
+	}
+	hash := media.DerivedHash(sum(body), "salt0")
+	assertDerived(t, e, id, hash)
+	if _, ok := e.st.get(derB, "d/"+id+"/"+hash+"-wm"+wmHash()+"/w2400.jpg"); ok {
+		t.Fatal("watermark variant written for tool output")
+	}
+	for _, k := range e.st.keys(derB, "d/"+id+"/") {
+		if strings.Contains(k, "-wm") {
+			t.Fatalf("watermark variant written: %s", k)
+		}
+	}
+}
+
+func TestProcessPhotoCopiesSingleSourceEXIF(t *testing.T) {
+	e := newEnv(t, nil)
+	e.prefs("archive", "")
+	src := e.addPhoto("ready", []byte("src original"))
+	e.exec(`INSERT INTO photo_exif(photo_id,camera_make,camera_model,lens_model,focal_length_mm,focal_length_35mm,
+		aperture,exposure_time,exposure_seconds,iso,exposure_bias,taken_at,taken_offset_min)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		src, "FUJIFILM", "X-T5", "XF23mmF1.4 R LM WR", 23.0, 35.0, 1.4, "1/250", 0.004, 400, -0.3, t0, int64(480))
+	e.exec(`UPDATE photos SET latitude=35.0,longitude=139.0 WHERE id=?`, src)
+
+	id := e.addPhoto("processing", shadedJPEG(t, 1))
+	e.exec(`INSERT INTO photo_sources(photo_id,source_id,position) VALUES(?,?,0)`, id, src)
+	e.enqueue("process_photo", map[string]string{"photoId": id})
+	e.runOne()
+
+	p, _ := e.photo(id)
+	if p.status != "ready" {
+		t.Fatalf("status %s", p.status)
+	}
+	if p.lat.Valid || p.lon.Valid {
+		t.Fatalf("location copied: %v %v", p.lat, p.lon)
+	}
+	var mk, model, lens, shutter sql.NullString
+	var focal, focal35, ap, secs, bias sql.NullFloat64
+	var iso, taken, offset sql.NullInt64
+	if err := e.d.QueryRow(`SELECT camera_make,camera_model,lens_model,focal_length_mm,focal_length_35mm,aperture,
+		exposure_time,exposure_seconds,iso,exposure_bias,taken_at,taken_offset_min FROM photo_exif WHERE photo_id=?`, id).
+		Scan(&mk, &model, &lens, &focal, &focal35, &ap, &shutter, &secs, &iso, &bias, &taken, &offset); err != nil {
+		t.Fatal(err)
+	}
+	if mk.String != "FUJIFILM" || model.String != "X-T5" || lens.String != "XF23mmF1.4 R LM WR" ||
+		focal.Float64 != 23.0 || iso.Int64 != 400 || shutter.String != "1/250" || taken.Int64 != t0 || offset.Int64 != 480 {
+		t.Fatalf("copied exif %+v %+v %+v %v %v %v %v %v", mk, model, lens, focal, iso, shutter, taken, offset)
+	}
+
+	// Two sources keep the extracted EXIF (the canvas JPEG has none).
+	a, b := e.addPhoto("ready", []byte("a original")), e.addPhoto("ready", []byte("b original"))
+	for _, s := range []string{a, b} {
+		e.exec(`INSERT INTO photo_exif(photo_id,camera_make,iso) VALUES(?,'Canon',100)`, s)
+	}
+	id2 := e.addPhoto("processing", shadedJPEG(t, 2))
+	e.exec(`INSERT INTO photo_sources(photo_id,source_id,position) VALUES(?,?,0),(?,?,1)`, id2, a, id2, b)
+	e.enqueue("process_photo", map[string]string{"photoId": id2})
+	e.runOne()
+	var mk2 sql.NullString
+	var iso2 sql.NullInt64
+	if err := e.d.QueryRow(`SELECT camera_make,iso FROM photo_exif WHERE photo_id=?`, id2).Scan(&mk2, &iso2); err != nil {
+		t.Fatal(err)
+	}
+	if mk2.Valid || iso2.Valid {
+		t.Fatalf("two sources copied exif: %v %v", mk2, iso2)
+	}
+
+	// A missing source keeps the extracted EXIF.
+	id3 := e.addPhoto("processing", testJPEG(t, true))
+	e.exec(`INSERT INTO photo_sources(photo_id,source_id,position) VALUES(?,?,0)`, id3, newID())
+	e.enqueue("process_photo", map[string]string{"photoId": id3})
+	e.runOne()
+	var mk3 sql.NullString
+	var iso3 sql.NullInt64
+	if err := e.d.QueryRow(`SELECT camera_make,iso FROM photo_exif WHERE photo_id=?`, id3).Scan(&mk3, &iso3); err != nil {
+		t.Fatal(err)
+	}
+	if mk3.String != "Sony" || iso3.Int64 != 400 {
+		t.Fatalf("missing source overwrote extracted exif: %v %v", mk3, iso3)
+	}
+}
+
 func TestProcessPhotoErrWatermarkFallsBack(t *testing.T) {
 	e := newEnv(t, nil)
 	e.prefs("off", wmJSON)

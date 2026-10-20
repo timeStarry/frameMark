@@ -42,6 +42,10 @@ const (
 	msgIncomplete  = "上传未完成。"
 	msgVerifyFail  = "上传校验失败，请重新上传。"
 	msgConflict    = "同一文件正在上传，请稍后重试。"
+
+	msgUploadTitle   = "标题需为 0–120 个字符。"
+	msgSourceInvalid = "来源照片无效。"
+	maxSources       = 12
 )
 
 // contentTypes maps the accepted upload content types to photos.format.
@@ -107,11 +111,17 @@ type photoView struct {
 
 // --- POST /api/uploads ---
 
+// createInput is the POST /api/uploads body. The tool fields are raw so an
+// explicit null can be told apart from an omitted field (both are optional,
+// but null is refused).
 type createInput struct {
-	Filename    string `json:"filename"`
-	Bytes       int64  `json:"bytes"`
-	SHA256      string `json:"sha256"`
-	ContentType string `json:"contentType"`
+	Filename    string          `json:"filename"`
+	Bytes       int64           `json:"bytes"`
+	SHA256      string          `json:"sha256"`
+	ContentType string          `json:"contentType"`
+	Title       json.RawMessage `json:"title"`
+	DerivedFrom json.RawMessage `json:"derivedFrom"`
+	ToolOutput  json.RawMessage `json:"toolOutput"`
 }
 
 func (s *server) createUpload(w http.ResponseWriter, r *http.Request) (int, any, error) {
@@ -136,11 +146,14 @@ func (s *server) createUpload(w http.ResponseWriter, r *http.Request) (int, any,
 	if !validFilename(in.Filename) {
 		return 0, nil, httperr.Fail(http.StatusBadRequest, msgFilename)
 	}
-	title := titleFromFilename(in.Filename)
+	title, sources, toolOut, err := parseToolFields(in)
+	if err != nil {
+		return 0, nil, err
+	}
 	ctx := r.Context()
 	now := s.now()
 
-	id, dup, err := s.reserve(ctx, owner, in, format, title, now)
+	id, dup, err := s.reserve(ctx, owner, in, format, title, sources, toolOut, now)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -172,7 +185,7 @@ func (s *server) createUpload(w http.ResponseWriter, r *http.Request) (int, any,
 // The dedup and quota check-then-write is race-free because db.Open opens
 // every transaction with _txlock=immediate (BEGIN IMMEDIATE takes the write
 // lock up front) and caps the pool at one connection; either alone suffices.
-func (s *server) reserve(ctx context.Context, owner string, in createInput, format, title string, now int64) (id string, dup bool, err error) {
+func (s *server) reserve(ctx context.Context, owner string, in createInput, format, title string, sources []string, toolOut bool, now int64) (id string, dup bool, err error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return "", false, err
@@ -187,7 +200,17 @@ func (s *server) reserve(ctx context.Context, owner string, in createInput, form
 	case err != nil:
 		return "", false, err
 	case status == statusReady || status == statusProcessing:
-		return id, true, nil
+		return id, true, nil // the tool fields are ignored on a duplicate
+	}
+
+	// Sources are checked inside the tx so a source cannot change state
+	// between the check and the photo_sources write.
+	if err := checkSources(ctx, tx, owner, sources); err != nil {
+		return "", false, err
+	}
+	tool := 0
+	if toolOut {
+		tool = 1
 	}
 
 	// An uploading row already counts toward the quota; a new or failed one would add one.
@@ -206,7 +229,7 @@ func (s *server) reserve(ctx context.Context, owner string, in createInput, form
 		return "", false, err
 	}
 	if id != "" {
-		if err := resetForReuse(ctx, tx, id, status, in, format, title, fields, hist, orig, now); err != nil {
+		if err := resetForReuse(ctx, tx, id, status, in, format, title, fields, hist, orig, tool, now); err != nil {
 			return "", false, err
 		}
 	} else {
@@ -216,9 +239,9 @@ func (s *server) reserve(ctx context.Context, owner string, in createInput, form
 		}
 		id = u.String()
 		_, err = tx.ExecContext(ctx, `INSERT INTO photos(id,owner_id,status,original_key,original_sha256,original_bytes,format,
-			title,public_fields,histogram_public,original_download,derived_salt,created_at,updated_at)
-			VALUES(?,?,'uploading',?,?,?,?,?,?,?,?,?,?,?)`,
-			id, owner, originalKey(owner, id), in.SHA256, in.Bytes, format, title, fields, hist, orig, newSalt(), now, now)
+			title,public_fields,histogram_public,original_download,tool_output,derived_salt,created_at,updated_at)
+			VALUES(?,?,'uploading',?,?,?,?,?,?,?,?,?,?,?,?)`,
+			id, owner, originalKey(owner, id), in.SHA256, in.Bytes, format, title, fields, hist, orig, tool, newSalt(), now, now)
 		if isUniqueViolation(err) {
 			return "", false, httperr.Fail(http.StatusConflict, msgConflict)
 		}
@@ -226,27 +249,102 @@ func (s *server) reserve(ctx context.Context, owner string, in createInput, form
 			return "", false, err
 		}
 	}
+	if err := insertSources(ctx, tx, id, sources); err != nil {
+		return "", false, err
+	}
 	return id, false, tx.Commit()
 }
 
 // resetForReuse returns a failed or uploading row to the state of a fresh
 // upload: every derived column (dimensions, location, derived_hash, error)
 // is cleared, the prefs snapshot is retaken, and photo_exif and
-// photo_histograms rows are deleted so reprocessing starts clean. The id,
-// original_key, created_at and derived_salt are kept.
-func resetForReuse(ctx context.Context, tx *sql.Tx, id, status string, in createInput, format, title, fields string, hist, orig int, now int64) error {
+// photo_histograms rows are deleted so reprocessing starts clean. tool_output
+// and photo_sources are replaced by the new request's (sources are written by
+// the caller). The id, original_key, created_at and derived_salt are kept.
+func resetForReuse(ctx context.Context, tx *sql.Tx, id, status string, in createInput, format, title, fields string, hist, orig, tool int, now int64) error {
 	res, err := tx.ExecContext(ctx, `UPDATE photos SET status='uploading',error=NULL,original_bytes=?,format=?,title=?,
 		width=NULL,height=NULL,latitude=NULL,longitude=NULL,derived_hash=NULL,
-		public_fields=?,histogram_public=?,original_download=?,updated_at=?
-		WHERE id=? AND status=?`, in.Bytes, format, title, fields, hist, orig, now, id, status)
+		public_fields=?,histogram_public=?,original_download=?,tool_output=?,updated_at=?
+		WHERE id=? AND status=?`, in.Bytes, format, title, fields, hist, orig, tool, now, id, status)
 	if err != nil {
 		return err
 	}
 	if n, _ := res.RowsAffected(); n != 1 {
 		return httperr.Fail(http.StatusConflict, msgConflict)
 	}
-	for _, q := range []string{`DELETE FROM photo_exif WHERE photo_id=?`, `DELETE FROM photo_histograms WHERE photo_id=?`} {
+	for _, q := range []string{
+		`DELETE FROM photo_exif WHERE photo_id=?`,
+		`DELETE FROM photo_histograms WHERE photo_id=?`,
+		`DELETE FROM photo_sources WHERE photo_id=?`,
+	} {
 		if _, err := tx.ExecContext(ctx, q, id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// parseToolFields decodes the optional title, derivedFrom and toolOutput
+// fields. An omitted or empty (after cleanText) title falls back to the
+// filename; an explicit null in any of them is a 400.
+func parseToolFields(in createInput) (title string, sources []string, toolOut bool, err error) {
+	bad := httperr.Fail(http.StatusBadRequest, msgBadJSON)
+	title = titleFromFilename(in.Filename)
+	if in.Title != nil {
+		var s string
+		if isJSONNull(in.Title) || json.Unmarshal(in.Title, &s) != nil {
+			return "", nil, false, bad
+		}
+		s = cleanText(s, false)
+		if utf8.RuneCountInString(s) > maxTitleRunes {
+			return "", nil, false, httperr.Fail(http.StatusBadRequest, msgUploadTitle)
+		}
+		if s != "" {
+			title = s
+		}
+	}
+	if in.DerivedFrom != nil && (isJSONNull(in.DerivedFrom) || json.Unmarshal(in.DerivedFrom, &sources) != nil) {
+		return "", nil, false, bad
+	}
+	if in.ToolOutput != nil && (isJSONNull(in.ToolOutput) || json.Unmarshal(in.ToolOutput, &toolOut) != nil) {
+		return "", nil, false, bad
+	}
+	return title, sources, toolOut, nil
+}
+
+func isJSONNull(raw json.RawMessage) bool { return string(raw) == "null" }
+
+// checkSources requires ≤ maxSources distinct canonical ids, each the
+// owner's own ready photo.
+func checkSources(ctx context.Context, tx *sql.Tx, owner string, ids []string) error {
+	invalid := httperr.Fail(http.StatusBadRequest, msgSourceInvalid)
+	if len(ids) > maxSources {
+		return invalid
+	}
+	seen := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		if !canonicalUUID(id) || seen[id] {
+			return invalid
+		}
+		seen[id] = true
+		var st string
+		err := tx.QueryRowContext(ctx, `SELECT status FROM photos WHERE id=? AND owner_id=?`, id, owner).Scan(&st)
+		if errors.Is(err, sql.ErrNoRows) {
+			return invalid
+		}
+		if err != nil {
+			return err
+		}
+		if st != statusReady {
+			return invalid
+		}
+	}
+	return nil
+}
+
+func insertSources(ctx context.Context, tx *sql.Tx, photoID string, ids []string) error {
+	for i, src := range ids {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO photo_sources(photo_id,source_id,position) VALUES(?,?,?)`, photoID, src, i); err != nil {
 			return err
 		}
 	}

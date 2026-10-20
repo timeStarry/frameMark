@@ -540,6 +540,9 @@ func (w *Worker) processPhoto(ctx context.Context, raw json.RawMessage) error {
 	if err != nil {
 		return err
 	}
+	if row.toolOutput {
+		wm = nil
+	}
 	res, err := w.runProcess(body, media.Options{LocationMode: mode, MaxPixels: w.cfg.MaxPixels, Salt: row.salt, Watermark: wm})
 	if err != nil {
 		if msg, ok := permanentMedia(err); ok {
@@ -669,6 +672,9 @@ func (w *Worker) commitProcess(ctx context.Context, id string, res *media.Result
 	if err := upsertEXIF(ctx, tx, id, res.EXIF); err != nil {
 		return 0, err
 	}
+	if err := copySourceEXIF(ctx, tx, id); err != nil {
+		return 0, err
+	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO photo_histograms(photo_id,bins) VALUES(?,?)
 		ON CONFLICT(photo_id) DO UPDATE SET bins=excluded.bins`, id, media.EncodeHistogram(res.Histogram)); err != nil {
 		return 0, err
@@ -699,6 +705,30 @@ func upsertEXIF(ctx context.Context, tx *sql.Tx, id string, e media.EXIF) error 
 	return err
 }
 
+// copySourceEXIF overwrites the photo's photo_exif row with its source's
+// when it has exactly one photo_sources row and that source still has a
+// photo_exif row; otherwise the extracted row stays. Every photo_exif column
+// is copied. Location lives on photos (latitude/longitude) and is never copied.
+func copySourceEXIF(ctx context.Context, tx *sql.Tx, id string) error {
+	var n int
+	var src string
+	err := tx.QueryRowContext(ctx, `SELECT count(*), COALESCE(MIN(source_id),'') FROM photo_sources WHERE photo_id=?`, id).Scan(&n, &src)
+	if err != nil || n != 1 {
+		return err
+	}
+	// INSERT … SELECT writes nothing when the source (or its EXIF) is gone.
+	_, err = tx.ExecContext(ctx, `INSERT INTO photo_exif(photo_id,camera_make,camera_model,lens_model,
+		focal_length_mm,focal_length_35mm,aperture,exposure_time,exposure_seconds,iso,exposure_bias,taken_at,taken_offset_min)
+		SELECT ?,camera_make,camera_model,lens_model,focal_length_mm,focal_length_35mm,aperture,exposure_time,
+			exposure_seconds,iso,exposure_bias,taken_at,taken_offset_min FROM photo_exif WHERE photo_id=?
+		ON CONFLICT(photo_id) DO UPDATE SET camera_make=excluded.camera_make,camera_model=excluded.camera_model,
+		lens_model=excluded.lens_model,focal_length_mm=excluded.focal_length_mm,focal_length_35mm=excluded.focal_length_35mm,
+		aperture=excluded.aperture,exposure_time=excluded.exposure_time,exposure_seconds=excluded.exposure_seconds,
+		iso=excluded.iso,exposure_bias=excluded.exposure_bias,taken_at=excluded.taken_at,
+		taken_offset_min=excluded.taken_offset_min`, id, src)
+	return err
+}
+
 func nullStr(s string) any {
 	if s == "" {
 		return nil
@@ -721,14 +751,17 @@ func nullI(p *int64) any {
 type photoMeta struct {
 	owner, status, key, sha, salt, hash string
 	format                              string
+	toolOutput                          bool
 }
 
 func (w *Worker) loadPhoto(ctx context.Context, id string) (photoMeta, error) {
 	var m photoMeta
 	var hash sql.NullString
-	err := w.db.QueryRowContext(ctx, `SELECT owner_id,status,original_key,original_sha256,derived_salt,COALESCE(derived_hash,''),format
-		FROM photos WHERE id=?`, id).Scan(&m.owner, &m.status, &m.key, &m.sha, &m.salt, &hash, &m.format)
+	var tool int
+	err := w.db.QueryRowContext(ctx, `SELECT owner_id,status,original_key,original_sha256,derived_salt,COALESCE(derived_hash,''),format,tool_output
+		FROM photos WHERE id=?`, id).Scan(&m.owner, &m.status, &m.key, &m.sha, &m.salt, &hash, &m.format, &tool)
 	m.hash = hash.String
+	m.toolOutput = tool == 1
 	return m, err
 }
 
