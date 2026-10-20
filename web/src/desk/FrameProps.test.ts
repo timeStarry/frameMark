@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { mount, type VueWrapper } from '@vue/test-utils'
 import FrameProps from './FrameProps.vue'
 import { deskPhoto, fakeDesk } from './deskTestUtils'
@@ -38,7 +38,13 @@ describe('FrameProps', () => {
     const r = w.find('input[type="range"]')
     expect(r.attributes()).toMatchObject({ min: '0.5', max: '0.95', step: '0.05' })
     expect(w.find('output').text()).toBe('0.80')
-    await r.setValue('0.6')
+    // Dragging moves the output only; releasing commits one edit.
+    ;(r.element as HTMLInputElement).value = '0.6'
+    await r.trigger('input')
+    expect(w.find('output').text()).toBe('0.60')
+    expect(mocks.applySeq).not.toHaveBeenCalled()
+    await r.trigger('change')
+    expect(mocks.applySeq).toHaveBeenCalledTimes(1)
     expect(lastSeq(mocks.applySeq)[0]!.matteRatio).toBeCloseTo(0.6)
   })
 
@@ -47,7 +53,42 @@ describe('FrameProps', () => {
     const { w, mocks } = setup(s)
     expect(w.text()).toContain('2 / 2000')
     await w.find('textarea').setValue('新的')
+    await w.find('textarea').trigger('blur')
     expect(lastSeq(mocks.applySeq)[0]!.text).toBe('新的')
+  })
+
+  it('text: typing is one edit after an 800ms pause, not one per keystroke', async () => {
+    vi.useFakeTimers()
+    try {
+      const { w, mocks } = setup(setText(insertText([], 0), 0, ''))
+      const ta = w.find('textarea')
+      for (const v of ['海', '海边', '海边的', '海边的风']) await ta.setValue(v)
+      expect(mocks.applySeq).not.toHaveBeenCalled()
+      expect(w.text()).toContain('4 / 2000')
+      vi.advanceTimersByTime(799)
+      expect(mocks.applySeq).not.toHaveBeenCalled()
+      vi.advanceTimersByTime(1)
+      expect(mocks.applySeq).toHaveBeenCalledTimes(1)
+      expect(lastSeq(mocks.applySeq)[0]!.text).toBe('海边的风')
+      expect(mocks.applySeq.mock.calls[0]![1]).toBe('structure')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('text: unmounting commits what was typed; an unchanged text commits nothing', async () => {
+    const { w, mocks } = setup(setText(insertText([], 0), 0, '原文'))
+    await w.find('textarea').trigger('blur')
+    expect(mocks.applySeq).not.toHaveBeenCalled()
+    await w.find('textarea').setValue('改过')
+    w.unmount()
+    expect(mocks.applySeq).toHaveBeenCalledTimes(1)
+    expect(lastSeq(mocks.applySeq)[0]!.text).toBe('改过')
+  })
+
+  it('text: stays editable while locked (text never widens exposure)', () => {
+    const { w } = setup(setText(insertText([], 0), 0, ''), 0, true)
+    expect((w.find('textarea').element as HTMLTextAreaElement).disabled).toBe(false)
   })
 
   it('pair: 拆成单张 splits the frame', async () => {

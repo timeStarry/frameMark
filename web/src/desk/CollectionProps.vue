@@ -47,7 +47,10 @@ const deleting = ref(false)
 const typed = ref('')
 const busy = ref(false)
 const deleteError = ref('')
-const canDelete = computed(() => cleanText(typed.value) === cleanText(f.value.title))
+// The confirmation word is the title, or 删除 when the title is empty, so an
+// empty box can never confirm.
+const confirmWord = computed(() => cleanText(f.value.title) || '删除')
+const canDelete = computed(() => cleanText(typed.value) === confirmWord.value)
 
 function openDelete() {
   typed.value = ''
@@ -142,7 +145,7 @@ async function confirmDelete() {
       @cancel="cancelDelete"
     >
       <div class="typed">
-        <label :for="`${uid}-typed`">输入合集标题「{{ f.title }}」以确认</label>
+        <label :for="`${uid}-typed`">{{ cleanText(f.title) ? `输入合集标题「${f.title}」以确认` : '输入「删除」以确认' }}</label>
         <input :id="`${uid}-typed`" v-model="typed" type="text" autocomplete="off" />
       </div>
     </ConfirmDialog>

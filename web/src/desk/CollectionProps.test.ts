@@ -96,6 +96,21 @@ describe('CollectionProps', () => {
     expect(w.emitted('deleted')).toHaveLength(1)
   })
 
+  it('an untitled collection needs 删除 typed; an empty box never confirms', async () => {
+    const { w, mocks } = setup({ title: '' })
+    await w.findAll('button').find((b) => b.text() === '删除合集')!.trigger('click')
+    await flushPromises()
+    const dialog = w.find('dialog')
+    expect(dialog.text()).toContain('输入「删除」以确认')
+    const confirm = dialog.findAll('button').find((b) => b.text() === '删除')!
+    expect((confirm.element as HTMLButtonElement).disabled).toBe(true)
+    await confirm.trigger('click')
+    await flushPromises()
+    expect(mocks.remove).not.toHaveBeenCalled()
+    await dialog.find('input').setValue('删除')
+    expect((confirm.element as HTMLButtonElement).disabled).toBe(false)
+  })
+
   it('shows the error when delete fails', async () => {
     const { w, mocks, errorMessage } = setup()
     mocks.remove.mockResolvedValue(false)

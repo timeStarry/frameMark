@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // One frame's properties in the desk panel (spec §4.4): layout, matte ratio,
 // text and splitting a pair. Every edit is a structural applySeq.
-import { computed, useId } from 'vue'
+import { computed, onBeforeUnmount, ref, useId, watch } from 'vue'
 import type { FrameLayout } from '../api/types'
 import { LAYOUT_LABEL } from './labels'
 import { MATTE_DEFAULT, MATTE_MAX, MATTE_MIN, MAX_TEXT, allowedLayouts, cleanText, setLayout, setMatte, setText, split } from './sequence'
@@ -13,14 +13,59 @@ const uid = useId()
 const LAYOUTS: FrameLayout[] = ['full', 'matted', 'pair', 'text']
 const frame = computed(() => props.desk.seq.value[props.index] ?? null)
 const allowed = computed(() => (frame.value ? allowedLayouts(frame.value) : []))
-const ratio = computed(() => frame.value?.matteRatio ?? MATTE_DEFAULT)
-const textLen = computed(() => [...cleanText(frame.value?.text ?? '')].length)
-
 const apply = (next: ReturnType<typeof setLayout>) => props.desk.applySeq(next, 'structure')
 const onLayout = (l: FrameLayout) => apply(setLayout(props.desk.seq.value, props.index, l))
-const onMatte = (e: Event) => apply(setMatte(props.desk.seq.value, props.index, Number((e.target as HTMLInputElement).value)))
-const onText = (e: Event) => apply(setText(props.desk.seq.value, props.index, (e.target as HTMLTextAreaElement).value))
 const onSplit = () => apply(split(props.desk.seq.value, props.index))
+
+// Matte: the output follows the thumb; the edit (one undo step, one save)
+// lands when the slider is released.
+const ratioDraft = ref<number | null>(null)
+const ratio = computed(() => ratioDraft.value ?? frame.value?.matteRatio ?? MATTE_DEFAULT)
+const onMatteInput = (e: Event) => {
+  ratioDraft.value = Number((e.target as HTMLInputElement).value)
+}
+const onMatteChange = (e: Event) => {
+  ratioDraft.value = null
+  apply(setMatte(props.desk.seq.value, props.index, Number((e.target as HTMLInputElement).value)))
+}
+
+// Text: typing stays local and commits after a pause or on blur, so a
+// sentence is one undo step and one save rather than one per keystroke
+// (spec §4.5 field debounce). Text never widens exposure, so it stays
+// editable while a check is in flight; useDesk queues the commit.
+const TEXT_IDLE_MS = 800
+const textDraft = ref<string | null>(null)
+const text = computed(() => textDraft.value ?? frame.value?.text ?? '')
+const textLen = computed(() => [...cleanText(text.value)].length)
+let textTimer: ReturnType<typeof setTimeout> | null = null
+// The frame the draft belongs to; a commit always targets it, even if the
+// panel has moved on to another frame since.
+let draftKey: string | null = null
+
+function commitText() {
+  if (textTimer) clearTimeout(textTimer)
+  textTimer = null
+  const value = textDraft.value
+  const key = draftKey
+  textDraft.value = null
+  draftKey = null
+  if (value === null || key === null) return
+  const seq = props.desk.seq.value
+  const at = seq.findIndex((f) => f.key === key)
+  if (at < 0 || seq[at]!.layout !== 'text' || seq[at]!.text === value) return
+  apply(setText(seq, at, value))
+}
+
+const onTextInput = (e: Event) => {
+  if (draftKey === null) draftKey = frame.value?.key ?? null
+  textDraft.value = (e.target as HTMLTextAreaElement).value
+  if (textTimer) clearTimeout(textTimer)
+  textTimer = setTimeout(commitText, TEXT_IDLE_MS)
+}
+
+// Switching frames or closing the panel never drops what was typed.
+watch(() => frame.value?.key, commitText)
+onBeforeUnmount(commitText)
 </script>
 
 <template>
@@ -50,14 +95,22 @@ const onSplit = () => apply(split(props.desk.seq.value, props.index))
         step="0.05"
         :value="ratio"
         :disabled="locked"
-        @input="onMatte"
+        @input="onMatteInput"
+        @change="onMatteChange"
       />
       <output :for="`${uid}-ratio`">{{ ratio.toFixed(2) }}</output>
     </div>
 
     <div v-if="frame.layout === 'text'" class="col">
       <label :for="`${uid}-text`">文字</label>
-      <textarea :id="`${uid}-text`" rows="6" :value="frame.text ?? ''" :disabled="locked" :aria-describedby="`${uid}-count`" @input="onText" />
+      <textarea
+        :id="`${uid}-text`"
+        rows="6"
+        :value="text"
+        :aria-describedby="`${uid}-count`"
+        @input="onTextInput"
+        @blur="commitText"
+      />
       <p :id="`${uid}-count`" class="count" :class="{ over: textLen > MAX_TEXT }">{{ textLen }} / {{ MAX_TEXT }}</p>
     </div>
 
