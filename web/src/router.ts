@@ -35,7 +35,9 @@ export function createAppRouter(history: RouterHistory = createWebHistory()): Ro
       { path: '/', name: 'square', component: () => import('./routes/SquareRoute.vue') },
       { path: '/u/:id', name: 'user', component: () => import('./routes/UserRoute.vue'), props: true },
       { path: '/a/:id', name: 'album', component: () => import('./routes/AlbumRoute.vue'), props: true },
-      { path: '/tools', name: 'tools', component: () => import('./routes/Placeholder.vue') },
+      { path: '/tools', name: 'tools', component: () => import('./routes/ToolsRoute.vue') },
+      { path: '/tools/frame', name: 'frame-tool', component: () => import('./tools/FrameTool.vue') },
+      { path: '/tools/collage', name: 'collage-tool', component: () => import('./tools/CollageTool.vue') },
       { path: '/login', name: 'login', component: () => import('./me/LoginRoute.vue') },
       {
         path: '/me',

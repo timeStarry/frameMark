@@ -28,7 +28,7 @@ describe('router', () => {
     const r = router.resolve('/tools')
     const loader = r.matched[0]!.components!.default as () => Promise<{ default: { __name?: string } }>
     const mod = await loader()
-    expect(mod.default.__name).toBe('Placeholder')
+    expect(mod.default.__name).toBe('ToolsRoute')
   })
 
   it('resolves /login and the /me workspace lazily', async () => {
