@@ -4,12 +4,16 @@ import { onMounted, reactive, ref, toRaw, watch } from 'vue'
 import { usePageHeading } from '../me/pageHeading'
 import { collageDefaults, type CollageDoc } from './engine/collageDoc'
 import { preflight } from './engine/preflight'
+import type { OwnerPhoto } from '../api/types'
 import { decode, type DecodedImage } from './engine/decode'
 import { collageTarget, renderCollage } from './engine/render-collage'
 import { PreviewCache } from './engine/previewCache'
 import { LIMITS, type Size } from './engine/limits'
 import { cells } from './engine/geometry'
 import { useTool } from './useTool'
+import { session } from '../api/session'
+import ArchivePicker from './ArchivePicker.vue'
+import SaveToArchive from './SaveToArchive.vue'
 import ToolShell from './ToolShell.vue'
 import RangeField from './controls/RangeField.vue'
 import ColorField from './controls/ColorField.vue'
@@ -135,6 +139,34 @@ function onKeydown(e: KeyboardEvent) {
 }
 
 const d = tool.doc
+const picking = ref(false)
+const saving = ref(false)
+const savedBlob = ref<Blob | null>(null)
+const savedTitle = ref('')
+
+async function onPick(photos: OwnerPhoto[]) {
+  picking.value = false
+  for (const ph of photos) {
+    // Fetch the original through the owner source endpoint.
+    try {
+      const r = await fetch(`/api/photos/${encodeURIComponent(ph.id)}/source`, { credentials: 'same-origin', redirect: 'follow' })
+      if (!r.ok) continue
+      const blob = await r.blob()
+      const f = new File([blob], ph.title || 'archive.jpg', { type: blob.type || 'image/jpeg' })
+      tool.sourceIds.value = [...tool.sourceIds.value, ph.id]
+      void addFiles([f])
+    } catch { continue }
+  }
+}
+
+function exportAndSave() {
+  void tool.doExport().then(r => {
+    if (!r) return
+    savedBlob.value = r.blob
+    savedTitle.value = tool.exportError.value ? '' : '成品'
+    saving.value = true
+  })
+}
 </script>
 
 <template>
@@ -194,8 +226,12 @@ const d = tool.doc
             <p class="hint">0 = 自动（不超过 16MP / 8192px）</p>
           </Fieldset>
         </template>
+        <button v-if="session.user" type="button" @click="exportAndSave">存入归档</button>
+        <button v-if="session.user" type="button" @click="picking = !picking">{{ picking ? '收起归档' : '从归档选' }}</button>
       </template>
     </ToolShell>
+    <ArchivePicker v-if="picking" :max-pick="12" @pick="onPick" />
+    <SaveToArchive v-if="saving && savedBlob" :blob="savedBlob" :default-title="savedTitle" :source-ids="tool.sourceIds.value" @close="saving = false" @done="saving = false" />
   </div>
 </template>
 

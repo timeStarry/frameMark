@@ -38,9 +38,16 @@ export function createUpload(f: {
   bytes: number
   sha256: string
   contentType: string
+  title?: string
+  derivedFrom?: string[]
+  toolOutput?: boolean
 }): Promise<WriteResult<UploadInit | OwnerPhoto>> {
-  const { filename, bytes, sha256, contentType } = f
-  return send<UploadInit | OwnerPhoto>('POST', '/api/uploads', { filename, bytes, sha256, contentType })
+  const { filename, bytes, sha256, contentType, title, derivedFrom, toolOutput } = f
+  const body: Record<string, unknown> = { filename, bytes, sha256, contentType }
+  if (title !== undefined) body.title = title
+  if (derivedFrom !== undefined) body.derivedFrom = derivedFrom
+  if (toolOutput !== undefined) body.toolOutput = toolOutput
+  return send<UploadInit | OwnerPhoto>('POST', '/api/uploads', body)
 }
 
 export function completeUpload(id: string): Promise<WriteResult<OwnerPhoto>> {

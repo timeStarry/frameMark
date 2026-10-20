@@ -5,11 +5,15 @@ import { usePageHeading } from '../me/pageHeading'
 import { defaultsFrame, applyPreset, cleanText, MAX_CAPTION, type FrameDoc, type PresetName, FRAME_PRESETS } from './engine/frameDoc'
 import { parseExif, fields as exifFields, mapExif } from './engine/exif'
 import { preflight } from './engine/preflight'
+import type { OwnerPhoto } from '../api/types'
 import { decode, type DecodedImage } from './engine/decode'
 import { frameTarget, renderFrame, photoRect } from './engine/render-frame'
 import { PreviewCache } from './engine/previewCache'
 import { LIMITS } from './engine/limits'
 import { useTool } from './useTool'
+import { session } from '../api/session'
+import ArchivePicker from './ArchivePicker.vue'
+import SaveToArchive from './SaveToArchive.vue'
 import ToolShell from './ToolShell.vue'
 import RangeField from './controls/RangeField.vue'
 import TextField from './controls/TextField.vue'
@@ -113,6 +117,34 @@ function onKeydown(e: KeyboardEvent) {
 }
 
 const d = tool.doc
+const picking = ref(false)
+const saving = ref(false)
+const savedBlob = ref<Blob | null>(null)
+const savedTitle = ref('')
+
+async function onPick(photos: OwnerPhoto[]) {
+  picking.value = false
+  for (const ph of photos) {
+    // Fetch the original through the owner source endpoint.
+    try {
+      const r = await fetch(`/api/photos/${encodeURIComponent(ph.id)}/source`, { credentials: 'same-origin', redirect: 'follow' })
+      if (!r.ok) continue
+      const blob = await r.blob()
+      const f = new File([blob], ph.title || 'archive.jpg', { type: blob.type || 'image/jpeg' })
+      tool.sourceIds.value = [...tool.sourceIds.value, ph.id]
+      void addFile(f)
+    } catch { continue }
+  }
+}
+
+function exportAndSave() {
+  void tool.doExport().then(r => {
+    if (!r) return
+    savedBlob.value = r.blob
+    savedTitle.value = tool.exportError.value ? '' : '成品'
+    saving.value = true
+  })
+}
 </script>
 
 <template>
@@ -188,8 +220,12 @@ const d = tool.doc
             <input type="file" accept="image/jpeg,image/png,image/webp" class="sr-only" @change="onFileInput" />
           </label>
         </template>
+        <button v-if="session.user" type="button" @click="exportAndSave">存入归档</button>
+        <button v-if="session.user" type="button" @click="picking = !picking">{{ picking ? '收起归档' : '从归档选' }}</button>
       </template>
     </ToolShell>
+    <ArchivePicker v-if="picking" :max-pick="1" @pick="onPick" />
+    <SaveToArchive v-if="saving && savedBlob" :blob="savedBlob" :default-title="savedTitle" :source-ids="tool.sourceIds.value" @close="saving = false" @done="saving = false" />
   </div>
 </template>
 
