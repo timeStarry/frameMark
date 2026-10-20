@@ -632,6 +632,7 @@ export async function mockAccount(page: Page, opts: AccountOptions = {}): Promis
       const pid = decodeURIComponent(sub.slice('/overrides/'.length))
       if (!photoSet(d).has(pid)) return deskFail(404, '照片不在该合集中。')
       const b = deskInput()
+      if (conflict(d, b)) return deskReply(409, { error: '这个合集在别处被修改过。', updatedAt: d.updatedAt })
       const o = { publicFields: (b.publicFields as string[] | null | undefined) ?? null, histogramPublic: (b.histogramPublic as boolean | null | undefined) ?? null }
       if (o.publicFields === null && o.histogramPublic === null) delete d.overrides[pid]
       else d.overrides[pid] = o
@@ -670,8 +671,10 @@ export async function mockAccount(page: Page, opts: AccountOptions = {}): Promis
         return deskReply(200, {
           photos: ids.length, publicFields: FIELD_ORDER.filter((k) => fields.has(k)), histogram: hist,
           originalDownload: d.originalDownload, visibility: d.visibility, inSquare: d.visibility === 'public' && d.distribute,
+          updatedAt: d.updatedAt,
         })
       }
+      if (conflict(d, deskInput())) return deskReply(409, { error: '这个合集在别处被修改过。', updatedAt: d.updatedAt })
       d.status = 'published'
       d.updatedAt = ++clock
       return deskReply(200, writeView(d))
@@ -776,8 +779,9 @@ export async function mockAccount(page: Page, opts: AccountOptions = {}): Promis
         .filter((d) => d.frames.some((f) => f.photoIds.includes(a.photo.id)))
         .sort((x, y) => (x.id < y.id ? -1 : 1))
       const now = ++clock
+      const prev = new Map(bumped.map((d) => [d.id, d.updatedAt]))
       for (const d of bumped) d.updatedAt = now
-      return reply(200, { ...a.photo, collections: bumped.map((d) => ({ id: d.id, updatedAt: d.updatedAt })) })
+      return reply(200, { ...a.photo, collections: bumped.map((d) => ({ id: d.id, updatedAt: d.updatedAt, previousUpdatedAt: prev.get(d.id)! })) })
     }
 
     // Everything below is the owner API.

@@ -267,10 +267,41 @@ test('phone: one column, no archive, reorder keeps focus, publish @touch', async
   await expect(saveState(page)).toHaveText('已保存')
   expect(serverPhotos(m, 'ph')).toEqual(['p2', 'p1', 'p3'])
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+  // One polite live region on phones (final review M1), and it speaks for the phone rows.
+  await expect(page.locator('[aria-live="polite"]')).toHaveCount(1)
+  await expect(page.locator('[aria-live="polite"]')).toHaveText('已移到第 2 帧')
   await page.getByRole('button', { name: '发布', exact: true }).first().tap()
   const dialog = page.locator('dialog[open]')
   await expect(dialog).toContainText('3 张')
   await dialog.getByRole('button', { name: '发布', exact: true }).tap()
   await expect(page.getByRole('button', { name: '撤回', exact: true }).first()).toBeVisible()
   expect(m.state.desk.ph!.status).toBe('published')
+})
+
+test.describe('desk: another tab between manifest and confirm', () => {
+  test.use({ viewport: { width: 1440, height: 900 } })
+  test('publish refuses content the manifest did not show (final review C2)', async ({ page }) => {
+    const m = await mockAccount(page, { signedIn: true })
+    m.seedDesk({ id: 'c2', title: '潮', photoIds: ['p1'] })
+    await page.goto('/me/c/c2')
+    await expect(page.locator('section.desk-sequence')).toBeVisible()
+    await page.locator('[data-desk-publish]').click()
+    const dialog = page.locator('dialog[open]')
+    await expect(dialog).toContainText('1 张')
+    // "Tab B" adds a photo while the dialog is open.
+    m.editElsewhere('c2', { frames: [{ layout: 'full', matteRatio: null, text: null, photoIds: ['p1'] }, { layout: 'full', matteRatio: null, text: null, photoIds: ['p2'] }] })
+    await dialog.getByRole('button', { name: '发布', exact: true }).click()
+    // The dialog asks for a fresh manifest instead of publishing the unseen photo.
+    await expect(dialog.getByRole('alert')).toHaveText('内容有变化，请重新确认发布清单')
+    expect(m.state.desk.c2!.status).toBe('draft')
+    // Close the dialog; the desk now shows the conflict, and reloading brings in p2.
+    await dialog.getByRole('button', { name: '取消' }).click()
+    await page.getByRole('button', { name: '载入最新版本' }).click()
+    await expect(page.locator('[role="listitem"]')).toHaveCount(2)
+    await page.locator('[data-desk-publish]').click()
+    await expect(page.locator('dialog[open]')).toContainText('2 张')
+    await page.locator('dialog[open]').getByRole('button', { name: '发布', exact: true }).click()
+    await expect(page.locator('[data-desk-live-note]')).toBeVisible()
+    expect(m.state.desk.c2!.status).toBe('published')
+  })
 })
