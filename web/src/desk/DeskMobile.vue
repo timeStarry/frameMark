@@ -12,8 +12,9 @@ import { LAYOUT_LABEL, frameLabel, textPreview } from './labels'
 import { allowedLayouts, move, remove, setLayout, type DeskFrame } from './sequence'
 import type { Desk, SaveState } from './useDesk'
 
-const props = defineProps<{ desk: Desk }>()
-const emit = defineEmits<{ publish: []; unpublish: [] }>()
+const props = defineProps<{ desk: Desk; announcement?: string }>()
+const announcement = computed(() => props.announcement)
+const emit = defineEmits<{ publish: []; unpublish: []; announce: [msg: string] }>()
 
 const uid = useId()
 const desk = props.desk
@@ -36,11 +37,16 @@ const saveLabel = computed(() => SAVE_LABEL[desk.saveState.value])
 
 // --- Announcements (aria-live="polite") ---
 
-const announcement = ref('')
+const local = ref('')
 function announce(msg: string) {
+  // Hosted by DeskRoute: its one live region speaks for both (final review M1).
+  if (announcement.value !== undefined) {
+    emit('announce', msg)
+    return
+  }
   // Clearing first makes a repeated message speak again.
-  announcement.value = ''
-  void Promise.resolve().then(() => (announcement.value = msg))
+  local.value = ''
+  void Promise.resolve().then(() => (local.value = msg))
 }
 
 // --- Structural edits ---
@@ -211,7 +217,9 @@ function onPublish() {
       </li>
     </ol>
 
-    <div class="sr-only" aria-live="polite" aria-atomic="true" data-desk-live>{{ announcement }}</div>
+    <!-- One region per desk (final review M1): when DeskRoute hosts this, its
+         data-desk-live region renders these announcements instead. -->
+    <div v-if="announcement === undefined" class="sr-only" aria-live="polite" aria-atomic="true" data-desk-live>{{ local }}</div>
   </div>
 </template>
 

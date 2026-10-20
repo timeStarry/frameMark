@@ -104,4 +104,19 @@ describe('FrameProps', () => {
     expect(radios(w).every((r) => (r.element as HTMLInputElement).disabled)).toBe(true)
     expect((w.findAll('button').find((b) => b.text() === '拆成单张')!.element as HTMLButtonElement).disabled).toBe(true)
   })
+
+  it('text: a reload inside the idle window commits the draft and asks to stay', async () => {
+    const { w, mocks } = setup(setText(insertText([], 0), 0, ''))
+    await w.find('textarea').setValue('还没停')
+    expect(mocks.applySeq).not.toHaveBeenCalled()
+    const e = new Event('beforeunload', { cancelable: true }) as BeforeUnloadEvent
+    window.dispatchEvent(e)
+    expect(e.defaultPrevented).toBe(true)
+    expect(mocks.applySeq).toHaveBeenCalledTimes(1)
+    expect(lastSeq(mocks.applySeq)[0]!.text).toBe('还没停')
+    // Nothing pending: no prompt.
+    const e2 = new Event('beforeunload', { cancelable: true }) as BeforeUnloadEvent
+    window.dispatchEvent(e2)
+    expect(e2.defaultPrevented).toBe(false)
+  })
 })

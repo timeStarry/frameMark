@@ -377,7 +377,8 @@ onBeforeUnmount(() => {
     />
 
     <template v-if="desk.state.value === 'ready' && phone">
-      <DeskMobile :desk="desk" @publish="openPublish" @unpublish="openUnpublish" />
+      <DeskMobile :desk="desk" :announcement="announcement" @publish="openPublish" @unpublish="openUnpublish" @announce="announce" />
+      <div class="sr-only" aria-live="polite" aria-atomic="true" data-desk-live>{{ announcement }}</div>
       <div v-if="collectionOpen" class="sheet" data-desk-sheet>
         <CollectionProps :desk="desk" :locked="locked" @deleted="onDeleted" />
         <button type="button" @click="closeCollection">完成</button>
@@ -449,7 +450,7 @@ onBeforeUnmount(() => {
       <span>已删除一帧</span>
       <button type="button" :disabled="locked" @click="undoDelete">撤销</button>
     </div>
-    <div class="sr-only" aria-live="polite" aria-atomic="true" data-desk-live>{{ announcement }}</div>
+    <div v-if="!phone" class="sr-only" aria-live="polite" aria-atomic="true" data-desk-live>{{ announcement }}</div>
   </main>
 </template>
 

@@ -65,7 +65,20 @@ const onTextInput = (e: Event) => {
 
 // Switching frames or closing the panel never drops what was typed.
 watch(() => frame.value?.key, commitText)
-onBeforeUnmount(commitText)
+
+// A reload or tab close inside the idle window (final review M2): commit the
+// draft so the desk's backup and unsaved prompt see it, and ask to stay.
+function onBeforeUnload(e: BeforeUnloadEvent) {
+  if (textDraft.value === null) return
+  commitText()
+  e.preventDefault()
+  e.returnValue = ''
+}
+window.addEventListener('beforeunload', onBeforeUnload)
+onBeforeUnmount(() => {
+  window.removeEventListener('beforeunload', onBeforeUnload)
+  commitText()
+})
 </script>
 
 <template>
