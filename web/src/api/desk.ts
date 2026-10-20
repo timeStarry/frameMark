@@ -21,7 +21,7 @@ const base = (id: string) => `/api/collections/${enc(id)}`
 /** A guarded write: on a 409, conflictAt is the collection's current updatedAt. */
 export type GuardedResult<T> = WriteResult<T> & { conflictAt?: number }
 
-async function guarded<T>(method: 'PUT', url: string, body: unknown): Promise<GuardedResult<T>> {
+async function guarded<T>(method: 'PUT' | 'POST', url: string, body: unknown): Promise<GuardedResult<T>> {
   const r: GuardedResult<T> = await send<T>(method, url, body)
   if (!r.ok && r.status === 409 && typeof r.body?.updatedAt === 'number') r.conflictAt = r.body.updatedAt
   return r
@@ -67,9 +67,17 @@ export function putFrames(
   return guarded<OwnerCollectionWrite>('PUT', `${base(id)}/frames`, body)
 }
 
-export function putOverride(id: string, photoId: string, o: OverrideInput): Promise<WriteResult<OverrideView>> {
+/** ifUpdatedAt null omits the guard; an override can widen, so the desk always sends it. */
+export function putOverride(
+  id: string,
+  photoId: string,
+  o: OverrideInput,
+  ifUpdatedAt: number | null = null,
+): Promise<GuardedResult<OverrideView>> {
   const { publicFields, histogramPublic } = o
-  return send<OverrideView>('PUT', `${base(id)}/overrides/${enc(photoId)}`, { publicFields, histogramPublic })
+  const body: OverrideInput & { ifUpdatedAt?: number } = { publicFields, histogramPublic }
+  if (ifUpdatedAt !== null) body.ifUpdatedAt = ifUpdatedAt
+  return guarded<OverrideView>('PUT', `${base(id)}/overrides/${enc(photoId)}`, body)
 }
 
 export function putPhotoMeta(photoId: string, m: { title: string; caption: string }): Promise<WriteResult<PhotoMetaView>> {
@@ -85,8 +93,9 @@ export function publishDryRun(id: string): Promise<WriteResult<Manifest>> {
   return send<Manifest>('POST', `${base(id)}/publish?dry_run=1`)
 }
 
-export function publish(id: string): Promise<WriteResult<OwnerCollectionWrite>> {
-  return send<OwnerCollectionWrite>('POST', `${base(id)}/publish`)
+/** ifUpdatedAt is the manifest's updatedAt: publish only the state the author confirmed. */
+export function publish(id: string, ifUpdatedAt: number | null = null): Promise<GuardedResult<OwnerCollectionWrite>> {
+  return guarded<OwnerCollectionWrite>('POST', `${base(id)}/publish`, ifUpdatedAt === null ? undefined : { ifUpdatedAt })
 }
 
 export function unpublish(id: string): Promise<WriteResult<OwnerCollectionWrite>> {

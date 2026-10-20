@@ -325,7 +325,8 @@ export interface OverrideView {
 
 /** PUT /api/photos/{id}: the owner photo plus the collections whose updatedAt it bumped. */
 export interface PhotoMetaView extends OwnerPhoto {
-  collections: { id: string; updatedAt: number }[]
+  /** previousUpdatedAt is the value before this write; it differs from the desk's baseline when another tab wrote in between. */
+  collections: { id: string; updatedAt: number; previousUpdatedAt: number }[]
 }
 
 export interface ExposureChange {
@@ -353,4 +354,6 @@ export interface Manifest {
   originalDownload: boolean
   visibility: Visibility
   inSquare: boolean
+  /** The collection state this manifest describes; confirm sends it back as ifUpdatedAt. */
+  updatedAt: number
 }

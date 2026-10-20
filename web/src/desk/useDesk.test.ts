@@ -155,14 +155,24 @@ async function flush() {
 
 // Default write responses echo the loaded status, as the server does.
 const loaded: { status: 'draft' | 'published' } = { status: 'draft' }
+// One shared server clock per test; publish and unpublish bump it (they write).
+let serverAt = 10
+const bump = () => ++serverAt
+const manifestValues: number[] = []
 
 beforeEach(() => {
   loaded.status = 'draft'
+  serverAt = 10
   vi.useFakeTimers()
   localStorage.clear()
   getOwnerCollection.mockReset()
-  putCollection.mockReset().mockImplementation(async () => ok(write({ status: loaded.status })))
-  putFrames.mockReset().mockImplementation(async () => ok(write({ status: loaded.status, updatedAt: 12 })))
+  putCollection.mockReset().mockImplementation(async () => ok(write({ status: loaded.status, updatedAt: serverAt })))
+  manifestValues.length = 0
+  publishDryRun.mockReset().mockImplementation(async () => {
+    manifestValues.push(serverAt)
+    return ok({ photos: 1, publicFields: [], histogram: false, originalDownload: false, visibility: 'private', inSquare: false, updatedAt: serverAt })
+  })
+  putFrames.mockReset().mockImplementation(async () => ok(write({ status: loaded.status, updatedAt: serverAt })))
   putOverride.mockReset().mockResolvedValue(ok({ collectionId: 'c1', photoId: 'p1', publicFields: [], histogramPublic: null, updatedAt: 13 }))
   putPhotoMeta.mockReset().mockResolvedValue(
     ok({
@@ -180,13 +190,12 @@ beforeEach(() => {
       originalDownload: false,
       exif: null,
       media: null,
-      collections: [{ id: 'c1', updatedAt: 14 }],
+      collections: [{ id: 'c1', updatedAt: 14, previousUpdatedAt: 10 }],
     }),
   )
   exposureCheck.mockReset().mockResolvedValue(ok({ widens: false, changes: [] }))
-  publishDryRun.mockReset().mockResolvedValue(ok({ photos: 1, publicFields: [], histogram: false, originalDownload: false, visibility: 'private', inSquare: false }))
-  publish.mockReset().mockResolvedValue(ok(write({ status: 'published', updatedAt: 20 })))
-  unpublish.mockReset().mockResolvedValue(ok(write({ status: 'draft', updatedAt: 21 })))
+  publish.mockReset().mockImplementation(async () => ok(write({ status: 'published', updatedAt: bump() })))
+  unpublish.mockReset().mockImplementation(async () => ok(write({ status: 'draft', updatedAt: bump() })))
   deleteCollection.mockReset().mockResolvedValue({ ok: true, status: 204, data: undefined })
 })
 
@@ -588,9 +597,14 @@ describe('fix round 1: C2 publish requires a clean desk', () => {
     const m = d.publish()
     await flush()
     expect(publishDryRun).not.toHaveBeenCalled()
+    // The held frames write lands at 30 on the server.
+    serverAt = 30
     f.resolve(ok(write({ updatedAt: 30 })))
     expect(await m).not.toBeNull()
-    expect(await d.confirmPublish()).toBe(true)
+    expect(manifestValues).toEqual([30])
+    expect(d.errorMessage.value).toBe('')
+    const okC = await d.confirmPublish()
+    expect({ ok: okC, err: d.errorMessage.value }).toEqual({ ok: true, err: '' })
     expect(publish).toHaveBeenCalledTimes(1)
     expect(putFrames.mock.invocationCallOrder[0]!).toBeLessThan(publishDryRun.mock.invocationCallOrder[0]!)
   })
@@ -600,10 +614,11 @@ describe('fix round 1: C2 publish requires a clean desk', () => {
     expect(await d.confirmPublish()).toBe(false)
     expect(publish).not.toHaveBeenCalled()
     expect(await d.publish()).not.toBeNull()
+    // A field save after the manifest moves the server on: the manifest is stale.
+    putCollection.mockImplementation(async () => ok(write({ updatedAt: (serverAt = 77) })))
     d.applyFields({ ...d.fields.value, title: '改了' }, 'field')
     await vi.advanceTimersByTimeAsync(800)
     await flush()
-    putCollection.mockResolvedValue(ok(write({ updatedAt: 77 })))
     expect(await d.confirmPublish()).toBe(false)
     expect(publish).not.toHaveBeenCalled()
   })
@@ -1006,7 +1021,8 @@ describe('clearOverride', () => {
     d.exposure.value!.confirm()
     await settleAll()
     expect(putOverride).toHaveBeenCalledTimes(1)
-    expect(putOverride).toHaveBeenCalledWith('c1', 'p1', CLEAR)
+expect(typeof putOverride.mock.calls[0]![3]).toBe('number')
+    expect((putOverride.mock.calls[0]![3] as number) > 0).toBe(true)
     expect(d.photoProps.value.p1).toMatchObject({ publicFields: ['iso', 'lens', 'camera'], histogramPublic: true, overridden: false })
   })
 
@@ -1027,7 +1043,8 @@ describe('clearOverride', () => {
     d.clearOverride('p1')
     await settleAll()
     expect(exposureCheck).not.toHaveBeenCalled()
-    expect(putOverride).toHaveBeenCalledWith('c1', 'p1', CLEAR)
+expect(typeof putOverride.mock.calls[0]![3]).toBe('number')
+    expect((putOverride.mock.calls[0]![3] as number) > 0).toBe(true)
     expect(d.photoProps.value.p1!.overridden).toBe(false)
   })
 
@@ -1037,6 +1054,80 @@ describe('clearOverride', () => {
     await settleAll()
     expect(exposureCheck).toHaveBeenCalledTimes(1)
     expect(d.exposure.value).toBeNull()
-    expect(putOverride).toHaveBeenCalledWith('c1', 'p1', CLEAR)
+expect(typeof putOverride.mock.calls[0]![3]).toBe('number')
+    expect((putOverride.mock.calls[0]![3] as number) > 0).toBe(true)
+  })
+})
+
+describe('final review: unguarded writes never hide another tab', () => {
+  it('C1: a photo-meta save that skips another tab’s write opens the conflict instead of adopting it', async () => {
+    const d = await load(owner({ status: 'draft' }))
+    // Another tab wrote (10 → 20) before this caption save bumped it to 21.
+    putPhotoMeta.mockResolvedValueOnce(
+      ok({
+        id: 'p1', status: 'ready', error: null, title: '', caption: '新', width: 10, height: 10, format: 'jpeg',
+        createdAt: 1, publicFields: [], histogramPublic: false, originalDownload: false, exif: null, media: null,
+        collections: [{ id: 'c1', updatedAt: 21, previousUpdatedAt: 20 }],
+      }),
+    )
+    d.setPhotoMeta('p1', { title: '', caption: '新' })
+    await vi.advanceTimersByTimeAsync(800)
+    await flush()
+    expect(d.conflict.value).not.toBeNull()
+    // The stale baseline is kept, so the next guarded write cannot pass.
+    expect(d.updatedAt.value).toBe(10)
+    d.applySeq(insertPhotos(d.seq.value, 1, [deskPhoto('p2')]), 'structure')
+    await flush()
+    expect(putFrames).not.toHaveBeenCalled()
+  })
+
+  it('C1: a photo-meta save with no intervening write adopts the new updatedAt', async () => {
+    const d = await load(owner({ status: 'draft' }))
+    d.setPhotoMeta('p1', { title: '', caption: '新' })
+    await vi.advanceTimersByTimeAsync(800)
+    await flush()
+    expect(d.conflict.value).toBeNull()
+    expect(d.updatedAt.value).toBe(14)
+  })
+
+  it('C1: an override is sent with the current ifUpdatedAt', async () => {
+    const d = await load(owner({ status: 'draft' }))
+    d.setOverride('p1', { publicFields: ['iso'], histogramPublic: false })
+    await flush()
+    expect(putOverride).toHaveBeenCalledWith('c1', 'p1', { publicFields: ['iso'], histogramPublic: false }, 10)
+  })
+
+  it('C2: confirm publishes the manifest’s updatedAt, not the local one', async () => {
+    serverAt = 42
+    const d = await load(owner({ status: 'draft', updatedAt: 42 }))
+    expect(await d.publish()).not.toBeNull()
+    expect(await d.confirmPublish()).toBe(true)
+    expect(publish).toHaveBeenCalledWith('c1', 42)
+  })
+
+  it('C2: a 409 on publish opens the conflict and publishes nothing', async () => {
+    const d = await load(owner({ status: 'draft' }))
+    expect(await d.publish()).not.toBeNull()
+    publish.mockResolvedValueOnce({ ok: false, status: 409, message: '这个合集在别处被修改过。', conflictAt: 55 } as never)
+    expect(await d.confirmPublish()).toBe(false)
+    expect(d.collection.value!.status).toBe('draft')
+    expect(d.errorMessage.value).toBe('内容有变化，请重新确认发布清单')
+  })
+
+  it('I1: removing a photo drops its override locally once the frames write lands', async () => {
+    const p2 = photo('p2', { publicFields: ['iso', 'camera'], histogramPublic: true, override: { publicFields: [], histogramPublic: false } })
+    const p1 = photo('p1')
+    const c = owner({ frames: [{ layout: 'full', matteRatio: null, text: null, photos: [p1] }, { layout: 'full', matteRatio: null, text: null, photos: [p2] }] })
+    const d = await load(c)
+    expect(d.photoProps.value.p2!.overridden).toBe(true)
+    // After the write the server has no override for p2 any more.
+    getOwnerCollection.mockResolvedValue(ok(owner({ frames: [{ layout: 'full', matteRatio: null, text: null, photos: [p1] }] })))
+    d.applySeq(remove(d.seq.value, 1), 'structure')
+    await flush()
+    await flush()
+    // Undo brings p2 back: it must show the snapshot defaults, not the dropped override.
+    d.undo()
+    await flush()
+    expect(d.photoProps.value.p2).toMatchObject({ overridden: false })
   })
 })

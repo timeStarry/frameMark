@@ -11,6 +11,7 @@ afterEach(() => {
 })
 
 const manifest: Manifest = {
+  updatedAt: 1,
   photos: 2,
   publicFields: ['lens', 'camera'],
   histogram: true,

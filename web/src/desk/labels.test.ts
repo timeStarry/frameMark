@@ -3,6 +3,7 @@ import { FIELD_LABEL, LICENSE_LABEL, SAVE_LABEL, joinLabels, manifestLines } fro
 import type { Manifest } from '../api/types'
 
 const base: Manifest = {
+  updatedAt: 1,
   photos: 12,
   publicFields: [],
   histogram: false,

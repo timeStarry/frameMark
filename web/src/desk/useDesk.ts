@@ -84,6 +84,8 @@ export interface Desk {
   previewCollection: ComputedRef<Collection | null>
   canUndo: ComputedRef<boolean>
   canRedo: ComputedRef<boolean>
+  /** The server state the next guarded write is based on (test/diagnostic). */
+  updatedAt: ComputedRef<number>
   /** True while an exposure check or a publish/unpublish/delete is in flight; the UI disables editing. */
   checking: ComputedRef<boolean>
   applySeq(next: Seq, kind: 'structure'): void
@@ -440,6 +442,7 @@ export function useDesk(id: Ref<string>): Desk {
           (data) => {
             s.force.frames = false
             noteWrite(data)
+            dropDetachedOverrides(s, v)
           },
         ),
       () => onConflict(s),
@@ -457,7 +460,17 @@ export function useDesk(id: Ref<string>): Desk {
             () => putPhotoMeta(photoId, v),
             (data) => {
               const hit = data.collections.find((x) => x.id === s.cid)
-              if (hit) noteUpdated(hit.updatedAt)
+              if (!hit) return
+              // A photo write can never widen, so the server applies it
+              // unguarded and returns the newest updatedAt — which folds in
+              // another tab's write, a publish included. Adopt it only when
+              // nothing wrote between our baseline and this write; otherwise
+              // surface the conflict instead of hiding it.
+              if (hit.previousUpdatedAt !== updatedAt.value) {
+                onConflict(s)
+                return
+              }
+              noteUpdated(hit.updatedAt)
             },
           ),
         () => onConflict(s),
@@ -475,7 +488,7 @@ export function useDesk(id: Ref<string>): Desk {
         (v: OverrideInput) =>
           guardedSend<OverrideView>(
             s,
-            () => putOverride(s.cid, photoId, v),
+            () => putOverride(s.cid, photoId, v, updatedAt.value),
             (data) => {
               noteUpdated(data.updatedAt)
               if (isClear(v)) void refreshDefaults(s, photoId)
@@ -510,6 +523,23 @@ export function useDesk(id: Ref<string>): Desk {
     if (p && d) photos[photoId] = { ...d, publicFields: p.publicFields, histogramPublic: p.histogramPublic }
     delete overrides[photoId]
     delete confirmedOverrides[photoId]
+  }
+
+  /**
+   * The server deletes a collection's overrides for photos that leave its
+   * frames (collections.go dropDetached). Mirror that after a frames write so
+   * the panel and preview stop showing an override visitors no longer get,
+   * and re-read the photos' snapshot defaults (final review I1).
+   */
+  function dropDetachedOverrides(s: Session, written: FrameInput[]) {
+    const kept = new Set(written.flatMap((f) => f.photoIds))
+    const gone = [...new Set([...Object.keys(overrides), ...Object.keys(confirmedOverrides)])].filter((pid) => !kept.has(pid))
+    if (gone.length === 0) return
+    for (const pid of gone) {
+      delete overrides[pid]
+      delete confirmedOverrides[pid]
+      void refreshDefaults(s, pid)
+    }
   }
 
   function lanesOf(s: Session | null): Lane<unknown>[] {
@@ -975,6 +1005,9 @@ export function useDesk(id: Ref<string>): Desk {
 
   /** Schedules the overwrite values into the paused lanes first, then resumes (review I7). */
   function startOverwrite(s: Session, f: CollectionFields, q: Seq) {
+    // The overwrite was re-checked against a fresh server copy (review N1), so
+    // these writes are allowed — but only against that copy's updatedAt. A
+    // newer write gets a 409 and the banner again (final review C2).
     s.force = { fields: true, frames: true }
     conflictOpen.value = false
     confirmFields(s, f, 0)
@@ -1088,7 +1121,17 @@ export function useDesk(id: Ref<string>): Desk {
         return null
       }
       errorMessage.value = ''
-      s.manifestAt = updatedAt.value
+      // The manifest says which server state it describes: confirm publishes
+      // exactly that state or gets a 409 (final review C2). A manifest newer
+      // than this tab's copy means another tab wrote: reload first, so the
+      // desk and the manifest describe the same collection.
+      if (r.data.updatedAt !== updatedAt.value) {
+        s.manifestAt = null
+        errorMessage.value = STALE_MANIFEST_MSG
+        onConflict(s)
+        return null
+      }
+      s.manifestAt = r.data.updatedAt
       return r.data
     }, null)
   }
@@ -1101,7 +1144,7 @@ export function useDesk(id: Ref<string>): Desk {
         // Checked on the chain, after every earlier write has landed.
         if (!live(s)) return null
         if (s.manifestAt === null || s.manifestAt !== updatedAt.value) return 'stale' as const
-        return publishCollection(s.cid)
+        return publishCollection(s.cid, s.manifestAt)
       })
       if (!live(s) || r === null) return false
       if (r === 'stale') {
@@ -1110,6 +1153,14 @@ export function useDesk(id: Ref<string>): Desk {
         return false
       }
       if (!r.ok) {
+        // A 409 means the server moved on since the manifest (another tab):
+        // the author must look at a fresh manifest, not publish blind.
+        if ((r as GuardedResult<unknown>).conflictAt !== undefined) {
+          s.manifestAt = null
+          errorMessage.value = STALE_MANIFEST_MSG
+          onConflict(s)
+          return false
+        }
         errorMessage.value = r.message || FALLBACK
         return false
       }
@@ -1216,6 +1267,7 @@ export function useDesk(id: Ref<string>): Desk {
   if (getCurrentScope()) onScopeDispose(dispose)
 
   return {
+    updatedAt: computed(() => updatedAt.value),
     state: computed(() => state.value),
     collection: computed(() => collection.value),
     fields: computed(() => fields.value),
