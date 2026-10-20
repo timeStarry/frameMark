@@ -14,21 +14,28 @@ function seed() {
   sessionStorage.setItem('markr:wallCache:square', '{}')
   sessionStorage.setItem('markr:lastViewed:user:u1', '{}')
   sessionStorage.setItem('other', 'keep')
+  // Desk backups live in localStorage; cleared here even if the desk chunk never loaded (final review I2).
+  localStorage.setItem('markr:desk:c1', '{}')
+  localStorage.setItem('keep-local', 'keep')
 }
 
 function expectCleared() {
   expect(sessionStorage.getItem('markr:wallCache:square')).toBeNull()
   expect(sessionStorage.getItem('markr:lastViewed:user:u1')).toBeNull()
   expect(sessionStorage.getItem('other')).toBe('keep')
+  expect(localStorage.getItem('markr:desk:c1')).toBeNull()
+  expect(localStorage.getItem('keep-local')).toBe('keep')
 }
 
 function expectKept() {
   expect(sessionStorage.getItem('markr:wallCache:square')).toBe('{}')
   expect(sessionStorage.getItem('markr:lastViewed:user:u1')).toBe('{}')
+  expect(localStorage.getItem('markr:desk:c1')).toBe('{}')
 }
 
 beforeEach(() => {
   sessionStorage.clear()
+  localStorage.clear()
   const s = session as { user: string | null; csrfToken: string | null; ready: boolean }
   s.user = null
   s.csrfToken = 'tok-0'

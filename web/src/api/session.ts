@@ -20,17 +20,37 @@ const IDENTITY_KEY = 'markr:identity'
 const NULL_MARKER = 'null'
 const CACHE_PREFIXES = ['markr:wallCache:', 'markr:lastViewed:']
 
-/** Removes every wall snapshot and last-viewed marker in this tab. */
-export function clearViewerCaches(): void {
+/**
+ * Desk backups (markr:desk:*) live in localStorage and hold unpublished text.
+ * They are cleared here, in the always-loaded session layer, so a logout or a
+ * user switch clears them even in a tab that never loaded the desk chunk.
+ */
+const BACKUP_PREFIX = 'markr:desk:'
+
+function sweep(store: Storage, match: (k: string) => boolean) {
   try {
     const doomed: string[] = []
-    for (let i = 0; i < sessionStorage.length; i++) {
-      const k = sessionStorage.key(i)
-      if (k && CACHE_PREFIXES.some((p) => k.startsWith(p))) doomed.push(k)
+    for (let i = 0; i < store.length; i++) {
+      const k = store.key(i)
+      if (k && match(k)) doomed.push(k)
     }
-    for (const k of doomed) sessionStorage.removeItem(k)
+    for (const k of doomed) store.removeItem(k)
   } catch {
     // Storage blocked: nothing was cached either.
+  }
+}
+
+/** Removes every wall snapshot, last-viewed marker and desk backup for this browser. */
+export function clearViewerCaches(): void {
+  try {
+    sweep(sessionStorage, (k) => CACHE_PREFIXES.some((p) => k.startsWith(p)))
+  } catch {
+    // sessionStorage itself unavailable.
+  }
+  try {
+    sweep(localStorage, (k) => k.startsWith(BACKUP_PREFIX))
+  } catch {
+    // localStorage itself unavailable.
   }
 }
 
