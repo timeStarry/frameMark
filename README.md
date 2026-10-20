@@ -24,7 +24,7 @@ npm run build
 npm start
 ```
 
-服务默认监听地址和配置见 `server/index.mjs` 与运维文档。身份功能默认关闭；不能通过请求头伪造账户。启用账户请遵循账户文档，不把私网 HTTP 试验配置用于正式公网服务。
+服务配置见 `cmd/markr` 的环境变量和 DEPLOY.md。身份功能默认关闭。
 
 开发时可在另一个终端运行 `npm run dev`。Vite 默认使用 3000 端口，`/api` 转发至本机 18140；工具自身不依赖 API，平台功能需要后端。
 
@@ -54,12 +54,10 @@ npm run build
 ## 目录
 
 ```text
-src/components/   导航、摄影与编辑共享组件
-src/views/        广场、作品、主页、工作台、登录与工具入口
-src/tools/        TypeScript 文档、任务、资源与 Canvas 工具
-src/auth/         客户端账户与会话逻辑
-server/           Express API、SQLite、身份与邮件适配
-tests/            API、组件、渲染与资源生命周期测试
+web/              Vue 3 + TypeScript 前端（观看器、展墙、策展台、工具、账户）
+internal/         Go 后端（API、媒体管线、身份、存储）
+cmd/markr/        服务入口
+docs/             设计规格与实施计划
 docs/             设计、验证与运维文档
 ops/              独立预览服务配置
 ```

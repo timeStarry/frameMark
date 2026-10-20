@@ -37,7 +37,7 @@
 
 ### Vite配置调整
 ```javascript
-// vite.config.js
+// (已删除，旧版 vite 配置)
 export default defineConfig({
   // 设置base路径用于GitHub Pages
   base: process.env.NODE_ENV === 'production' ? '/frameMark/' : '/',
@@ -78,7 +78,7 @@ https://timestarry.github.io/frameMark/
 ### 3. 页面404错误
 - 确认GitHub Pages源设置为 **GitHub Actions**
 - 检查仓库名称与base路径是否匹配
-- 验证dist目录中是否包含index.html
+- 前端构建在 web/ 目录下：cd web && npm ci && npm run build
 
 ### 4. 资源加载失败
 - 确认base路径配置正确

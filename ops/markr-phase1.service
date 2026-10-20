@@ -5,7 +5,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=/home/timestarry/deploy/markr-phase1/current
-ExecStart=/usr/bin/env node server/index.mjs
+ExecStart=/path/to/markr serve --role=all
 Environment=HOST=100.99.0.5
 Environment=PORT=18140
 Environment=DATA_DIR=/home/timestarry/deploy/markr-phase1/data
