@@ -37,7 +37,7 @@
 
 ### Vite配置调整
 ```javascript
-// vite.config.js
+// (已删除，旧版 vite 配置)
 export default defineConfig({
   // 设置base路径用于GitHub Pages
   base: process.env.NODE_ENV === 'production' ? '/frameMark/' : '/',
@@ -78,7 +78,7 @@ https://timestarry.github.io/frameMark/
 ### 3. 页面404错误
 - 确认GitHub Pages源设置为 **GitHub Actions**
 - 检查仓库名称与base路径是否匹配
-- 验证dist目录中是否包含index.html
+- 前端构建在 web/ 目录下：cd web && npm ci && npm run build
 
 ### 4. 资源加载失败
 - 确认base路径配置正确
@@ -94,3 +94,19 @@ https://timestarry.github.io/frameMark/
 - [x] 工作流权限配置
 
 完成以上设置后，每次推送代码到main分支都会自动触发构建和部署流程！🎉 
+## 存储桶 CORS
+
+Markr 作者工作区用预签名 URL 从浏览器直接 `PUT` 原图到 originals 存储桶；工具页还会用预签名 `GET` 读取归档原图。CSP 的 `connect-src` 已包含 S3 源（与 `img-src` 使用同一个主机列表），存储桶还需要允许 `MARKR_ORIGIN` 跨域上传和读取。以 `MARKR_ORIGIN=https://markr.example.com` 为例：
+
+```json
+[
+  {
+    "AllowedOrigins": ["https://markr.example.com"],
+    "AllowedMethods": ["PUT", "GET"],
+    "AllowedHeaders": ["Content-Type", "x-amz-*"],
+    "MaxAgeSeconds": 3000
+  }
+]
+```
+
+`AllowedOrigins` 必须与 `MARKR_ORIGIN` 完全一致（协议、主机、端口）。`x-amz-*` 覆盖预签名请求里出现的 `x-amz-checksum-sha256` 等头。derived 存储桶不需要这条规则。

@@ -1,0 +1,100 @@
+name: Platform checks
+on:
+  push:
+    branches: ['feat/markr-platform-phase1']
+  pull_request:
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install libvips
+        # libheif + an AV1 encoder plugin give libvips heifsave (AVIF output),
+        # which the media pipeline requires. libvips-tools provides the `vips`
+        # CLI used by the checks below.
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libvips-dev libvips-tools libheif-dev libheif-plugin-aomenc
+      - name: Check vips installation and HEIF support
+        run: vips --version || pkg-config --modversion vips
+      - name: Verify HEIF/AVIF support
+        run: vips -l | grep -q heifsave
+      # The minio/minio image and dl.min.io binaries are no longer publicly
+      # available, so build the server from source at a pinned release
+      # (RELEASE.2025-10-15T17-29-55Z, the version used locally) and cache it.
+      - name: Cache MinIO binary
+        id: minio-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/minio-bin
+          key: minio-v0.0.0-20251015172955-9e49d5e7a648-${{ runner.os }}
+      - name: Build MinIO
+        if: steps.minio-cache.outputs.cache-hit != 'true'
+        run: GOBIN="$HOME/minio-bin" go install github.com/minio/minio@v0.0.0-20251015172955-9e49d5e7a648
+      - name: Start MinIO
+        run: |
+          mkdir -p /tmp/minio-data
+          MINIO_ROOT_USER=markrtest MINIO_ROOT_PASSWORD=markrtest-secret \
+            nohup "$HOME/minio-bin/minio" server --address 127.0.0.1:9000 /tmp/minio-data > /tmp/minio.log 2>&1 &
+      - name: Wait for MinIO
+        run: |
+          for i in {1..30}; do
+            if curl -sf http://127.0.0.1:9000/minio/health/live; then
+              echo "MinIO is ready"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "MinIO failed to start"
+          cat /tmp/minio.log
+          exit 1
+      - name: Check gofmt
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - run: go vet ./...
+      - name: Run tests
+        run: go test -race -count=1 ./...
+        env:
+          MARKR_TEST_S3_ENDPOINT: http://127.0.0.1:9000
+          MARKR_TEST_S3_ACCESS_KEY: markrtest
+          MARKR_TEST_S3_SECRET_KEY: markrtest-secret
+      - name: Build
+        run: go build -o /tmp/markr ./cmd/markr
+  web:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - run: npm run check:bundle
+      - run: npx playwright install --with-deps chromium webkit
+      - run: npx playwright test
+      - name: Upload Playwright results
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-results
+          path: |
+            web/test-results
+            web/playwright-report
+      - name: Upload screenshots
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: viewer-screens
+          path: web/test-results/screens

@@ -37,3 +37,14 @@ coverage/
 # 临时文件
 *.tmp
 *.temp 
+data/
+
+.superpowers/
+
+# 新前端（web/）与内嵌构建产物
+!internal/webui/dist/
+internal/webui/dist/*
+!internal/webui/dist/.gitkeep
+web/node_modules/
+web/test-results/
+web/playwright-report/
