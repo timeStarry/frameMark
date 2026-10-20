@@ -12,6 +12,7 @@
     "check:bundle": "node scripts/check-bundle.mjs"
   },
   "dependencies": {
+    "exifr": "7.1.3",
     "vue": "3.5.44",
     "vue-router": "4.6.4"
   },
