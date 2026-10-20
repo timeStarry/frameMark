@@ -327,11 +327,17 @@ onBeforeUnmount(() => {
     <header class="bar">
       <RouterLink class="back" to="/me/collections">返回我的合集</RouterLink>
       <h1 :id="`${uid}-title`" ref="heading" tabindex="-1">{{ title }}</h1>
-      <p class="save" role="status" :data-save="desk.saveState.value">
+      <!-- On phones DeskMobile owns the save state and 发布/撤回, so they are announced once. -->
+      <p v-if="!phone" class="save" role="status" :data-save="desk.saveState.value">
         {{ desk.state.value === 'ready' ? saveLabel : '' }}
         <span v-if="desk.state.value === 'ready' && desk.errorMessage.value" class="save-error">{{ desk.errorMessage.value }}</span>
       </p>
-      <button v-if="desk.state.value === 'ready' && desk.saveState.value === 'error'" type="button" class="retry" @click="desk.retry()">
+      <button
+        v-if="!phone && desk.state.value === 'ready' && desk.saveState.value === 'error'"
+        type="button"
+        class="retry"
+        @click="desk.retry()"
+      >
         重试
       </button>
       <div v-if="desk.state.value === 'ready'" class="tools">
@@ -349,8 +355,10 @@ onBeforeUnmount(() => {
         <button ref="collectionBtn" type="button" :aria-expanded="collectionOpen ? 'true' : 'false'" @click="openCollection">
           合集设置
         </button>
-        <button v-if="published" type="button" data-desk-unpublish @click="openUnpublish">撤回</button>
-        <button v-else type="button" class="primary" data-desk-publish @click="openPublish">发布</button>
+        <template v-if="!phone">
+          <button v-if="published" type="button" data-desk-unpublish @click="openUnpublish">撤回</button>
+          <button v-else type="button" class="primary" data-desk-publish @click="openPublish">发布</button>
+        </template>
       </div>
     </header>
 

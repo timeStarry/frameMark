@@ -448,5 +448,8 @@ describe('DeskRoute', () => {
     expect(wr.find('.desk-archive').exists()).toBe(false)
     expect(wr.find('[data-desk-preview]').exists()).toBe(false)
     expect(wr.findAll('button').some((b) => b.text() === '添加照片')).toBe(false)
+    // One save status and one 发布 on phones (DeskMobile's), not two.
+    expect(wr.findAll('[role="status"].save')).toHaveLength(1)
+    expect(wr.find('[data-desk-publish]').exists()).toBe(false)
   })
 })
