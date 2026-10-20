@@ -23,12 +23,19 @@ function makeDesk(initial: Seq) {
   const checking = ref(false)
   const saveState = ref<'saved' | 'saving' | 'unsaved' | 'error' | 'conflict'>('saved')
   const errorMessage = ref('')
+  const status = ref<'draft' | 'published'>('draft')
+  const conflictOn = ref(false)
+  const backupOn = ref(false)
+  const reload = vi.fn()
+  const overwrite = vi.fn()
+  const restore = vi.fn()
+  const discard = vi.fn()
   const preview: Collection = collection([fullFrame(photo('p1'))])
   const confirm = vi.fn()
   const cancel = vi.fn()
   const d = {
     state: computed(() => state.value),
-    collection: computed(() => null),
+    collection: computed(() => ({ status: status.value })),
     fields: computed(() => ({ title: '海边', intro: '', visibility: 'private', distribute: false, originalDownload: false, license: null, aiDeclaration: null, coverPhotoId: null })),
     seq: computed(() => seq.value),
     selected: ref(0),
@@ -37,8 +44,8 @@ function makeDesk(initial: Seq) {
     exposure: computed(() =>
       exposureOpen.value ? { open: true, changes: [{ kind: 'photos', detail: '加入了一张照片' }], confirm, cancel } : null,
     ),
-    conflict: computed(() => null),
-    backupOffer: computed(() => null),
+    conflict: computed(() => (conflictOn.value ? { reload, overwrite } : null)),
+    backupOffer: computed(() => (backupOn.value ? { restore, discard } : null)),
     previewCollection: computed(() => preview),
     canUndo: computed(() => true),
     canRedo: computed(() => true),
@@ -50,6 +57,8 @@ function makeDesk(initial: Seq) {
     applyFields: vi.fn(),
     setPhotoMeta: vi.fn(),
     setOverride: vi.fn(),
+    clearOverride: vi.fn(),
+    photoProps: computed(() => ({})),
     undo: vi.fn(),
     redo: vi.fn(),
     publish: vi.fn(),
@@ -66,6 +75,13 @@ function makeDesk(initial: Seq) {
     _saveState: saveState,
     _errorMessage: errorMessage,
     _preview: preview,
+    _status: status,
+    _conflict: conflictOn,
+    _backup: backupOn,
+    reload,
+    overwrite,
+    restore,
+    discard,
   }
   return d
 }
@@ -309,5 +325,128 @@ describe('DeskRoute', () => {
     const wr = await open()
     expect(wr.text()).toContain('找不到这个合集')
     expect(wr.find('[role="list"]').exists()).toBe(false)
+  })
+
+  it('发布 loads the dry-run manifest, then publishes on confirm', async () => {
+    const manifest = { photos: 2, publicFields: ['camera', 'lens'], histogram: false, originalDownload: false, visibility: 'unlisted', inSquare: false }
+    desk.publish.mockResolvedValue(manifest)
+    desk.confirmPublish.mockResolvedValue(true)
+    const wr = await open()
+    await wr.find('[data-desk-publish]').trigger('click')
+    await flushPromises()
+    expect(desk.publish).toHaveBeenCalledTimes(1)
+    const dialog = wr.find('dialog')
+    expect(dialog.text()).toContain('2 张')
+    expect(dialog.text()).toContain('公开机身与镜头')
+    expect(dialog.text()).toContain('未设置许可')
+    await dialog.findAll('button').find((b) => b.text() === '发布')!.trigger('click')
+    await flushPromises()
+    expect(desk.confirmPublish).toHaveBeenCalledTimes(1)
+    expect(wr.find('dialog').exists()).toBe(false)
+    expect(live(wr)).toBe('已发布')
+  })
+
+  it('a refused publish shows the reason and does not publish', async () => {
+    desk.publish.mockImplementation(async () => {
+      desk._errorMessage.value = '还有未保存的修改，保存后再发布'
+      return null
+    })
+    const wr = await open()
+    await wr.find('[data-desk-publish]').trigger('click')
+    await flushPromises()
+    expect(wr.find('dialog [role="alert"]').text()).toBe('还有未保存的修改，保存后再发布')
+    const confirm = wr.find('dialog').findAll('button').find((b) => b.text() === '发布')!
+    expect(confirm.attributes('disabled')).toBeDefined()
+    expect(desk.confirmPublish).not.toHaveBeenCalled()
+  })
+
+  it('a published collection shows 撤回 and the live note; 撤回 asks first', async () => {
+    desk._status.value = 'published'
+    desk.unpublish.mockResolvedValue(true)
+    const wr = await open()
+    expect(wr.find('[data-desk-live-note]').text()).toBe('修改会立即对访客生效')
+    expect(wr.find('[data-desk-publish]').exists()).toBe(false)
+    await wr.find('[data-desk-unpublish]').trigger('click')
+    await flushPromises()
+    expect(wr.find('dialog').text()).toContain('撤回后访客将看不到这组照片，链接会失效')
+    expect(desk.unpublish).not.toHaveBeenCalled()
+    await wr.find('dialog').findAll('button').find((b) => b.text() === '撤回')!.trigger('click')
+    await flushPromises()
+    expect(desk.unpublish).toHaveBeenCalledTimes(1)
+  })
+
+  it('the conflict banner wires 载入最新版本 and 用我的版本覆盖', async () => {
+    desk._conflict.value = true
+    const wr = await open()
+    expect(wr.text()).toContain('这个合集在别处被修改过')
+    await wr.findAll('button').find((b) => b.text() === '载入最新版本')!.trigger('click')
+    await wr.findAll('button').find((b) => b.text() === '用我的版本覆盖')!.trigger('click')
+    expect(desk.reload).toHaveBeenCalledTimes(1)
+    expect(desk.overwrite).toHaveBeenCalledTimes(1)
+  })
+
+  it('the backup banner wires 恢复 and 丢弃', async () => {
+    desk._backup.value = true
+    const wr = await open()
+    expect(wr.text()).toContain('有一份未保存的修改，要恢复吗？')
+    await wr.findAll('button').find((b) => b.text() === '恢复')!.trigger('click')
+    await wr.findAll('button').find((b) => b.text() === '丢弃')!.trigger('click')
+    expect(desk.restore).toHaveBeenCalledTimes(1)
+    expect(desk.discard).toHaveBeenCalledTimes(1)
+  })
+
+  it('the exposure dialog confirms or cancels through desk.exposure', async () => {
+    desk._exposure.value = true
+    const wr = await open()
+    const box = wr.find('[data-desk-exposure]')
+    expect(box.text()).toContain('加入了一张照片')
+    await box.findAll('button').find((b) => b.text() === '撤销这次修改')!.trigger('click')
+    expect(desk.cancel).toHaveBeenCalledTimes(1)
+    expect(desk.confirm).not.toHaveBeenCalled()
+  })
+
+  it('合集设置 opens the collection settings in the right column', async () => {
+    const wr = await open()
+    await wr.findAll('button').find((b) => b.text() === '合集设置')!.trigger('click')
+    expect(wr.find('[data-desk-collection] h2').text()).toBe('合集设置')
+    expect(wr.find('[data-desk-preview]').exists()).toBe(false)
+    key(document.body, { key: 'Escape' })
+    await flushPromises()
+    expect(wr.find('[data-desk-preview]').exists()).toBe(true)
+  })
+
+  it('leaving with unsaved work asks first; a saved desk leaves freely', async () => {
+    const ask = vi.fn(() => false)
+    vi.stubGlobal('confirm', ask)
+    // onBeforeRouteLeave only registers for a component rendered by RouterView.
+    router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: '/me/c/:id', component: DeskRoute, props: true },
+        { path: '/:p(.*)*', component: { render: () => null } },
+      ],
+    })
+    await router.push('/me/c/c1')
+    w = mount({ template: '<RouterView />' }, { global: { plugins: [router] }, attachTo: document.body })
+    await flushPromises()
+    desk._saveState.value = 'saving'
+    await nextTick()
+    await router.push('/me/collections')
+    expect(ask).toHaveBeenCalledTimes(1)
+    expect(router.currentRoute.value.fullPath).toBe('/me/c/c1')
+    desk._saveState.value = 'saved'
+    await nextTick()
+    await router.push('/me/collections')
+    expect(router.currentRoute.value.fullPath).toBe('/me/collections')
+    expect(ask).toHaveBeenCalledTimes(1)
+  })
+
+  it('under 768px the phone desk replaces the columns', async () => {
+    vi.stubGlobal('matchMedia', (q: string) => ({ matches: q === '(max-width: 767px)', addEventListener() {}, removeEventListener() {} }))
+    const wr = await open()
+    expect(wr.text()).toContain('在电脑上添加和编排照片')
+    expect(wr.find('.desk-archive').exists()).toBe(false)
+    expect(wr.find('[data-desk-preview]').exists()).toBe(false)
+    expect(wr.findAll('button').some((b) => b.text() === '添加照片')).toBe(false)
   })
 })
